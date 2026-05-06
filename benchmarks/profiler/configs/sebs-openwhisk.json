@@ -1,0 +1,41 @@
+{
+  "experiments": {
+    "deployment": "openwhisk",
+    "update_code": true,
+    "update_storage": false,
+    "download_results": false,
+    "architecture": "x64",
+    "system_variant": "container",
+    "runtime": {
+      "language": "nodejs",
+      "version": "20"
+    },
+    "type": "invocation-overhead"
+  },
+  "deployment": {
+    "name": "openwhisk",
+    "openwhisk": {
+      "shutdownStorage": false,
+      "removeCluster": false,
+      "wskBypassSecurity": true,
+      "wskExec": "wsk",
+      "experimentalManifest": false,
+      "dockerhubRepository": null,
+      "docker_registry": {
+        "registry": "",
+        "username": "",
+        "password": ""
+      },
+      "storage": {
+        "address": "",
+        "mapped_port": -1,
+        "access_key": "",
+        "secret_key": "",
+        "instance_id": "",
+        "input_buckets": [],
+        "output_buckets": [],
+        "type": "minio"
+      }
+    }
+  }
+}

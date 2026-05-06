@@ -481,6 +481,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cosmos-bench-profiler"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "scx_stats",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

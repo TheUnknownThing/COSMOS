@@ -1,0 +1,20 @@
+[package]
+name = "cosmos-bench-profiler"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "COSMOS benchmark profiling harness"
+
+[[bin]]
+name = "cosmos-bench-profiler"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env", "unicode", "wrap_help"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+scx_stats = { path = "../../rust/scx_stats", version = "1.1.0" }
+
+[dev-dependencies]
+tempfile = "3"

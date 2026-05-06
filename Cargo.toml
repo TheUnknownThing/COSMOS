@@ -9,6 +9,7 @@ license = "GPL-2.0-only"
 [workspace]
 members = [
     ".",
+    "benchmarks/profiler",
     "rust/scx_cargo",
     "rust/scx_rustland_core",
     "rust/scx_stats",

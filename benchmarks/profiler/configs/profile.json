@@ -1,0 +1,24 @@
+{
+  "workloads": [
+    "dynamic-html",
+    "uploader",
+    "thumbnailer",
+    "video-processing",
+    "compression",
+    "image-recognition",
+    "pagerank",
+    "bfs"
+  ],
+  "inputs": [
+    "small",
+    "medium",
+    "large"
+  ],
+  "warmth": [
+    "cold",
+    "warm",
+    "lukewarm"
+  ],
+  "repetitions": 10,
+  "concurrency": 1
+}

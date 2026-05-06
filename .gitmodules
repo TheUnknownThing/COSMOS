@@ -1,0 +1,6 @@
+[submodule "benchmarks/third_party/serverless-benchmarks"]
+	path = benchmarks/third_party/serverless-benchmarks
+	url = https://github.com/spcl/serverless-benchmarks.git
+[submodule "benchmarks/third_party/openwhisk"]
+	path = benchmarks/third_party/openwhisk
+	url = https://github.com/apache/openwhisk.git

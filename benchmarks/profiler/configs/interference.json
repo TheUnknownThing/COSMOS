@@ -1,0 +1,18 @@
+{
+  "targets": [
+    "thumbnailer",
+    "compression",
+    "image-recognition",
+    "uploader"
+  ],
+  "interference": [
+    "none",
+    "cpu",
+    "memory",
+    "network",
+    "io"
+  ],
+  "input": "medium",
+  "warmth": "warm",
+  "repetitions": 10
+}

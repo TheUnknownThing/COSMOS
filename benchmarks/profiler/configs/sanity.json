@@ -1,0 +1,18 @@
+{
+  "workloads": [
+    "dynamic-html",
+    "thumbnailer",
+    "compression",
+    "image-recognition"
+  ],
+  "inputs": [
+    "small",
+    "medium"
+  ],
+  "warmth": [
+    "cold",
+    "warm"
+  ],
+  "repetitions": 5,
+  "concurrency": 1
+}
