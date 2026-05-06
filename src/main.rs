@@ -166,14 +166,10 @@ impl PartialOrd for Task {
     }
 }
 
-struct Scheduler<'a> {
-    bpf: BpfScheduler<'a>,
+struct SchedulerPolicy<'a> {
     opts: &'a Opts,
-    stats_server: StatsServer<(), Metrics>,
-    tasks: BTreeSet<Task>,
     task_state: HashMap<i32, TaskState>,
     vruntime_now: u64,
-    init_page_faults: u64,
     slice_ns: u64,
     slice_ns_min: u64,
     slo_target_ns: u64,
@@ -185,85 +181,22 @@ struct Scheduler<'a> {
     max_pending: u64,
 }
 
-impl<'a> Scheduler<'a> {
-    fn init(opts: &'a Opts, open_object: &'a mut MaybeUninit<OpenObject>) -> Result<Self> {
-        let stats_server = StatsServer::new(stats::server_data()).launch()?;
-        let slice_ns = opts.slice_us * NSEC_PER_USEC;
-        let slice_ns_min = opts.slice_us_min * NSEC_PER_USEC;
-        let slo_target_ns = opts.slo_target_us * NSEC_PER_USEC;
-        let cold_start_boost_ns = opts.cold_start_boost_us * NSEC_PER_USEC;
-
-        let bpf = BpfScheduler::init(
-            open_object,
-            opts.libbpf.clone().into_bpf_open_opts(),
-            opts.exit_dump_len,
-            opts.partial,
-            opts.verbose,
-            true,
-            opts.numa_local,
-            slice_ns_min,
-            "cosmos",
-        )?;
-
-        info!(
-            "{} version {} - scx_rustland_core {}",
-            SCHEDULER_NAME,
-            build_id::full_version(env!("CARGO_PKG_VERSION")),
-            scx_rustland_core::VERSION
-        );
-
-        Ok(Self {
-            bpf,
+impl<'a> SchedulerPolicy<'a> {
+    fn new(opts: &'a Opts) -> Self {
+        Self {
             opts,
-            stats_server,
-            tasks: BTreeSet::new(),
             task_state: HashMap::new(),
             vruntime_now: 0,
-            init_page_faults: 0,
-            slice_ns,
-            slice_ns_min,
-            slo_target_ns,
-            cold_start_boost_ns,
+            slice_ns: opts.slice_us * NSEC_PER_USEC,
+            slice_ns_min: opts.slice_us_min * NSEC_PER_USEC,
+            slo_target_ns: opts.slo_target_us * NSEC_PER_USEC,
+            cold_start_boost_ns: opts.cold_start_boost_us * NSEC_PER_USEC,
             nr_cold_start_tasks: 0,
             nr_hot_invocation_tasks: 0,
             nr_background_tasks: 0,
             nr_slo_boosted: 0,
             max_pending: 0,
-        })
-    }
-
-    fn get_metrics(&mut self) -> Metrics {
-        let page_faults = Self::get_page_faults().unwrap_or_default();
-        if self.init_page_faults == 0 {
-            self.init_page_faults = page_faults;
         }
-        let nr_page_faults = page_faults - self.init_page_faults;
-
-        Metrics {
-            nr_running: *self.bpf.nr_running_mut(),
-            nr_cpus: *self.bpf.nr_online_cpus_mut(),
-            nr_queued: *self.bpf.nr_queued_mut(),
-            nr_scheduled: *self.bpf.nr_scheduled_mut(),
-            nr_page_faults,
-            nr_cold_start_tasks: self.nr_cold_start_tasks,
-            nr_hot_invocation_tasks: self.nr_hot_invocation_tasks,
-            nr_background_tasks: self.nr_background_tasks,
-            nr_slo_boosted: self.nr_slo_boosted,
-            max_pending: self.max_pending,
-            nr_user_dispatches: *self.bpf.nr_user_dispatches_mut(),
-            nr_kernel_dispatches: *self.bpf.nr_kernel_dispatches_mut(),
-            nr_cancel_dispatches: *self.bpf.nr_cancel_dispatches_mut(),
-            nr_bounce_dispatches: *self.bpf.nr_bounce_dispatches_mut(),
-            nr_failed_dispatches: *self.bpf.nr_failed_dispatches_mut(),
-            nr_sched_congested: *self.bpf.nr_sched_congested_mut(),
-        }
-    }
-
-    fn now() -> u64 {
-        let ts = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap();
-        ts.as_nanos() as u64
     }
 
     fn scale_by_task_weight(task: &QueuedTask, value: u64) -> u64 {
@@ -388,6 +321,89 @@ impl<'a> Scheduler<'a> {
         (class, score, slice_ns)
     }
 
+    fn prune_task_state(&mut self, now: u64) {
+        self.task_state
+            .retain(|_, state| now.saturating_sub(state.last_seen_ns) < TASK_STATE_TTL_NS);
+    }
+}
+
+struct Scheduler<'a> {
+    bpf: BpfScheduler<'a>,
+    opts: &'a Opts,
+    stats_server: StatsServer<(), Metrics>,
+    tasks: BTreeSet<Task>,
+    policy: SchedulerPolicy<'a>,
+    init_page_faults: u64,
+}
+
+impl<'a> Scheduler<'a> {
+    fn init(opts: &'a Opts, open_object: &'a mut MaybeUninit<OpenObject>) -> Result<Self> {
+        let stats_server = StatsServer::new(stats::server_data()).launch()?;
+        let policy = SchedulerPolicy::new(opts);
+
+        let bpf = BpfScheduler::init(
+            open_object,
+            opts.libbpf.clone().into_bpf_open_opts(),
+            opts.exit_dump_len,
+            opts.partial,
+            opts.verbose,
+            true,
+            opts.numa_local,
+            policy.slice_ns_min,
+            "cosmos",
+        )?;
+
+        info!(
+            "{} version {} - scx_rustland_core {}",
+            SCHEDULER_NAME,
+            build_id::full_version(env!("CARGO_PKG_VERSION")),
+            scx_rustland_core::VERSION
+        );
+
+        Ok(Self {
+            bpf,
+            opts,
+            stats_server,
+            tasks: BTreeSet::new(),
+            policy,
+            init_page_faults: 0,
+        })
+    }
+
+    fn get_metrics(&mut self) -> Metrics {
+        let page_faults = Self::get_page_faults().unwrap_or_default();
+        if self.init_page_faults == 0 {
+            self.init_page_faults = page_faults;
+        }
+        let nr_page_faults = page_faults - self.init_page_faults;
+
+        Metrics {
+            nr_running: *self.bpf.nr_running_mut(),
+            nr_cpus: *self.bpf.nr_online_cpus_mut(),
+            nr_queued: *self.bpf.nr_queued_mut(),
+            nr_scheduled: *self.bpf.nr_scheduled_mut(),
+            nr_page_faults,
+            nr_cold_start_tasks: self.policy.nr_cold_start_tasks,
+            nr_hot_invocation_tasks: self.policy.nr_hot_invocation_tasks,
+            nr_background_tasks: self.policy.nr_background_tasks,
+            nr_slo_boosted: self.policy.nr_slo_boosted,
+            max_pending: self.policy.max_pending,
+            nr_user_dispatches: *self.bpf.nr_user_dispatches_mut(),
+            nr_kernel_dispatches: *self.bpf.nr_kernel_dispatches_mut(),
+            nr_cancel_dispatches: *self.bpf.nr_cancel_dispatches_mut(),
+            nr_bounce_dispatches: *self.bpf.nr_bounce_dispatches_mut(),
+            nr_failed_dispatches: *self.bpf.nr_failed_dispatches_mut(),
+            nr_sched_congested: *self.bpf.nr_sched_congested_mut(),
+        }
+    }
+
+    fn now() -> u64 {
+        let ts = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        ts.as_nanos() as u64
+    }
+
     fn dispatch_task(&mut self) -> bool {
         let Some(task) = self.tasks.pop_first() else {
             return true;
@@ -422,7 +438,8 @@ impl<'a> Scheduler<'a> {
             match self.bpf.dequeue_task() {
                 Ok(Some(mut task)) => {
                     let timestamp = Self::now();
-                    let (class, score, slice_ns) = self.update_enqueued(&mut task, timestamp);
+                    let (class, score, slice_ns) =
+                        self.policy.update_enqueued(&mut task, timestamp);
 
                     self.tasks.insert(Task {
                         qtask: task,
@@ -441,19 +458,14 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    fn prune_task_state(&mut self, now: u64) {
-        self.task_state
-            .retain(|_, state| now.saturating_sub(state.last_seen_ns) < TASK_STATE_TTL_NS);
-    }
-
     fn schedule(&mut self) {
         self.drain_queued_tasks();
         self.dispatch_task();
 
         let pending = self.tasks.len() as u64;
-        self.max_pending = self.max_pending.max(pending);
+        self.policy.max_pending = self.policy.max_pending.max(pending);
         if pending == 0 {
-            self.prune_task_state(Self::now());
+            self.policy.prune_task_state(Self::now());
         }
 
         self.bpf.notify_complete(pending);
@@ -545,4 +557,230 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    const MS: u64 = 1_000_000;
+
+    fn opts(args: &[&str]) -> Opts {
+        let mut argv = vec!["cosmos"];
+        argv.extend_from_slice(args);
+        Opts::parse_from(argv)
+    }
+
+    fn task(
+        pid: i32,
+        comm: &str,
+        exec_runtime: u64,
+        weight: u64,
+        start_ts: u64,
+        stop_ts: u64,
+        vtime: u64,
+    ) -> QueuedTask {
+        let mut comm_buf = [0; 16];
+        for (idx, byte) in comm.as_bytes().iter().take(comm_buf.len() - 1).enumerate() {
+            comm_buf[idx] = *byte as libc::c_char;
+        }
+
+        QueuedTask {
+            pid,
+            cpu: 0,
+            nr_cpus_allowed: 4,
+            flags: 0,
+            start_ts,
+            stop_ts,
+            exec_runtime,
+            weight,
+            vtime,
+            enq_cnt: 0,
+            comm: comm_buf,
+        }
+    }
+
+    #[test]
+    fn classifies_first_seen_tasks_from_slo_and_runtime_hints() {
+        let opts = opts(&[
+            "--slo-target-us",
+            "10000",
+            "--invocation-comm",
+            "node,bootstrap",
+        ]);
+        let policy = SchedulerPolicy::new(&opts);
+
+        let short_unhinted = task(101, "worker", 5 * MS, 100, 0, 0, 0);
+        let long_hinted = task(102, "node", 80 * MS, 100, 0, 0, 0);
+        let long_background = task(103, "postgres", 80 * MS, 100, 0, 0, 0);
+
+        assert_eq!(policy.classify_task(&short_unhinted), TaskClass::ColdStart);
+        assert_eq!(policy.classify_task(&long_hinted), TaskClass::ColdStart);
+        assert_eq!(
+            policy.classify_task(&long_background),
+            TaskClass::Background
+        );
+    }
+
+    #[test]
+    fn repeated_short_wakeup_becomes_hot_invocation() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+        let mut task = task(201, "python", 4 * MS, 100, 0, 1 * MS, 0);
+
+        let (first_class, _, _) = policy.update_enqueued(&mut task, 1);
+        let (second_class, _, _) = policy.update_enqueued(&mut task, 2);
+
+        assert_eq!(first_class, TaskClass::ColdStart);
+        assert_eq!(second_class, TaskClass::HotInvocation);
+        assert_eq!(policy.nr_cold_start_tasks, 1);
+        assert_eq!(policy.nr_hot_invocation_tasks, 1);
+        assert_eq!(policy.nr_slo_boosted, 2);
+    }
+
+    #[test]
+    fn runtime_history_keeps_long_running_tasks_in_background() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+        let pid = 301;
+        policy.task_state.insert(
+            pid,
+            TaskState {
+                avg_runtime_ns: 25 * MS,
+                wakeups: 5,
+                last_seen_ns: 10,
+            },
+        );
+
+        let task = task(pid, "worker", 4 * MS, 100, 0, 0, 0);
+
+        assert_eq!(policy.classify_task(&task), TaskClass::Background);
+    }
+
+    #[test]
+    fn slo_boost_orders_invocation_work_before_background() {
+        let opts = opts(&["--slo-target-us", "10000", "--cold-start-boost-us", "20000"]);
+        let policy = SchedulerPolicy::new(&opts);
+        let task = task(401, "worker", 0, 100, 0, 0, 100 * MS);
+
+        let cold = policy.task_score(&task, TaskClass::ColdStart);
+        let hot = policy.task_score(&task, TaskClass::HotInvocation);
+        let background = policy.task_score(&task, TaskClass::Background);
+
+        assert!(cold < hot, "cold-start score should dispatch first");
+        assert!(
+            hot < background,
+            "hot invocation score should beat background"
+        );
+    }
+
+    #[test]
+    fn slices_are_latency_oriented_but_respect_minimum() {
+        let opts = opts(&[
+            "--slice-us",
+            "20000",
+            "--slice-us-min",
+            "500",
+            "--slo-target-us",
+            "10000",
+        ]);
+        let policy = SchedulerPolicy::new(&opts);
+        let default_weight = task(501, "worker", 0, 100, 0, 0, 0);
+        let low_weight = task(502, "worker", 0, 10, 0, 0, 0);
+
+        assert_eq!(
+            policy.task_slice_ns(&default_weight, TaskClass::ColdStart),
+            2_500_000
+        );
+        assert_eq!(
+            policy.task_slice_ns(&default_weight, TaskClass::HotInvocation),
+            1_250_000
+        );
+        assert_eq!(
+            policy.task_slice_ns(&default_weight, TaskClass::Background),
+            20_000_000
+        );
+        assert_eq!(
+            policy.task_slice_ns(&low_weight, TaskClass::HotInvocation),
+            500_000
+        );
+    }
+
+    #[test]
+    fn vruntime_accounts_executed_slice_and_task_weight() {
+        let opts = opts(&["--slice-us", "20000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+        let mut default_weight = task(601, "worker", 50 * MS, 100, 2 * MS, 6 * MS, 0);
+        let mut double_weight = task(602, "worker", 50 * MS, 200, 6 * MS, 10 * MS, 0);
+
+        policy.update_vruntime(&mut default_weight);
+        assert_eq!(default_weight.vtime, 4 * MS);
+        assert_eq!(policy.vruntime_now, 4 * MS);
+
+        policy.update_vruntime(&mut double_weight);
+        assert_eq!(double_weight.vtime, 6 * MS);
+        assert_eq!(policy.vruntime_now, 6 * MS);
+    }
+
+    #[test]
+    fn btree_order_uses_score_class_timestamp_and_pid() {
+        let qtask = task(701, "worker", 0, 100, 0, 0, 0);
+        let mut tasks = BTreeSet::new();
+
+        tasks.insert(Task {
+            qtask: task(703, "worker", 0, 100, 0, 0, 0),
+            class: TaskClass::Background,
+            score: 10,
+            timestamp: 1,
+            slice_ns: 1,
+        });
+        tasks.insert(Task {
+            qtask: qtask.clone(),
+            class: TaskClass::ColdStart,
+            score: 10,
+            timestamp: 1,
+            slice_ns: 1,
+        });
+        tasks.insert(Task {
+            qtask: task(702, "worker", 0, 100, 0, 0, 0),
+            class: TaskClass::HotInvocation,
+            score: 10,
+            timestamp: 1,
+            slice_ns: 1,
+        });
+
+        assert_eq!(tasks.pop_first().unwrap().class, TaskClass::ColdStart);
+        assert_eq!(tasks.pop_first().unwrap().class, TaskClass::HotInvocation);
+        assert_eq!(tasks.pop_first().unwrap().class, TaskClass::Background);
+    }
+
+    #[test]
+    fn task_state_pruning_keeps_recent_workers() {
+        let opts = opts(&[]);
+        let mut policy = SchedulerPolicy::new(&opts);
+        let now = TASK_STATE_TTL_NS * 2;
+
+        policy.task_state.insert(
+            801,
+            TaskState {
+                avg_runtime_ns: 1,
+                wakeups: 1,
+                last_seen_ns: now - TASK_STATE_TTL_NS - 1,
+            },
+        );
+        policy.task_state.insert(
+            802,
+            TaskState {
+                avg_runtime_ns: 1,
+                wakeups: 1,
+                last_seen_ns: now - TASK_STATE_TTL_NS + 1,
+            },
+        );
+
+        policy.prune_task_state(now);
+
+        assert!(!policy.task_state.contains_key(&801));
+        assert!(policy.task_state.contains_key(&802));
+    }
 }
