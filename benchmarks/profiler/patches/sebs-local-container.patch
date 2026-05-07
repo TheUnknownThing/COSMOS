@@ -1,0 +1,36 @@
+diff --git a/sebs/faas/container.py b/sebs/faas/container.py
+index c178ac3c..8b5ba0ee 100644
+--- a/sebs/faas/container.py
++++ b/sebs/faas/container.py
+@@ -141,6 +141,12 @@ class DockerContainer(LoggingBase):
+             docker.errors.APIError: If the push operation fails
+             RuntimeError: If an error occurs during the push stream
+         """
++        if os.environ.get("SEBS_SKIP_IMAGE_PUSH") == "1":
++            self.logging.info(
++                f"Skipping Docker image push for {repository_uri}:{image_tag}; "
++                "SEBS_SKIP_IMAGE_PUSH=1"
++            )
++            return
+         DockerImageBuilder.push_image_with_progress(
+             self.docker_client,
+             repository_uri,
+@@ -304,9 +310,15 @@ class DockerContainer(LoggingBase):
+         }
+ 
+         try:
+-            image, _ = self.docker_client.images.build(
+-                tag=image_uri, path=build_dir, buildargs=buildargs
+-            )
++            build_kwargs = {
++                "tag": image_uri,
++                "path": build_dir,
++                "buildargs": buildargs,
++            }
++            build_network = os.environ.get("SEBS_DOCKER_BUILD_NETWORK")
++            if build_network:
++                build_kwargs["network_mode"] = build_network
++            image, _ = self.docker_client.images.build(**build_kwargs)
+         except docker.errors.BuildError as e:
+             self.logging.error("Docker build failed!")
+ 

@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "notes": [
+    "openwhisk_standalone means the workload is expected to run through SeBS' OpenWhisk backend on a single-host OpenWhisk standalone deployment.",
+    "local_standalone means the workload can be run directly by cosmos-bench-profiler standalone --workload command without depending on OpenWhisk activation semantics."
+  ],
+  "workloads": [
+    {
+      "id": "010.sleep",
+      "name": "sleep",
+      "languages": ["nodejs", "python", "java", "cpp"],
+      "openwhisk_standalone": true,
+      "local_standalone": true,
+      "required_services": [],
+      "blockers": ["low resource signal; useful only as a lifecycle/control workload"]
+    },
+    {
+      "id": "110.dynamic-html",
+      "name": "dynamic-html",
+      "languages": ["nodejs", "python", "java"],
+      "openwhisk_standalone": true,
+      "local_standalone": true,
+      "required_services": [],
+      "blockers": []
+    },
+    {
+      "id": "120.uploader",
+      "name": "uploader",
+      "languages": ["nodejs", "python"],
+      "openwhisk_standalone": true,
+      "local_standalone": false,
+      "required_services": ["object-storage", "external-download"],
+      "blockers": ["needs SeBS storage binding and object setup before a faithful local adapter is available"]
+    },
+    {
+      "id": "210.thumbnailer",
+      "name": "thumbnailer",
+      "languages": ["nodejs", "python", "cpp"],
+      "openwhisk_standalone": true,
+      "local_standalone": false,
+      "required_services": ["object-storage"],
+      "blockers": ["needs storage-backed input/output adapter for standalone mode"]
+    },
+    {
+      "id": "220.video-processing",
+      "name": "video-processing",
+      "languages": ["python"],
+      "openwhisk_standalone": false,
+      "local_standalone": false,
+      "required_services": ["object-storage", "ffmpeg"],
+      "blockers": ["Python OpenWhisk packaging/build dependencies were unavailable or stalled in this environment"]
+    },
+    {
+      "id": "311.compression",
+      "name": "compression",
+      "languages": ["nodejs", "python"],
+      "openwhisk_standalone": true,
+      "local_standalone": false,
+      "required_services": ["object-storage"],
+      "blockers": ["standalone mode needs storage-backed input/output adapter"]
+    },
+    {
+      "id": "411.image-recognition",
+      "name": "image-recognition",
+      "languages": ["python", "cpp"],
+      "openwhisk_standalone": false,
+      "local_standalone": false,
+      "required_services": ["object-storage", "model-assets"],
+      "blockers": ["requires model/runtime assets that are not part of the current standalone harness"]
+    },
+    {
+      "id": "501.graph-pagerank",
+      "name": "pagerank",
+      "languages": ["python", "cpp"],
+      "openwhisk_standalone": false,
+      "local_standalone": false,
+      "required_services": [],
+      "blockers": ["Python OpenWhisk packaging/build dependencies were unavailable or stalled in this environment"]
+    },
+    {
+      "id": "503.graph-bfs",
+      "name": "bfs",
+      "languages": ["python", "cpp"],
+      "openwhisk_standalone": false,
+      "local_standalone": false,
+      "required_services": [],
+      "blockers": ["no verified OpenWhisk standalone or local adapter path in this environment"]
+    },
+    {
+      "id": "020.network-benchmark",
+      "name": "network-benchmark",
+      "languages": ["python"],
+      "openwhisk_standalone": false,
+      "local_standalone": false,
+      "required_services": ["external-server"],
+      "blockers": ["requires a coordinated external network server"]
+    },
+    {
+      "id": "030.clock-synchronization",
+      "name": "clock-synchronization",
+      "languages": ["python"],
+      "openwhisk_standalone": false,
+      "local_standalone": false,
+      "required_services": ["udp-coordination"],
+      "blockers": ["requires UDP coordination outside the current standalone harness"]
+    },
+    {
+      "id": "040.server-reply",
+      "name": "server-reply",
+      "languages": ["python"],
+      "openwhisk_standalone": false,
+      "local_standalone": false,
+      "required_services": ["external-server"],
+      "blockers": ["requires an additional external reply server"]
+    },
+    {
+      "id": "130.crud-api",
+      "name": "crud-api",
+      "languages": ["nodejs", "python"],
+      "openwhisk_standalone": false,
+      "local_standalone": false,
+      "required_services": ["nosql-storage"],
+      "blockers": ["requires NoSQL service setup not provided by the current suite"]
+    }
+  ]
+}

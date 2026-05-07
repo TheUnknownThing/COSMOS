@@ -135,6 +135,8 @@ enum MatrixKind {
     Sanity,
     Profile,
     Interference,
+    SebsOpenwhisk,
+    SebsStandalone,
 }
 
 #[derive(Debug, Args)]
@@ -154,6 +156,9 @@ struct StandaloneArgs {
     name: String,
     #[arg(long, value_enum, default_value_t = WorkloadKind::Cpu)]
     workload: WorkloadKind,
+    /// Stable workload label stored in run_meta.json. Defaults to --workload.
+    #[arg(long)]
+    workload_label: Option<String>,
     #[arg(long, default_value = "small")]
     input: String,
     #[arg(long, default_value = "warm")]
@@ -219,6 +224,9 @@ struct OpenWhiskArgs {
     /// Maximum time to poll Docker for the action container after invoke exits.
     #[arg(long, default_value_t = 2000)]
     docker_grace_ms: u64,
+    /// Maximum time to poll for the activation document after invoke exits.
+    #[arg(long, default_value_t = 90000)]
+    activation_fetch_timeout_ms: u64,
 }
 
 #[derive(Debug, Args)]
@@ -335,6 +343,14 @@ struct NetSample {
     source: String,
     rx_bytes: u64,
     tx_bytes: u64,
+    rx_packets: u64,
+    tx_packets: u64,
+}
+
+#[derive(Debug, Clone)]
+struct NetAttribution {
+    host_pid: u32,
+    host_veth: Option<String>,
 }
 
 struct InvokeResult {
@@ -343,6 +359,7 @@ struct InvokeResult {
     first_byte_ns: Option<u128>,
     response_end_ns: u128,
     timing_source: String,
+    container: Option<ContainerInfo>,
 }
 
 struct CurlTiming {
@@ -361,6 +378,7 @@ struct ContainerInfo {
     name: String,
     host_pid: u32,
     cgroup_path: PathBuf,
+    net: Option<NetAttribution>,
 }
 
 fn main() -> Result<()> {
@@ -547,8 +565,13 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
 
     let (cgroup_path, cgroup_fallback) = create_run_cgroup(&run_id, args.allow_cgroup_fallback)?;
     let command = workload_command(args.workload, args.duration_ms, &args.command)?;
+    let workload_label = args
+        .workload_label
+        .clone()
+        .unwrap_or_else(|| format!("{:?}", args.workload).to_lowercase());
     let config_hash = stable_hash(&json!({
         "workload": args.workload,
+        "workload_label": workload_label,
         "input": args.input,
         "warmth": args.warmth,
         "duration_ms": args.duration_ms,
@@ -558,7 +581,7 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
 
     let meta = RunMeta {
         run_id: run_id.clone(),
-        workload: format!("{:?}", args.workload).to_lowercase(),
+        workload: workload_label,
         input: args.input.clone(),
         warmth: args.warmth.clone(),
         sample_ms: args.sample_ms,
@@ -728,6 +751,7 @@ fn openwhisk(args: OpenWhiskArgs) -> Result<()> {
             "param_files": args.param_files,
             "input": args.input,
             "warmth": args.warmth,
+            "activation_fetch_timeout_ms": args.activation_fetch_timeout_ms,
         })),
     };
     write_json(&run_dir.join("run_meta.json"), &meta)?;
@@ -779,11 +803,14 @@ fn openwhisk(args: OpenWhiskArgs) -> Result<()> {
     });
     write_json(&run_dir.join("openwhisk_activation.json"), &activation)?;
 
-    let container = find_openwhisk_container(&args.action);
-    if let Ok(info) = &container {
+    let container = invoke_result
+        .container
+        .clone()
+        .or_else(|| find_openwhisk_container(&args.action).ok());
+    if let Some(info) = &container {
         meta.cgroup_path = info.cgroup_path.display().to_string();
         write_json(&run_dir.join("run_meta.json"), &meta)?;
-        sample_once(&run_dir, &info.cgroup_path)?;
+        sample_once_attributed(&run_dir, &info.cgroup_path, info.net.as_ref())?;
     }
     if fs::metadata(run_dir.join("perf_stat.csv"))
         .map(|m| m.len())
@@ -806,16 +833,25 @@ fn openwhisk(args: OpenWhiskArgs) -> Result<()> {
     let init_ns = millis_to_ns(normalized.get("init_time"));
     let run_ns = millis_to_ns_u64(normalized.get("duration"))
         .unwrap_or_else(|| end_ns.saturating_sub(send_ns) as u64);
-    let (container_id, container_name, host_pid, cgroup_path) = container
+    let (container_id, container_name, host_pid, cgroup_path, host_veth) = container
         .map(|info| {
             (
                 Value::String(info.id),
                 Value::String(info.name),
                 json!(info.host_pid),
                 Value::String(info.cgroup_path.display().to_string()),
+                info.net
+                    .and_then(|net| net.host_veth.map(Value::String))
+                    .unwrap_or(Value::Null),
             )
         })
-        .unwrap_or((Value::Null, Value::Null, Value::Null, Value::Null));
+        .unwrap_or((
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+        ));
 
     append_event(
         &run_dir,
@@ -830,6 +866,7 @@ fn openwhisk(args: OpenWhiskArgs) -> Result<()> {
             "container_name": container_name,
             "host_pid": host_pid,
             "cgroup_path": cgroup_path,
+            "host_veth": host_veth,
             "reuse_age_ns": Value::Null,
             "queue_wait_ns": wait_ns,
             "init_ns": init_ns,
@@ -1131,60 +1168,118 @@ fn run_invoke_with_sampling(
         .create(true)
         .open(run_dir.join("stderr.log"))?;
     let stdout_read = stdout_file.try_clone()?;
-    let mut child = Command::new(&command[0])
+    let mut docker_events = spawn_docker_events(run_dir, send_ns).ok();
+    let mut child = match Command::new(&command[0])
         .args(&command[1..])
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
         .spawn()
-        .with_context(|| format!("spawn {}", command.join(" ")))?;
+    {
+        Ok(child) => child,
+        Err(err) => {
+            if let Some(mut docker_events) = docker_events.take() {
+                let _ = docker_events.kill();
+                let _ = docker_events.wait();
+            }
+            return Err(err).with_context(|| format!("spawn {}", command.join(" ")));
+        }
+    };
 
+    let host_stop = Arc::new(AtomicBool::new(false));
+    let host_sampler = spawn_host_sampler(run_dir.to_path_buf(), args.sample_ms, host_stop.clone());
     let mut discovered: Option<ContainerInfo> = None;
     let mut perf_child: Option<Child> = None;
     let mut scheduler = SchedulerStatsSampler::new();
     let mut last_sample = Instant::now()
         .checked_sub(Duration::from_millis(args.sample_ms))
         .unwrap_or_else(Instant::now);
-    let status = loop {
-        if discovered.is_none() {
-            if let Ok(info) = find_openwhisk_container(&args.action) {
-                sample_once_with_scheduler(run_dir, &info.cgroup_path, &mut scheduler)?;
-                perf_child = spawn_perf(
-                    info.host_pid,
-                    Some(&info.cgroup_path),
-                    &run_dir.join("perf_stat.csv"),
-                    10_000,
-                )
-                .ok();
-                discovered = Some(info);
+    let status = match (|| -> Result<ExitStatus> {
+        let status = loop {
+            if discovered.is_none() {
+                if let Ok(info) = find_openwhisk_container(&args.action) {
+                    append_container_discovered_event(run_dir, &info, send_ns)?;
+                    sample_once_with_scheduler(
+                        run_dir,
+                        &info.cgroup_path,
+                        info.net.as_ref(),
+                        &mut scheduler,
+                    )?;
+                    perf_child = spawn_perf(
+                        info.host_pid,
+                        Some(&info.cgroup_path),
+                        &run_dir.join("perf_stat.csv"),
+                        10_000,
+                    )
+                    .ok();
+                    discovered = Some(info);
+                }
             }
-        }
-        if let Some(info) = &discovered {
-            if last_sample.elapsed() >= Duration::from_millis(args.sample_ms) {
-                sample_once_with_scheduler(run_dir, &info.cgroup_path, &mut scheduler)?;
-                last_sample = Instant::now();
+            if let Some(info) = &discovered {
+                if last_sample.elapsed() >= Duration::from_millis(args.sample_ms) {
+                    sample_once_with_scheduler(
+                        run_dir,
+                        &info.cgroup_path,
+                        info.net.as_ref(),
+                        &mut scheduler,
+                    )?;
+                    last_sample = Instant::now();
+                }
             }
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        Ok(status)
+    })() {
+        Ok(status) => status,
+        Err(err) => {
+            host_stop.store(true, Ordering::SeqCst);
+            let _ = host_sampler.join();
+            if let Some(mut docker_events) = docker_events.take() {
+                let _ = docker_events.kill();
+                let _ = docker_events.wait();
+            }
+            return Err(err);
         }
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        thread::sleep(Duration::from_millis(20));
     };
 
     let deadline = Instant::now() + Duration::from_millis(args.docker_grace_ms);
     while discovered.is_none() && Instant::now() < deadline {
         if let Ok(info) = find_openwhisk_container(&args.action) {
-            sample_once_with_scheduler(run_dir, &info.cgroup_path, &mut scheduler)?;
+            append_container_discovered_event(run_dir, &info, send_ns)?;
+            sample_once_with_scheduler(
+                run_dir,
+                &info.cgroup_path,
+                info.net.as_ref(),
+                &mut scheduler,
+            )?;
             discovered = Some(info);
             break;
         }
         thread::sleep(Duration::from_millis(50));
     }
     if let Some(info) = &discovered {
-        sample_once_with_scheduler(run_dir, &info.cgroup_path, &mut scheduler)?;
+        sample_once_with_scheduler(
+            run_dir,
+            &info.cgroup_path,
+            info.net.as_ref(),
+            &mut scheduler,
+        )?;
     }
     if let Some(perf) = perf_child.as_mut() {
         let _ = perf.wait();
     }
+    host_stop.store(true, Ordering::SeqCst);
+    let host_result = match host_sampler.join() {
+        Ok(result) => result,
+        Err(_) => bail!("host sampler thread panicked"),
+    };
+    if let Some(mut docker_events) = docker_events.take() {
+        let _ = docker_events.kill();
+        let _ = docker_events.wait();
+    }
+    host_result?;
     if perf_child.is_none() {
         write_perf_skipped(
             &run_dir.join("perf_stat.csv"),
@@ -1220,7 +1315,43 @@ fn run_invoke_with_sampling(
         first_byte_ns,
         response_end_ns,
         timing_source,
+        container: discovered,
     })
+}
+
+fn spawn_docker_events(run_dir: &Path, send_ns: u128) -> Result<Child> {
+    let stdout = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(run_dir.join("docker_events.jsonl"))?;
+    let since = (send_ns / 1_000_000_000).to_string();
+    Command::new("docker")
+        .args(["events", "--since", &since, "--format", "{{json .}}"])
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::null())
+        .spawn()
+        .context("spawn docker events")
+}
+
+fn append_container_discovered_event(
+    run_dir: &Path,
+    info: &ContainerInfo,
+    send_ns: u128,
+) -> Result<()> {
+    let timestamp_ns = now_ns();
+    append_event(
+        run_dir,
+        &json!({
+            "event": "container_discovered",
+            "timestamp_ns": timestamp_ns,
+            "elapsed_since_send_ns": timestamp_ns.saturating_sub(send_ns),
+            "container_id": info.id,
+            "container_name": info.name,
+            "host_pid": info.host_pid,
+            "cgroup_path": info.cgroup_path,
+            "host_veth": info.net.as_ref().and_then(|net| net.host_veth.clone()),
+        }),
+    )
 }
 
 fn parse_curl_timing(stdout: &str) -> Option<CurlTiming> {
@@ -1246,6 +1377,21 @@ fn parse_seconds_as_ns(raw: &str) -> Option<u128> {
 }
 
 fn fetch_activation(args: &OpenWhiskArgs, activation_id: &str) -> Result<Value> {
+    let deadline = Instant::now() + Duration::from_millis(args.activation_fetch_timeout_ms);
+    loop {
+        match fetch_activation_once(args, activation_id) {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(err);
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+}
+
+fn fetch_activation_once(args: &OpenWhiskArgs, activation_id: &str) -> Result<Value> {
     let command = wsk_activation_get_command(args, activation_id);
     let output = Command::new(&command[0])
         .args(&command[1..])
@@ -1327,11 +1473,16 @@ fn inspect_container(id: &str, fallback_name: &str) -> Result<ContainerInfo> {
         .trim_start_matches('/')
         .to_string();
     let cgroup_path = pid_cgroup_path(host_pid)?;
+    let net = Some(NetAttribution {
+        host_pid,
+        host_veth: host_veth_for_pid(host_pid),
+    });
     Ok(ContainerInfo {
         id,
         name,
         host_pid,
         cgroup_path,
+        net,
     })
 }
 
@@ -1344,6 +1495,44 @@ fn pid_cgroup_path(pid: u32) -> Result<PathBuf> {
         }
     }
     bail!("cgroup v2 path not found for pid {pid}");
+}
+
+fn host_veth_for_pid(pid: u32) -> Option<String> {
+    let iflink = container_iflink(pid, "eth0")?;
+    host_netdev_by_ifindex(iflink)
+}
+
+fn container_iflink(pid: u32, iface: &str) -> Option<u64> {
+    if let Some(nsenter) = command_path("nsenter") {
+        let pid_s = pid.to_string();
+        let iflink_path = format!("/sys/class/net/{iface}/iflink");
+        if let Some(iflink) = Command::new(nsenter)
+            .args(["-t", &pid_s, "-n", "cat", &iflink_path])
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|output| String::from_utf8_lossy(&output.stdout).trim().parse().ok())
+        {
+            return Some(iflink);
+        }
+    }
+    fs::read_to_string(format!("/proc/{pid}/root/sys/class/net/{iface}/iflink"))
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+}
+
+fn host_netdev_by_ifindex(ifindex: u64) -> Option<String> {
+    for entry in fs::read_dir("/sys/class/net").ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let value = fs::read_to_string(entry.path().join("ifindex"))
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok());
+        if value == Some(ifindex) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn docker_action_key(action: &str) -> String {
@@ -1414,12 +1603,29 @@ fn initialize_output_files(run_dir: &Path) -> Result<()> {
     )?;
     write_if_missing(
         &run_dir.join("net.csv"),
-        "timestamp_ns,scope,source,rx_bytes,tx_bytes\n",
+        "timestamp_ns,scope,source,rx_bytes,tx_bytes,rx_packets,tx_packets\n",
     )?;
     write_if_missing(
         &run_dir.join("qdisc.csv"),
         "timestamp_ns,scope,source,dev,kind,bytes,packets,drops,overlimits,requeues,backlog_bytes,backlog_packets\n",
     )?;
+    write_if_missing(
+        &run_dir.join("host_cpu.csv"),
+        "timestamp_ns,user,nice,system,idle,iowait,irq,softirq,steal,guest,guest_nice\n",
+    )?;
+    write_if_missing(
+        &run_dir.join("host_memory.csv"),
+        "timestamp_ns,mem_total_bytes,mem_available_bytes,buffers_bytes,cached_bytes,swap_total_bytes,swap_free_bytes\n",
+    )?;
+    write_if_missing(
+        &run_dir.join("host_pressure.csv"),
+        "timestamp_ns,resource,scope,avg10,avg60,avg300,total\n",
+    )?;
+    write_if_missing(
+        &run_dir.join("process_stats.csv"),
+        "timestamp_ns,target,pid,utime_ticks,stime_ticks,rss_pages,read_bytes,write_bytes,cmdline\n",
+    )?;
+    write_if_missing(&run_dir.join("docker_events.jsonl"), "")?;
     write_if_missing(
         &run_dir.join("client_latency.csv"),
         "run_id,activation_id,send_ns,first_byte_ns,response_end_ns,status,timing_source,error\n",
@@ -1452,22 +1658,42 @@ fn spawn_sampler(
     thread::spawn(move || {
         let mut scheduler = SchedulerStatsSampler::new();
         while !stop.load(Ordering::SeqCst) {
-            sample_once_with_scheduler(&run_dir, &cgroup_path, &mut scheduler)?;
+            sample_once_with_scheduler(&run_dir, &cgroup_path, None, &mut scheduler)?;
             thread::sleep(Duration::from_millis(sample_ms));
         }
-        sample_once_with_scheduler(&run_dir, &cgroup_path, &mut scheduler)?;
+        sample_once_with_scheduler(&run_dir, &cgroup_path, None, &mut scheduler)?;
         Ok(())
     })
 }
 
-fn sample_once(run_dir: &Path, cgroup_path: &Path) -> Result<()> {
+fn spawn_host_sampler(
+    run_dir: PathBuf,
+    sample_ms: u64,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<Result<()>> {
+    thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            sample_host_once(&run_dir)?;
+            thread::sleep(Duration::from_millis(sample_ms));
+        }
+        sample_host_once(&run_dir)?;
+        Ok(())
+    })
+}
+
+fn sample_once_attributed(
+    run_dir: &Path,
+    cgroup_path: &Path,
+    net: Option<&NetAttribution>,
+) -> Result<()> {
     let mut scheduler = SchedulerStatsSampler::new();
-    sample_once_with_scheduler(run_dir, cgroup_path, &mut scheduler)
+    sample_once_with_scheduler(run_dir, cgroup_path, net, &mut scheduler)
 }
 
 fn sample_once_with_scheduler(
     run_dir: &Path,
     cgroup_path: &Path,
+    net: Option<&NetAttribution>,
     scheduler: &mut SchedulerStatsSampler,
 ) -> Result<()> {
     let ts = now_ns();
@@ -1520,17 +1746,188 @@ fn sample_once_with_scheduler(
         append_pressure(run_dir, cgroup_path, resource, ts)?;
     }
 
-    let net = read_net_dev();
+    let net_sample = read_net_sample(net);
     append_line(
         &run_dir.join("net.csv"),
         &format!(
-            "{ts},{},{},{},{}\n",
-            net.scope, net.source, net.rx_bytes, net.tx_bytes
+            "{ts},{},{},{},{},{},{}\n",
+            net_sample.scope,
+            net_sample.source,
+            net_sample.rx_bytes,
+            net_sample.tx_bytes,
+            net_sample.rx_packets,
+            net_sample.tx_packets
         ),
     )?;
-    append_qdisc(run_dir, ts)?;
+    append_qdisc(
+        run_dir,
+        ts,
+        net.and_then(|attribution| attribution.host_veth.as_deref()),
+    )?;
     scheduler.sample(run_dir, ts)?;
     Ok(())
+}
+
+fn sample_host_once(run_dir: &Path) -> Result<()> {
+    let ts = now_ns();
+    append_host_cpu(run_dir, ts)?;
+    append_host_memory(run_dir, ts)?;
+    append_host_pressure(run_dir, ts)?;
+    append_process_stats(run_dir, ts)?;
+    Ok(())
+}
+
+fn append_host_cpu(run_dir: &Path, ts: u128) -> Result<()> {
+    let Ok(stat) = fs::read_to_string("/proc/stat") else {
+        return Ok(());
+    };
+    let Some(cpu_line) = stat.lines().find(|line| line.starts_with("cpu ")) else {
+        return Ok(());
+    };
+    let mut values: Vec<u64> = cpu_line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|raw| raw.parse().ok())
+        .collect();
+    values.resize(10, 0);
+    append_line(
+        &run_dir.join("host_cpu.csv"),
+        &format!(
+            "{ts},{},{},{},{},{},{},{},{},{},{}\n",
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+            values[4],
+            values[5],
+            values[6],
+            values[7],
+            values[8],
+            values[9]
+        ),
+    )
+}
+
+fn append_host_memory(run_dir: &Path, ts: u128) -> Result<()> {
+    let mem = read_meminfo();
+    append_line(
+        &run_dir.join("host_memory.csv"),
+        &format!(
+            "{ts},{},{},{},{},{},{}\n",
+            value(&mem, "MemTotal"),
+            value(&mem, "MemAvailable"),
+            value(&mem, "Buffers"),
+            value(&mem, "Cached"),
+            value(&mem, "SwapTotal"),
+            value(&mem, "SwapFree")
+        ),
+    )
+}
+
+fn read_meminfo() -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    let Ok(file) = File::open("/proc/meminfo") else {
+        return out;
+    };
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let mut parts = line.split_whitespace();
+        let Some(key) = parts.next().map(|key| key.trim_end_matches(':')) else {
+            continue;
+        };
+        let Some(raw) = parts.next() else {
+            continue;
+        };
+        if let Ok(kib) = raw.parse::<u64>() {
+            out.insert(key.to_string(), kib.saturating_mul(1024));
+        }
+    }
+    out
+}
+
+fn append_host_pressure(run_dir: &Path, ts: u128) -> Result<()> {
+    for resource in ["cpu", "memory", "io"] {
+        let path = Path::new("/proc/pressure").join(resource);
+        let Ok(file) = File::open(path) else {
+            continue;
+        };
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            append_pressure_line(run_dir, "host_pressure.csv", resource, ts, &line)?;
+        }
+    }
+    Ok(())
+}
+
+fn append_process_stats(run_dir: &Path, ts: u128) -> Result<()> {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let pid = entry.file_name().to_string_lossy().parse::<u32>().ok();
+        let Some(pid) = pid else {
+            continue;
+        };
+        let proc_dir = entry.path();
+        let cmdline = read_cmdline(&proc_dir);
+        let Some(target) = process_target(&cmdline) else {
+            continue;
+        };
+        let Some((utime, stime, rss)) = read_proc_stat(&proc_dir) else {
+            continue;
+        };
+        let io = read_key_values(&proc_dir.join("io"));
+        append_line(
+            &run_dir.join("process_stats.csv"),
+            &format!(
+                "{ts},{},{pid},{utime},{stime},{},{},{},{}\n",
+                target,
+                rss,
+                value(&io, "read_bytes"),
+                value(&io, "write_bytes"),
+                csv_field(&cmdline)
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn read_cmdline(proc_dir: &Path) -> String {
+    fs::read(proc_dir.join("cmdline"))
+        .ok()
+        .map(|bytes| {
+            bytes
+                .split(|byte| *byte == 0)
+                .filter(|part| !part.is_empty())
+                .map(|part| String::from_utf8_lossy(part))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+}
+
+fn process_target(cmdline: &str) -> Option<&'static str> {
+    if cmdline.contains("openwhisk-standalone.jar") {
+        Some("openwhisk-standalone")
+    } else if cmdline.contains("dockerd") {
+        Some("dockerd")
+    } else if cmdline.contains("containerd-shim") {
+        Some("containerd-shim")
+    } else if cmdline.contains("containerd") {
+        Some("containerd")
+    } else if cmdline.contains(" runc ") || cmdline.ends_with("/runc") || cmdline == "runc" {
+        Some("runc")
+    } else {
+        None
+    }
+}
+
+fn read_proc_stat(proc_dir: &Path) -> Option<(u64, u64, i64)> {
+    let stat = fs::read_to_string(proc_dir.join("stat")).ok()?;
+    let end_comm = stat.rfind(") ")?;
+    let fields: Vec<&str> = stat[end_comm + 2..].split_whitespace().collect();
+    let utime = fields.get(11)?.parse().ok()?;
+    let stime = fields.get(12)?.parse().ok()?;
+    let rss = fields.get(21)?.parse().ok()?;
+    Some((utime, stime, rss))
 }
 
 impl SchedulerStatsSampler {
@@ -1645,7 +2042,7 @@ fn read_key_values(path: &Path) -> BTreeMap<String, u64> {
         let mut parts = line.split_whitespace();
         if let (Some(key), Some(raw)) = (parts.next(), parts.next()) {
             if let Ok(value) = raw.parse() {
-                out.insert(key.to_string(), value);
+                out.insert(key.trim_end_matches(':').to_string(), value);
             }
         }
     }
@@ -1686,54 +2083,114 @@ fn append_pressure(run_dir: &Path, cgroup_path: &Path, resource: &str, ts: u128)
         return Ok(());
     };
     for line in BufReader::new(file).lines().map_while(Result::ok) {
-        let mut parts = line.split_whitespace();
-        let Some(scope) = parts.next() else {
-            continue;
-        };
-        let mut vals = BTreeMap::new();
-        for token in parts {
-            if let Some((key, raw)) = token.split_once('=') {
-                vals.insert(key, raw);
-            }
-        }
-        append_line(
-            &run_dir.join("cgroup_pressure.csv"),
-            &format!(
-                "{ts},{resource},{scope},{},{},{},{}\n",
-                vals.get("avg10").copied().unwrap_or("0"),
-                vals.get("avg60").copied().unwrap_or("0"),
-                vals.get("avg300").copied().unwrap_or("0"),
-                vals.get("total").copied().unwrap_or("0")
-            ),
-        )?;
+        append_pressure_line(run_dir, "cgroup_pressure.csv", resource, ts, &line)?;
     }
     Ok(())
 }
 
-fn read_net_dev() -> NetSample {
+fn append_pressure_line(
+    run_dir: &Path,
+    file_name: &str,
+    resource: &str,
+    ts: u128,
+    line: &str,
+) -> Result<()> {
+    let mut parts = line.split_whitespace();
+    let Some(scope) = parts.next() else {
+        return Ok(());
+    };
+    let mut vals = BTreeMap::new();
+    for token in parts {
+        if let Some((key, raw)) = token.split_once('=') {
+            vals.insert(key, raw);
+        }
+    }
+    append_line(
+        &run_dir.join(file_name),
+        &format!(
+            "{ts},{resource},{scope},{},{},{},{}\n",
+            vals.get("avg10").copied().unwrap_or("0"),
+            vals.get("avg60").copied().unwrap_or("0"),
+            vals.get("avg300").copied().unwrap_or("0"),
+            vals.get("total").copied().unwrap_or("0")
+        ),
+    )
+}
+
+fn read_net_sample(attribution: Option<&NetAttribution>) -> NetSample {
+    attribution
+        .and_then(read_container_net_dev)
+        .unwrap_or_else(read_host_net_dev)
+}
+
+fn read_host_net_dev() -> NetSample {
+    fs::read_to_string("/proc/net/dev")
+        .ok()
+        .map(|text| parse_net_dev(&text, "host", "/proc/net/dev", true))
+        .unwrap_or_else(|| NetSample {
+            scope: "host".to_string(),
+            source: "/proc/net/dev".to_string(),
+            ..NetSample::default()
+        })
+}
+
+fn read_container_net_dev(attribution: &NetAttribution) -> Option<NetSample> {
+    if pid_uses_host_netns(attribution.host_pid) {
+        return None;
+    }
+    let path = format!("/proc/{}/net/dev", attribution.host_pid);
+    let text = fs::read_to_string(&path).ok()?;
+    if !netdev_has_iface(&text, "eth0") {
+        return None;
+    }
+    let source = attribution
+        .host_veth
+        .as_ref()
+        .map(|veth| format!("{path}:host_veth={veth}"))
+        .unwrap_or(path);
+    Some(parse_net_dev(&text, "container", &source, false))
+}
+
+fn netdev_has_iface(text: &str, wanted: &str) -> bool {
+    text.lines()
+        .skip(2)
+        .filter_map(|line| line.split_once(':').map(|(iface, _)| iface.trim()))
+        .any(|iface| iface == wanted)
+}
+
+fn pid_uses_host_netns(pid: u32) -> bool {
+    fs::read_link(format!("/proc/{pid}/ns/net"))
+        .ok()
+        .zip(fs::read_link("/proc/self/ns/net").ok())
+        .map(|(pid_ns, self_ns)| pid_ns == self_ns)
+        .unwrap_or(false)
+}
+
+fn parse_net_dev(text: &str, scope: &str, source: &str, include_loopback: bool) -> NetSample {
     let mut sample = NetSample {
-        scope: "host".to_string(),
-        source: "/proc/net/dev".to_string(),
-        rx_bytes: 0,
-        tx_bytes: 0,
+        scope: scope.to_string(),
+        source: source.to_string(),
+        ..NetSample::default()
     };
-    let Ok(file) = File::open("/proc/net/dev") else {
-        return sample;
-    };
-    for line in BufReader::new(file).lines().map_while(Result::ok).skip(2) {
-        let Some((_iface, rest)) = line.split_once(':') else {
+    for line in text.lines().skip(2) {
+        let Some((iface, rest)) = line.split_once(':') else {
             continue;
         };
+        if !include_loopback && iface.trim() == "lo" {
+            continue;
+        }
         let fields: Vec<&str> = rest.split_whitespace().collect();
         if fields.len() >= 16 {
             sample.rx_bytes += fields[0].parse::<u64>().unwrap_or(0);
+            sample.rx_packets += fields[1].parse::<u64>().unwrap_or(0);
             sample.tx_bytes += fields[8].parse::<u64>().unwrap_or(0);
+            sample.tx_packets += fields[9].parse::<u64>().unwrap_or(0);
         }
     }
     sample
 }
 
-fn append_qdisc(run_dir: &Path, ts: u128) -> Result<()> {
+fn append_qdisc(run_dir: &Path, ts: u128, only_dev: Option<&str>) -> Result<()> {
     let Some(tc) = command_path("tc") else {
         return Ok(());
     };
@@ -1755,6 +2212,10 @@ fn append_qdisc(run_dir: &Path, ts: u128) -> Result<()> {
                 .find(|pair| pair[0] == "dev")
                 .map(|pair| pair[1].to_string())
                 .unwrap_or_else(|| "unknown".to_string());
+            if only_dev.map(|wanted| wanted != dev).unwrap_or(false) {
+                current = None;
+                continue;
+            }
             current = Some((dev, kind));
         } else if trimmed.starts_with("Sent ") {
             let Some((dev, kind)) = &current else {
@@ -1766,10 +2227,15 @@ fn append_qdisc(run_dir: &Path, ts: u128) -> Result<()> {
             let drops = numbers.get(2).copied().unwrap_or(0);
             let overlimits = numbers.get(3).copied().unwrap_or(0);
             let requeues = numbers.get(4).copied().unwrap_or(0);
+            let scope = if only_dev.is_some() {
+                "container"
+            } else {
+                "host"
+            };
             append_line(
                 &run_dir.join("qdisc.csv"),
                 &format!(
-                    "{ts},host,tc-qdisc,{dev},{kind},{bytes},{packets},{drops},{overlimits},{requeues},0,0\n"
+                    "{ts},{scope},tc-qdisc,{dev},{kind},{bytes},{packets},{drops},{overlimits},{requeues},0,0\n"
                 ),
             )?;
         } else if trimmed.starts_with("backlog ") {
@@ -1777,10 +2243,15 @@ fn append_qdisc(run_dir: &Path, ts: u128) -> Result<()> {
                 continue;
             };
             let numbers = numbers_in(trimmed);
+            let scope = if only_dev.is_some() {
+                "container"
+            } else {
+                "host"
+            };
             append_line(
                 &run_dir.join("qdisc.csv"),
                 &format!(
-                    "{ts},host,tc-qdisc,{dev},{kind},0,0,0,0,0,{},{}\n",
+                    "{ts},{scope},tc-qdisc,{dev},{kind},0,0,0,0,0,{},{}\n",
                     numbers.first().copied().unwrap_or(0),
                     numbers.get(1).copied().unwrap_or(0)
                 ),
@@ -2070,7 +2541,103 @@ fn read_resource_summary(run_dir: &Path) -> Result<BTreeMap<String, Value>> {
     for (key, value) in read_scheduler_summary(&run_dir.join("scheduler_stats.csv"))? {
         out.insert(key, json!(value));
     }
+    for (key, value) in read_host_resource_summary(run_dir)? {
+        out.insert(key, value);
+    }
     Ok(out)
+}
+
+fn read_host_resource_summary(run_dir: &Path) -> Result<BTreeMap<String, Value>> {
+    let mut out = BTreeMap::new();
+    let cpu_rows = data_rows(read_csv_rows(&run_dir.join("host_cpu.csv"))?);
+    if let (Some(first), Some(last)) = (cpu_rows.first(), cpu_rows.last()) {
+        let first_values: Vec<u64> = first.iter().skip(1).map(|raw| parse_u64(raw)).collect();
+        let last_values: Vec<u64> = last.iter().skip(1).map(|raw| parse_u64(raw)).collect();
+        let first_total: u64 = first_values.iter().sum();
+        let last_total: u64 = last_values.iter().sum();
+        let total = last_total.saturating_sub(first_total);
+        let idle = last_values
+            .get(3)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(first_values.get(3).copied().unwrap_or(0))
+            .saturating_add(
+                last_values
+                    .get(4)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(first_values.get(4).copied().unwrap_or(0)),
+            );
+        out.insert("host_cpu_total_jiffies".to_string(), json!(total));
+        out.insert(
+            "host_cpu_busy_jiffies".to_string(),
+            json!(total.saturating_sub(idle)),
+        );
+    }
+
+    let mem_rows = data_rows(read_csv_rows(&run_dir.join("host_memory.csv"))?);
+    let min_available = mem_rows
+        .iter()
+        .filter_map(|row| row.get(2).map(|raw| parse_u64(raw)))
+        .min()
+        .unwrap_or(0);
+    if min_available > 0 {
+        out.insert(
+            "host_min_mem_available_bytes".to_string(),
+            json!(min_available),
+        );
+    }
+
+    for (target, cpu_ticks, read_bytes, write_bytes) in
+        read_process_deltas(&run_dir.join("process_stats.csv"))?
+    {
+        out.insert(format!("process_{target}_cpu_ticks"), json!(cpu_ticks));
+        out.insert(format!("process_{target}_read_bytes"), json!(read_bytes));
+        out.insert(format!("process_{target}_write_bytes"), json!(write_bytes));
+    }
+    Ok(out)
+}
+
+fn read_process_deltas(path: &Path) -> Result<Vec<(String, u64, u64, u64)>> {
+    let rows = data_rows(read_csv_rows(path)?);
+    let mut first: BTreeMap<(String, String), (u64, u64, u64)> = BTreeMap::new();
+    let mut last: BTreeMap<(String, String), (u64, u64, u64)> = BTreeMap::new();
+    for row in rows {
+        if row.len() < 8 {
+            continue;
+        }
+        let target = row[1].clone();
+        let pid = row[2].clone();
+        let cpu = parse_u64(&row[3]).saturating_add(parse_u64(&row[4]));
+        let read_bytes = parse_u64(&row[6]);
+        let write_bytes = parse_u64(&row[7]);
+        let key = (target, pid);
+        first
+            .entry(key.clone())
+            .or_insert((cpu, read_bytes, write_bytes));
+        last.insert(key, (cpu, read_bytes, write_bytes));
+    }
+
+    let mut by_target: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    for (key, first_values) in first {
+        let Some(last_values) = last.get(&key) else {
+            continue;
+        };
+        let entry = by_target.entry(key.0).or_default();
+        entry.0 = entry
+            .0
+            .saturating_add(last_values.0.saturating_sub(first_values.0));
+        entry.1 = entry
+            .1
+            .saturating_add(last_values.1.saturating_sub(first_values.1));
+        entry.2 = entry
+            .2
+            .saturating_add(last_values.2.saturating_sub(first_values.2));
+    }
+    Ok(by_target
+        .into_iter()
+        .map(|(target, (cpu, read_bytes, write_bytes))| (target, cpu, read_bytes, write_bytes))
+        .collect())
 }
 
 fn read_scheduler_summary(path: &Path) -> Result<BTreeMap<String, u64>> {
@@ -2217,6 +2784,8 @@ fn read_net_samples(path: &Path) -> Result<Vec<NetSample>> {
                     source: row[2].clone(),
                     rx_bytes: parse_u64(&row[3]),
                     tx_bytes: parse_u64(&row[4]),
+                    rx_packets: row.get(5).map(|raw| parse_u64(raw)).unwrap_or(0),
+                    tx_packets: row.get(6).map(|raw| parse_u64(raw)).unwrap_or(0),
                 })
             } else if row.len() >= 3 {
                 Some(NetSample {
@@ -2224,6 +2793,8 @@ fn read_net_samples(path: &Path) -> Result<Vec<NetSample>> {
                     source: "/proc/net/dev".to_string(),
                     rx_bytes: parse_u64(&row[1]),
                     tx_bytes: parse_u64(&row[2]),
+                    rx_packets: 0,
+                    tx_packets: 0,
                 })
             } else {
                 None
@@ -2630,8 +3201,64 @@ fn print_matrix(kind: MatrixKind) -> Result<()> {
             "warmth": "warm",
             "repetitions": 10
         }),
+        MatrixKind::SebsOpenwhisk => return print_sebs_matrix("openwhisk_standalone"),
+        MatrixKind::SebsStandalone => return print_sebs_matrix("local_standalone"),
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+fn print_sebs_matrix(mode_field: &str) -> Result<()> {
+    let path = Path::new("benchmarks/profiler/configs/sebs-capabilities.json");
+    let value: Value = serde_json::from_reader(File::open(path)?)
+        .with_context(|| format!("parse {}", path.display()))?;
+    let workloads = value
+        .get("workloads")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("{} lacks workloads array", path.display()))?;
+    let mut runnable = Vec::new();
+    let mut excluded = Vec::new();
+    for workload in workloads {
+        let id = workload.get("id").cloned().unwrap_or(Value::Null);
+        let name = workload.get("name").cloned().unwrap_or(Value::Null);
+        let languages = workload.get("languages").cloned().unwrap_or(json!([]));
+        let services = workload
+            .get("required_services")
+            .cloned()
+            .unwrap_or(json!([]));
+        if workload
+            .get(mode_field)
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            runnable.push(json!({
+                "id": id,
+                "name": name,
+                "languages": languages,
+                "required_services": services
+            }));
+        } else {
+            excluded.push(json!({
+                "id": id,
+                "name": name,
+                "blockers": workload.get("blockers").cloned().unwrap_or(json!([]))
+            }));
+        }
+    }
+    let mode = match mode_field {
+        "openwhisk_standalone" => "sebs-openwhisk",
+        "local_standalone" => "sebs-standalone",
+        _ => mode_field,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "mode": mode,
+            "source": path.display().to_string(),
+            "workloads": runnable,
+            "excluded": excluded
+        }))?
+    );
     Ok(())
 }
 
@@ -2830,6 +3457,8 @@ mod tests {
     fn matrix_shapes_match_plan() {
         let sanity = MatrixKind::Sanity;
         assert!(matches!(sanity, MatrixKind::Sanity));
+        let sebs = MatrixKind::SebsOpenwhisk;
+        assert!(matches!(sebs, MatrixKind::SebsOpenwhisk));
     }
 
     #[test]
@@ -2840,6 +3469,33 @@ mod tests {
         .unwrap();
         assert_eq!(timing.starttransfer_ns, 12_345_000);
         assert_eq!(timing.total_ns, 67_890_000);
+    }
+
+    #[test]
+    fn netdev_parser_ignores_loopback_for_container_samples() {
+        let sample = parse_net_dev(
+            "Inter-|   Receive                                                |  Transmit\n\
+             face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
+                lo: 100 1 0 0 0 0 0 0 200 2 0 0 0 0 0 0\n\
+              eth0: 300 3 0 0 0 0 0 0 400 4 0 0 0 0 0 0\n",
+            "container",
+            "test",
+            false,
+        );
+        assert_eq!(sample.rx_bytes, 300);
+        assert_eq!(sample.tx_bytes, 400);
+        assert_eq!(sample.rx_packets, 3);
+        assert_eq!(sample.tx_packets, 4);
+    }
+
+    #[test]
+    fn netdev_iface_detection_requires_exact_iface() {
+        let text = "Inter-|   Receive                                                |  Transmit\n\
+                    face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
+                      lo: 100 1 0 0 0 0 0 0 200 2 0 0 0 0 0 0\n\
+                    eth0: 300 3 0 0 0 0 0 0 400 4 0 0 0 0 0 0\n";
+        assert!(netdev_has_iface(text, "eth0"));
+        assert!(!netdev_has_iface(text, "wlp2s0"));
     }
 
     #[test]
