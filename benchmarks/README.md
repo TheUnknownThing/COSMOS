@@ -43,6 +43,35 @@ git submodule update --recursive
 
 ## Implementation
 
+For the prepared CloudLab development machine, see
+[`REMOTE_DEV_MACHINE.md`](REMOTE_DEV_MACHINE.md). That runbook covers the
+`/local` layout, wrappers, OpenWhisk/SeBS service commands, scheduler injection,
+resource policies, and benchmark examples.
+
+The current prepared CloudLab benchmark host is
+`Hanning@amd027.utah.cloudlab.us`. Persistent runtime state is kept under
+`/local`, `/usr/local`, and `/opt`; do not rely on `/home` for benchmark
+dependencies or storage. The May 7, 2026 runtime baseline has:
+
+- OpenWhisk standalone host-network mode with local SeBS image pull bypass.
+- OpenWhisk action memory raised to 2048 MiB and container-pool user memory set
+  to 32768 MiB.
+- Persistent MinIO object storage and ScyllaDB/Alternator NoSQL storage.
+- `cosmos-sebs-microservers.service` enabled for the SeBS UDP/TCP
+  microbenchmarks.
+
+The full SeBS OpenWhisk matrix has been verified at both `test` and `small`
+input sizes on that host:
+
+```text
+/local/benchmarks/runs/full-sebs-verify-20260507-020118
+/local/benchmarks/runs/full-sebs-small-20260507-025115
+```
+
+`220.video-processing small` requires the benchmark action memory limit to be
+2048 MiB on this 32c/64t host; the default 512 MiB limit lets ffmpeg start but
+can fail before producing a valid SeBS result.
+
 Build the profiler:
 
 ```sh
@@ -55,10 +84,31 @@ Run the standalone benchmark suite script:
 benchmarks/profiler/scripts/run_standalone_suite.sh
 ```
 
+Run the verified local-standalone SeBS adapter set:
+
+```sh
+benchmarks/profiler/scripts/run_sebs_standalone_suite.sh
+```
+
 Run the OpenWhisk benchmark suite script:
 
 ```sh
 benchmarks/profiler/scripts/run_openwhisk_suite.sh
+```
+
+Run a concurrent OpenWhisk burst stress benchmark:
+
+```sh
+REQUESTS=1000 CONCURRENCY=128 BURN_MS=25 \
+  benchmarks/profiler/scripts/run_openwhisk_concurrent_load.sh
+```
+
+Run the capacity suite for larger machines:
+
+```sh
+DURATION_S=60 CPU_WORKERS=$(nproc) MEM_WORKERS=32 MEM_BYTES_PER_WORKER=2G \
+  FIO_JOBS=16 NET_PARALLEL=32 OW_REQUESTS=512 OW_CONCURRENCY=128 \
+  benchmarks/profiler/scripts/run_capacity_suite.sh
 ```
 
 Check host prerequisites:
@@ -194,15 +244,26 @@ running; `scheduler_stats.csv` records unavailable samples in that case.
 
 The profiler keeps source and scope explicit in raw outputs. Cgroup CPU,
 memory, IO, pressure, perf, scheduler stats, OpenWhisk activation timing, and
-HTTP client timing come from their source interfaces. Host-global network and
-qdisc samples are written as host-scoped observations and are not treated as
-isolated per-run network consumption for modeling.
+HTTP client timing come from their source interfaces. OpenWhisk action
+containers are sampled through `/proc/<host-pid>/net/dev` when possible, so
+container rows in `net.csv` are model-safe per-action network counters. If the
+container veth can be resolved, `qdisc.csv` is filtered to that host veth.
+Host-global network and qdisc samples remain as host-scoped diagnostics and
+are not treated as isolated per-run network consumption for modeling.
 
 Print a plan matrix:
 
 ```sh
 cargo run -p cosmos-bench-profiler -- matrix --kind sanity
+cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk
+cargo run -p cosmos-bench-profiler -- matrix --kind sebs-standalone
 ```
+
+The SeBS-specific matrices are generated from
+`profiler/configs/sebs-capabilities.json`. Use the OpenWhisk matrix as the
+canonical FaaS benchmark set and the standalone matrix as the collector-debug
+set; workloads without a verified local adapter stay excluded with blockers
+listed in the manifest.
 
 Build the aggregate profile DB from complete runs:
 

@@ -46,6 +46,17 @@ each run, and rebuilds the profile DB:
 benchmarks/profiler/scripts/run_standalone_suite.sh
 ```
 
+Run the verified local-standalone SeBS adapter set:
+
+```sh
+benchmarks/profiler/scripts/run_sebs_standalone_suite.sh
+```
+
+This currently covers the Node.js `010.sleep` and `110.dynamic-html` workloads
+listed as `local_standalone=true` in `configs/sebs-capabilities.json`. Storage
+and external-service workloads remain excluded until a faithful local adapter
+exists.
+
 Run built-in micro-workloads through a dedicated cgroup:
 
 ```sh
@@ -64,6 +75,7 @@ sudo target/debug/cosmos-bench-profiler standalone \
   --out-dir benchmarks/runs \
   --name custom \
   --workload command \
+  --workload-label custom-workload \
   --duration-ms 1000 \
   --sample-ms 100 \
   -- /path/to/workload --arg
@@ -78,6 +90,14 @@ Each successful run writes the file set required by the plan:
 scheduler is not running, the file records unavailable samples instead of
 failing the benchmark run.
 
+Network samples are source-attributed. For OpenWhisk action containers, the
+profiler first samples `/proc/<host-pid>/net/dev` from the container network
+namespace and marks those rows with `scope=container`. When `nsenter` can map
+container `eth0` back to a host veth, `qdisc.csv` is filtered to that veth and
+the veth name is recorded in the sample source. If container attribution is not
+available, `net.csv` falls back to host `/proc/net/dev` with `scope=host`; those
+host-scoped bytes remain diagnostic only and are not model-safe.
+
 ## OpenWhisk Runs
 
 The ready-to-run OpenWhisk benchmark suite script starts vendored OpenWhisk
@@ -89,9 +109,37 @@ containers before exiting:
 benchmarks/profiler/scripts/run_openwhisk_suite.sh
 ```
 
+Run a synchronized concurrent OpenWhisk request burst:
+
+```sh
+REQUESTS=1000 CONCURRENCY=128 BURN_MS=25 \
+  benchmarks/profiler/scripts/run_openwhisk_concurrent_load.sh
+```
+
+The concurrent load benchmark publishes a small CPU-burning Node.js action,
+warms it once by default, then releases all worker threads at the same time
+against the OpenWhisk HTTP API. It writes `config.json`, `requests.jsonl`, and
+`summary.json` under the output run directory. On the host-network standalone
+path, cold bursts that require multiple runtime containers may hit the expected
+single-host-port limitation; use a warmed action when measuring queued
+concurrency on that path.
+
+For capacity-sized host stress, run:
+
+```sh
+DURATION_S=60 CPU_WORKERS=$(nproc) MEM_WORKERS=32 MEM_BYTES_PER_WORKER=2G \
+  FIO_JOBS=16 NET_PARALLEL=32 OW_REQUESTS=512 OW_CONCURRENCY=128 \
+  benchmarks/profiler/scripts/run_capacity_suite.sh
+```
+
+The capacity suite keeps the fast smoke suites unchanged and adds standalone
+command workloads that use `stress-ng` for all-CPU and large-memory pressure,
+`fio` for parallel disk IO, `iperf3` for parallel loopback network pressure,
+and the OpenWhisk concurrent-load benchmark when OpenWhisk is already running.
+
 With OpenWhisk standalone already running, invoke an action through `wsk` and
 collect activation, Docker PID/cgroup, cgroup resource, network, qdisc, perf,
-client latency, and lifecycle traces:
+host/process, Docker event, client latency, and lifecycle traces:
 
 ```sh
 sudo target/debug/cosmos-bench-profiler open-whisk \
@@ -118,6 +166,12 @@ HTTP OpenWhisk invocations record first-byte and total response timing from
 `curl --write-out`. `wsk` and standalone process runs record response-end timing
 only and leave `first_byte_ns` empty instead of fabricating a value.
 
+For cold-start diagnosis, inspect these additional OpenWhisk outputs:
+
+- `docker_events.jsonl` captures Docker daemon events during the invocation.
+- `events.jsonl` includes `container_discovered` when the action container first becomes visible to Docker polling.
+- `host_cpu.csv`, `host_memory.csv`, `host_pressure.csv`, and `process_stats.csv` sample host pressure and key OpenWhisk/Docker processes for the full request window, including time before the action cgroup exists.
+
 ## Verification
 
 ```sh
@@ -135,7 +189,14 @@ The plan matrices are stored in `configs/` and can also be printed by the CLI:
 cargo run -p cosmos-bench-profiler -- matrix --kind sanity
 cargo run -p cosmos-bench-profiler -- matrix --kind profile
 cargo run -p cosmos-bench-profiler -- matrix --kind interference
+cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk
+cargo run -p cosmos-bench-profiler -- matrix --kind sebs-standalone
 ```
+
+The SeBS matrices are generated from `configs/sebs-capabilities.json`. That
+manifest separates workloads that are expected to run under OpenWhisk standalone
+from workloads that have a verified local standalone adapter, and records known
+blockers for excluded workloads.
 
 ## Profile DB
 

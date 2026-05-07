@@ -1,0 +1,25 @@
+diff --git a/core/invoker/src/main/scala/org/apache/openwhisk/core/containerpool/docker/DockerClient.scala b/core/invoker/src/main/scala/org/apache/openwhisk/core/containerpool/docker/DockerClient.scala
+index bad52c10..a5655d11 100644
+--- a/core/invoker/src/main/scala/org/apache/openwhisk/core/containerpool/docker/DockerClient.scala
++++ b/core/invoker/src/main/scala/org/apache/openwhisk/core/containerpool/docker/DockerClient.scala
+@@ -165,11 +165,15 @@ class DockerClient(dockerHost: Option[String] = None,
+   }
+ 
+   def inspectIPAddress(id: ContainerId, network: String)(implicit transid: TransactionId): Future[ContainerAddress] =
+-    runCmd(
+-      Seq("inspect", "--format", s"{{.NetworkSettings.Networks.${network}.IPAddress}}", id.asString),
+-      config.timeouts.inspect).flatMap {
+-      case "<no value>" => Future.failed(new NoSuchElementException)
+-      case stdout       => Future.successful(ContainerAddress(stdout))
++    if (network == "host") {
++      Future.successful(ContainerAddress("127.0.0.1"))
++    } else {
++      runCmd(
++        Seq("inspect", "--format", s"{{.NetworkSettings.Networks.${network}.IPAddress}}", id.asString),
++        config.timeouts.inspect).flatMap {
++        case "<no value>" => Future.failed(new NoSuchElementException)
++        case stdout       => Future.successful(ContainerAddress(stdout))
++      }
+     }
+ 
+   def pause(id: ContainerId)(implicit transid: TransactionId): Future[Unit] =
