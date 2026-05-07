@@ -48,6 +48,30 @@ For the prepared CloudLab development machine, see
 `/local` layout, wrappers, OpenWhisk/SeBS service commands, scheduler injection,
 resource policies, and benchmark examples.
 
+The current prepared CloudLab benchmark host is
+`Hanning@amd027.utah.cloudlab.us`. Persistent runtime state is kept under
+`/local`, `/usr/local`, and `/opt`; do not rely on `/home` for benchmark
+dependencies or storage. The May 7, 2026 runtime baseline has:
+
+- OpenWhisk standalone host-network mode with local SeBS image pull bypass.
+- OpenWhisk action memory raised to 2048 MiB and container-pool user memory set
+  to 32768 MiB.
+- Persistent MinIO object storage and ScyllaDB/Alternator NoSQL storage.
+- `cosmos-sebs-microservers.service` enabled for the SeBS UDP/TCP
+  microbenchmarks.
+
+The full SeBS OpenWhisk matrix has been verified at both `test` and `small`
+input sizes on that host:
+
+```text
+/local/benchmarks/runs/full-sebs-verify-20260507-020118
+/local/benchmarks/runs/full-sebs-small-20260507-025115
+```
+
+`220.video-processing small` requires the benchmark action memory limit to be
+2048 MiB on this 32c/64t host; the default 512 MiB limit lets ffmpeg start but
+can fail before producing a valid SeBS result.
+
 Build the profiler:
 
 ```sh

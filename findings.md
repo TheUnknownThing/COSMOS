@@ -2,9 +2,43 @@
 
 ## Summary
 
-The SeBS workloads do exhibit phase-aware resource consumption, but the signal is workload dependent. The clearest candidates for a phase-aware resource co-scheduler are storage/network or compression-heavy functions, while very short web/template and sleep workloads mostly expose OpenWhisk lifecycle overhead rather than useful application phases.
+The SeBS workloads do exhibit phase-aware resource consumption, but the signal is workload dependent. The clearest candidates for a phase-aware resource co-scheduler are storage/network, media, inference, compression, and scientific functions. Very short web/template and sleep workloads mostly expose OpenWhisk lifecycle overhead rather than useful application phases.
 
 All measurements below were collected through `cosmos-bench-profiler` on OpenWhisk standalone with blackbox Node.js actions, no runtime prewarm, and explicit cold/warm profiling. Cold paths include platform/container startup; warm paths reuse the action container.
+
+On May 7, 2026, the prepared CloudLab host `amd027.utah.cloudlab.us` was also
+verified against the full SeBS OpenWhisk matrix at both `test` and `small`
+input sizes. All 15 benchmarks completed after adding the missing persistent
+runtime pieces: ScyllaDB/Alternator for NoSQL, UDP/TCP helper servers for the
+microbenchmarks, larger OpenWhisk action memory limits, and a 2048 MiB action
+limit for `220.video-processing`.
+
+Verification artifacts:
+
+```text
+/local/benchmarks/runs/full-sebs-verify-20260507-020118
+/local/benchmarks/runs/full-sebs-small-20260507-025115
+```
+
+The `small` input pass completed with these corrected wall-clock wrapper times:
+
+| Workload | Runtime | Result | Seconds |
+| --- | --- | --- | ---: |
+| `010.sleep` | nodejs 20 | ok | 4 |
+| `020.network-benchmark` | python 3.11 | ok | 3 |
+| `030.clock-synchronization` | python 3.11 | ok | 3 |
+| `040.server-reply` | nodejs 20 | ok | 3 |
+| `110.dynamic-html` | nodejs 20 | ok | 3 |
+| `120.uploader` | nodejs 20 | ok | 4 |
+| `130.crud-api` | nodejs 20 | ok | 4 |
+| `210.thumbnailer` | nodejs 20 | ok | 3 |
+| `220.video-processing` | python 3.11 | ok | 9 |
+| `311.compression` | nodejs 20 | ok | 4 |
+| `411.image-recognition` | python 3.11 | ok | 6 |
+| `501.graph-pagerank` | python 3.11 | ok | 3 |
+| `502.graph-mst` | python 3.11 | ok | 3 |
+| `503.graph-bfs` | python 3.11 | ok | 3 |
+| `504.dna-visualisation` | python 3.11 | ok | 11 |
 
 ## Cold vs Warm Behavior
 
@@ -15,6 +49,7 @@ All measurements below were collected through `cosmos-bench-profiler` on OpenWhi
 | `210.thumbnailer` | 29.09s | 0.13s | 217.3x | 28.63s | 48ms | 450ms | 63ms | 452ms / 62ms | 45.9 MiB | 9.3 MiB cold |
 | `311.compression` | 11.48s | 0.69s | 16.6x | 10.40s | 31ms | 1073ms | 648ms | 1363ms / 842ms | 64-90 MiB | 18.6 MiB cold |
 | `120.uploader small` | 15.67s | 2.40s | 6.5x | 13.24s | 42ms | 2.41s | 2.35s | 770ms / 381ms | 48.6 MiB | 6.7 MiB writes |
+| `220.video-processing small` | 1.32s | 0.59s | 2.2x | 173ms | 4ms | 1.14s | 584ms | 5.73s / 5.20s | 775-776 MiB | 76.1 MiB cold |
 
 Cold invocations are dominated by OpenWhisk container setup and image/runtime startup. Warm invocations are the better source for application resource phases because they remove most platform wait.
 
@@ -82,6 +117,22 @@ To investigate the remaining cost, the next useful split is below OpenWhisk's si
 
 `120.uploader small` is also useful. Warm execution remains around 2.35s after platform wait disappears, and the action performs a real download from GitHub followed by upload to MinIO. It exposes storage and network pressure with moderate CPU use. Host-observed network traffic was about 39 MiB per run, but this counter is host-scoped and should not be treated as isolated per-action network use.
 
+`220.video-processing small` is now a useful media benchmark once its action
+memory is raised to 2048 MiB. The warm path runs for about 584ms with roughly
+5.2s of aggregate CPU time and about 776 MiB peak memory. The profiler
+classifies the warm windows as entirely cache/memory-bound. The cold path adds
+page-cache and IO windows while downloading and materializing the video.
+
+`411.image-recognition` and `504.dna-visualisation` are strong high-memory
+signals. In the May 7 profiling batch, image recognition peaked around 608 MiB
+and had a large cold/warm split after model/data load. DNA visualisation peaked
+around 1.04 GiB and stayed expensive even when warm, making it a better
+sustained co-scheduling stressor than the short graph kernels.
+
+`130.crud-api` is primarily useful to validate NoSQL/storage integration and
+short warm request behavior. Its cold path shows cache/memory-bound startup and
+initialization, but the warm request is only about 15ms.
+
 `210.thumbnailer` shows a strong cold IO/page-cache phase and a much shorter warm path. It is useful for studying cold cache and image-processing startup behavior, but warm execution is brief.
 
 `110.dynamic-html small` is mostly compute/string generation, but the warm action is only a few milliseconds. It is useful for demonstrating cold-start amplification, not for rich phase scheduling.
@@ -92,19 +143,26 @@ To investigate the remaining cost, the next useful split is below OpenWhisk's si
 
 Use cold/warm state as an explicit scheduler feature. Cold-start wait dominates many invocations and is not captured well by cgroup-only action counters because much of that time occurs before the action container is discoverable.
 
-Prefer warm-path application windows when training or validating phase-aware resource decisions. For co-scheduling, `compression`, `uploader small`, and `thumbnailer` provide the most useful phase variation.
+Prefer warm-path application windows when training or validating phase-aware resource decisions. For co-scheduling, `compression`, `uploader small`, `220.video-processing small`, `411.image-recognition`, and `504.dna-visualisation` provide the most useful phase variation in the current OpenWhisk setup.
 
 Treat network measurements cautiously. The current profiler records `network_host_bytes_observed` from host `/proc/net/dev`; this is useful for identifying that network activity occurred, but it is not model-safe for per-run attribution.
 
 No CPU throttling was observed in these runs. COSMOS scheduler statistics were unavailable because `/var/run/scx/root/stats` was not connected in the test environment.
 
-## Additional Benchmark Attempts
+## Additional Benchmark Notes
 
-Python OpenWhisk benchmarks such as `501.graph-pagerank` and `220.video-processing` could not be completed in this environment because required Python build images and dependencies were unavailable or stalled during SeBS packaging.
+The May 7 remote runtime fixes removed the previous OpenWhisk blockers for
+`020.network-benchmark`, `030.clock-synchronization`, `040.server-reply`,
+`130.crud-api`, `411.image-recognition`, and `504.dna-visualisation`.
 
-`110.dynamic-html large` exceeded the OpenWhisk response size limit: the response was about 2.09 MiB, above the 1 MiB limit. The smaller input succeeds and was profiled.
+`220.video-processing small` initially failed with ffmpeg under the benchmark's
+512 MiB action limit. Raising only this benchmark's memory declaration to 2048
+MiB made the same small input complete successfully. This is a benchmark
+resource declaration issue, not a missing ffmpeg or storage dependency.
 
-Benchmarks such as `040.server-reply`, `020.network-benchmark`, `030.clock-synchronization`, and `130.crud-api` require additional external servers, UDP coordination, or NoSQL storage and were not suitable for the current standalone OpenWhisk setup.
+`110.dynamic-html large` still exceeds the OpenWhisk response size limit: the
+response is about 2.09 MiB, above the 1 MiB limit. The `test` and `small`
+inputs both succeed.
 
 ## Generated Artifacts
 
@@ -112,6 +170,10 @@ The extended scheduler-facing profile database was rebuilt at:
 
 ```text
 /tmp/cosmos_profile_db_more.json
+/local/benchmarks/runs/env-fix-profile-20260507-020303
+/local/benchmarks/runs/video-small-profile-20260507-025548/profile_db.json
 ```
 
-It contains 18 complete run profiles.
+The May 7 remote profile batches add cold/warm profiles for `130.crud-api`,
+`411.image-recognition`, `504.dna-visualisation`, and `220.video-processing
+small`.

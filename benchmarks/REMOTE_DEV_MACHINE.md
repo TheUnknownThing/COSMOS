@@ -346,8 +346,9 @@ git apply ../../profiler/patches/sebs-local-container.patch
 
 The OpenWhisk patch makes host-network action containers report
 `127.0.0.1` as their action endpoint. The SeBS patch allows local container
-builds with `SEBS_DOCKER_BUILD_NETWORK` and skips Docker image pushes when
-`SEBS_SKIP_IMAGE_PUSH=1`.
+builds with `SEBS_DOCKER_BUILD_NETWORK`, skips Docker image pushes when
+`SEBS_SKIP_IMAGE_PUSH=1`, and carries the SeBS benchmark fixes needed for the
+prepared OpenWhisk environment.
 
 ## Run Outputs
 
