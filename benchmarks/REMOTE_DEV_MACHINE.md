@@ -71,6 +71,8 @@ cosmos-run-openwhisk-suite               run the OpenWhisk profiler suite
 cosmos-run-openwhisk-concurrent-load     run concurrent OpenWhisk burst stress test
 cosmos-openwhisk-start                   start OpenWhisk standalone
 cosmos-openwhisk-stop                    stop OpenWhisk standalone
+cosmos-net-policy                        apply/show/clear tc network policies
+cosmos-cgroup-policy                     create/run/show/delete cgroup policies
 cosmos-sebs-openwhisk-invoke             invoke one SeBS workload on OpenWhisk
 ```
 
@@ -79,6 +81,8 @@ Use `--help` on the underlying tool where applicable:
 ```sh
 cosmos-profiler --help
 cosmos-sebs --help
+cosmos-net-policy --help
+cosmos-cgroup-policy --help
 cosmos-sebs-openwhisk-invoke --help
 ```
 
@@ -136,9 +140,39 @@ Stop the scheduler with `Ctrl-C`. A clean stop should unregister the scheduler.
 
 ## Resource Policies
 
-No `cosmos-net-policy` or `cosmos-cgroup-policy` wrapper is installed on this image.
-Use the host `tc` and cgroup-v2 interfaces directly if a benchmark needs manual
-resource shaping, or add those wrappers to the repo before documenting them here.
+Create and use a named cgroup-v2 policy with memory, swap, CPU, cpuset, I/O,
+and pids controls:
+
+```sh
+sudo cosmos-cgroup-policy create test \
+  --mem 1G \
+  --swap 0 \
+  --cpu '50000 100000' \
+  --cpu-weight 100 \
+  --cpus '0-15' \
+  --pids 4096
+
+sudo cosmos-cgroup-policy show test
+sudo cosmos-cgroup-policy run test -- bash -lc 'cat /proc/self/cgroup'
+sudo cosmos-cgroup-policy delete test
+```
+
+The cgroup wrapper stores policies under `/sys/fs/cgroup/cosmos-policy`.
+Use `--set FILE=VALUE` when a benchmark needs a controller knob that is not
+covered by a named option.
+
+Apply a network delay or rate policy with `tc`:
+
+```sh
+cosmos-net-policy show docker0
+sudo cosmos-net-policy netem docker0 delay 20ms loss 0.1%
+sudo cosmos-net-policy rate docker0 100mbit
+sudo cosmos-net-policy clear docker0
+```
+
+Use the interface that matches the target path. For OpenWhisk action-container
+diagnosis, inspect run outputs for discovered veth information before applying
+per-interface policies.
 
 ## Standalone Benchmarks
 
