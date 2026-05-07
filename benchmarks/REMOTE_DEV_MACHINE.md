@@ -3,19 +3,19 @@
 This runbook describes the prepared COSMOS benchmark environment on:
 
 ```sh
-ssh Hanning@amd027.utah.cloudlab.us
+ssh Hanning@amd108.utah.cloudlab.us
 ```
 
 The machine is intended to be image-bakeable. Persistent software, build
-artifacts, benchmark data, caches, and service state live under `/local`.
+artifacts, benchmark data, caches, and service state live under `/usr/local/cosmos`.
 Avoid storing benchmark state under `/home` or `/users/Hanning`.
 
 ## Quick Start
 
 ```sh
-ssh Hanning@amd027.utah.cloudlab.us
+ssh Hanning@amd108.utah.cloudlab.us
 source /etc/profile.d/cosmos-benchmark.sh
-cd /local/src/COSMOS
+cd /usr/local/src/COSMOS
 ```
 
 Check the environment:
@@ -23,56 +23,54 @@ Check the environment:
 ```sh
 cargo run -p cosmos-bench-profiler -- preflight --strict
 uname -r
-findmnt /local
+df -h /usr/local/cosmos
 docker info --format 'DockerRoot={{.DockerRootDir}} Cgroup={{.CgroupDriver}}'
 ```
 
 Expected basics:
 
 - kernel: `7.0.0-070000-generic`
-- `/local`: ext4 on `/dev/sdb`
-- Docker root: `/local/docker`
+- `/usr/local/cosmos`: root-image persistent benchmark prefix
+- Docker root: `/usr/local/cosmos/docker`
 - Docker cgroup driver: `systemd`
-- COSMOS repo: `/local/src/COSMOS`
-- benchmark output root: `/local/benchmarks`
+- COSMOS repo: `/usr/local/src/COSMOS`
+- benchmark output root: `/usr/local/cosmos/benchmarks`
 
 ## Important Paths
 
 ```text
-/local/src/COSMOS                         COSMOS source tree
-/local/build/cosmos-target                Cargo target directory
-/local/cargo                              Cargo home
-/local/rustup                             Rustup home
-/local/opt/jdk-17                         JDK 17 used by OpenWhisk
-/local/cache/gradle                       Gradle cache
-/local/venvs/sebs                         SeBS Python environment
-/local/benchmarks/runs                    benchmark run output
-/local/benchmarks/storage                 SeBS/MinIO storage config and data
-/local/benchmarks/openwhisk-home          OpenWhisk standalone home/state
-/local/benchmarks/openwhisk-host.env      OpenWhisk API/auth/PID environment file
-/local/benchmarks/wskprops                OpenWhisk CLI config
-/local/bin                                benchmark convenience commands
+/usr/local/src/COSMOS                         COSMOS source tree
+/usr/local/cosmos/build/cosmos-target                Cargo target directory
+/usr/local/cosmos/cargo                              Cargo home
+/usr/local/cosmos/rustup                             Rustup home
+/usr                         JDK 17 used by OpenWhisk
+/usr/local/cosmos/cache/gradle                       Gradle cache
+/usr/local/cosmos/venvs/sebs                         SeBS Python environment
+/usr/local/cosmos/benchmarks/runs                    benchmark run output
+/usr/local/cosmos/benchmarks/storage                 SeBS/MinIO storage config and data
+/usr/local/cosmos/benchmarks/openwhisk-home          OpenWhisk standalone home/state
+/usr/local/cosmos/benchmarks/openwhisk-host.env      OpenWhisk API/auth/PID environment file
+/usr/local/cosmos/benchmarks/wskprops                OpenWhisk CLI config
+/usr/local/cosmos/bin                                benchmark convenience commands
 ```
 
 The login profile `/etc/profile.d/cosmos-benchmark.sh` exports the standard
-paths for Rust, Java, Gradle, Go, npm, pip, OpenWhisk, SeBS, and `/local/bin`.
+paths for Rust, Java, Gradle, Go, npm, pip, OpenWhisk, SeBS, and `/usr/local/cosmos/bin`.
 
 ## Convenience Commands
 
-These commands are installed in `/local/bin`:
+These commands are installed in `/usr/local/cosmos/bin`:
 
 ```text
 cosmos-scheduler                         run the COSMOS sched_ext scheduler
 cosmos-profiler                          run cosmos-bench-profiler
-cosmos-sebs                              run the SeBS CLI from /local/venvs/sebs
+cosmos-sebs                              run the SeBS CLI from /usr/local/cosmos/venvs/sebs
 cosmos-run-standalone-suite              run built-in standalone profiler suite
 cosmos-run-sebs-standalone-suite         run verified local SeBS standalone adapters
 cosmos-run-openwhisk-suite               run the OpenWhisk profiler suite
 cosmos-run-openwhisk-concurrent-load     run concurrent OpenWhisk burst stress test
 cosmos-openwhisk-start                   start OpenWhisk standalone
 cosmos-openwhisk-stop                    stop OpenWhisk standalone
-cosmos-net-policy                        apply/show/clear tc network policies
-cosmos-cgroup-policy                     create/run/show/delete cgroup policies
 cosmos-sebs-openwhisk-invoke             invoke one SeBS workload on OpenWhisk
 ```
 
@@ -81,8 +79,6 @@ Use `--help` on the underlying tool where applicable:
 ```sh
 cosmos-profiler --help
 cosmos-sebs --help
-cosmos-net-policy
-cosmos-cgroup-policy
 cosmos-sebs-openwhisk-invoke --help
 ```
 
@@ -92,7 +88,7 @@ Start OpenWhisk standalone:
 
 ```sh
 cosmos-openwhisk-start
-source /local/benchmarks/openwhisk-host.env
+source /usr/local/cosmos/benchmarks/openwhisk-host.env
 wsk --apihost "$OPENWHISK_APIHOST" --auth "$OPENWHISK_AUTH" property get
 ```
 
@@ -102,28 +98,28 @@ Stop OpenWhisk:
 cosmos-openwhisk-stop
 ```
 
-OpenWhisk standalone uses `/local/benchmarks/openwhisk-home` as its home/state
+OpenWhisk standalone uses `/usr/local/cosmos/benchmarks/openwhisk-home` as its home/state
 directory and writes connection details to
-`/local/benchmarks/openwhisk-host.env`.
+`/usr/local/cosmos/benchmarks/openwhisk-host.env`.
 
 Start or stop SeBS object storage with the SeBS wrapper if needed:
 
 ```sh
 cosmos-sebs storage start object \
-  /local/benchmarks/storage/sebs-storage-input.json \
-  --output /local/benchmarks/storage/sebs-storage.json
+  /usr/local/cosmos/benchmarks/storage/sebs-storage-input.json \
+  --output /usr/local/cosmos/benchmarks/storage/sebs-storage.json
 
-cosmos-sebs storage stop object /local/benchmarks/storage/sebs-storage.json
+cosmos-sebs storage stop object /usr/local/cosmos/benchmarks/storage/sebs-storage.json
 ```
 
-MinIO state lives in `/local/benchmarks/storage/minio-data`.
+MinIO state lives in `/usr/local/cosmos/benchmarks/storage/minio-data`.
 
 ## Custom CPU Scheduler
 
 Build and run the scheduler:
 
 ```sh
-cd /local/src/COSMOS
+cd /usr/local/src/COSMOS
 cargo build --release
 sudo -E cosmos-scheduler --slo-target-us 10000
 ```
@@ -140,46 +136,23 @@ Stop the scheduler with `Ctrl-C`. A clean stop should unregister the scheduler.
 
 ## Resource Policies
 
-Create and use a cgroup with memory, swap, CPU, and pids controls:
-
-```sh
-sudo cosmos-cgroup-policy create test \
-  --mem 1G \
-  --swap 0 \
-  --cpu 'max 100000' \
-  --pids 4096
-
-sudo cosmos-cgroup-policy show test
-sudo cosmos-cgroup-policy run test -- bash -lc 'cat /proc/self/cgroup'
-sudo cosmos-cgroup-policy delete test
-```
-
-Apply a network delay or rate policy with `tc`:
-
-```sh
-sudo cosmos-net-policy show docker0
-sudo cosmos-net-policy netem docker0 delay 20ms loss 0.1%
-sudo cosmos-net-policy rate docker0 100mbit
-sudo cosmos-net-policy clear docker0
-```
-
-Use the interface that matches the target path. For OpenWhisk action-container
-diagnosis, inspect run outputs for discovered veth information before applying
-per-interface policies.
+No `cosmos-net-policy` or `cosmos-cgroup-policy` wrapper is installed on this image.
+Use the host `tc` and cgroup-v2 interfaces directly if a benchmark needs manual
+resource shaping, or add those wrappers to the repo before documenting them here.
 
 ## Standalone Benchmarks
 
 Run the built-in standalone suite:
 
 ```sh
-OUT_DIR=/local/benchmarks/runs REPETITIONS=1 DURATION_MS=1000 SAMPLE_MS=50 \
+OUT_DIR=/usr/local/cosmos/benchmarks/runs REPETITIONS=1 DURATION_MS=1000 SAMPLE_MS=50 \
   cosmos-run-standalone-suite
 ```
 
 Run the verified local SeBS standalone adapters:
 
 ```sh
-OUT_DIR=/local/benchmarks/runs REPETITIONS=1 INPUT_SIZE=test SAMPLE_MS=50 \
+OUT_DIR=/usr/local/cosmos/benchmarks/runs REPETITIONS=1 INPUT_SIZE=test SAMPLE_MS=50 \
   cosmos-run-sebs-standalone-suite
 ```
 
@@ -187,7 +160,7 @@ Run one profiler workload directly:
 
 ```sh
 sudo -E cosmos-profiler standalone \
-  --out-dir /local/benchmarks/runs \
+  --out-dir /usr/local/cosmos/benchmarks/runs \
   --name standalone-cpu \
   --workload cpu \
   --duration-ms 1000 \
@@ -198,7 +171,7 @@ Run an arbitrary command inside the profiler cgroup:
 
 ```sh
 sudo -E cosmos-profiler standalone \
-  --out-dir /local/benchmarks/runs \
+  --out-dir /usr/local/cosmos/benchmarks/runs \
   --name custom-command \
   --workload command \
   --workload-label custom-command \
@@ -213,20 +186,20 @@ Start OpenWhisk first:
 
 ```sh
 cosmos-openwhisk-start
-source /local/benchmarks/openwhisk-host.env
+source /usr/local/cosmos/benchmarks/openwhisk-host.env
 ```
 
 Run the OpenWhisk profiler suite:
 
 ```sh
-OUT_DIR=/local/benchmarks/runs REPETITIONS=1 cosmos-run-openwhisk-suite
+OUT_DIR=/usr/local/cosmos/benchmarks/runs REPETITIONS=1 cosmos-run-openwhisk-suite
 ```
 
 Run one OpenWhisk action with the profiler:
 
 ```sh
 sudo -E cosmos-profiler open-whisk \
-  --out-dir /local/benchmarks/runs \
+  --out-dir /usr/local/cosmos/benchmarks/runs \
   --name openwhisk-smoke \
   --action cosmos_smoke \
   --file /tmp/cosmos-smoke.js \
@@ -240,7 +213,7 @@ sudo -E cosmos-profiler open-whisk \
 Run the concurrent OpenWhisk stress benchmark:
 
 ```sh
-REQUESTS=1000 CONCURRENCY=128 BURN_MS=25 OUT_DIR=/local/benchmarks/runs \
+REQUESTS=1000 CONCURRENCY=128 BURN_MS=25 OUT_DIR=/usr/local/cosmos/benchmarks/runs \
   cosmos-run-openwhisk-concurrent-load
 ```
 
@@ -267,7 +240,7 @@ host-level stress. It leaves the smoke suites fast and adds larger standalone
 command workloads:
 
 ```sh
-cd /local/src/COSMOS
+cd /usr/local/src/COSMOS
 DURATION_S=60 \
 CPU_WORKERS=64 \
 MEM_WORKERS=32 \
@@ -278,7 +251,7 @@ NET_PARALLEL=32 \
 OW_REQUESTS=512 \
 OW_CONCURRENCY=128 \
 OW_BURN_MS=50 \
-OUT_DIR=/local/benchmarks/runs \
+OUT_DIR=/usr/local/cosmos/benchmarks/runs \
 benchmarks/profiler/scripts/run_capacity_suite.sh
 ```
 
@@ -304,21 +277,21 @@ cosmos-sebs-openwhisk-invoke 110.dynamic-html test nodejs 20
 
 The helper uses:
 
-- OpenWhisk config: `/local/src/COSMOS/benchmarks/profiler/configs/sebs-openwhisk.json`
-- storage config: `/local/benchmarks/storage/sebs-storage.json`
-- cache: `/local/cache/sebs`
-- output: `/local/benchmarks/sebs-output`
+- OpenWhisk config: `/usr/local/src/COSMOS/benchmarks/profiler/configs/sebs-openwhisk.json`
+- storage config: `/usr/local/cosmos/benchmarks/storage/sebs-storage.json`
+- cache: `/usr/local/cosmos/cache/sebs`
+- output: `/usr/local/cosmos/benchmarks/sebs-output`
 
 Print the repo's supported matrices:
 
 ```sh
-cd /local/src/COSMOS
+cd /usr/local/src/COSMOS
 cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk
 cargo run -p cosmos-bench-profiler -- matrix --kind sebs-standalone
 ```
 
 The SeBS capability manifest is
-`/local/src/COSMOS/benchmarks/profiler/configs/sebs-capabilities.json`.
+`/usr/local/src/COSMOS/benchmarks/profiler/configs/sebs-capabilities.json`.
 Some workloads are intentionally excluded by the harness manifest because they
 need storage adapters, external services, model assets, or runtime work that is
 not yet implemented. That is a benchmark harness limitation, not a missing
@@ -337,10 +310,10 @@ benchmarks/profiler/patches/sebs-local-container.patch
 Apply them after initializing submodules on a fresh machine:
 
 ```sh
-cd /local/src/COSMOS/benchmarks/third_party/openwhisk
+cd /usr/local/src/COSMOS/benchmarks/third_party/openwhisk
 git apply ../../profiler/patches/openwhisk-host-network.patch
 
-cd /local/src/COSMOS/benchmarks/third_party/serverless-benchmarks
+cd /usr/local/src/COSMOS/benchmarks/third_party/serverless-benchmarks
 git apply ../../profiler/patches/sebs-local-container.patch
 ```
 
@@ -352,7 +325,7 @@ prepared OpenWhisk environment.
 
 ## Run Outputs
 
-Profiler runs under `/local/benchmarks/runs/<run-id>` contain:
+Profiler runs under `/usr/local/cosmos/benchmarks/runs/<run-id>` contain:
 
 ```text
 run_meta.json
@@ -375,18 +348,18 @@ summary.json
 Verify a run:
 
 ```sh
-cd /local/src/COSMOS
+cd /usr/local/src/COSMOS
 cargo run -p cosmos-bench-profiler -- verify-run \
-  --run-dir /local/benchmarks/runs/<run-id>
+  --run-dir /usr/local/cosmos/benchmarks/runs/<run-id>
 ```
 
 Rebuild the aggregate profile DB:
 
 ```sh
-cd /local/src/COSMOS
+cd /usr/local/src/COSMOS
 cargo run -p cosmos-bench-profiler -- profile-db \
-  --runs-dir /local/benchmarks/runs \
-  --out /local/src/COSMOS/benchmarks/profile_db.json \
+  --runs-dir /usr/local/cosmos/benchmarks/runs \
+  --out /usr/local/src/COSMOS/benchmarks/profile_db.json \
   --strict
 ```
 
@@ -394,23 +367,23 @@ cargo run -p cosmos-bench-profiler -- profile-db \
 
 Keep these settings when baking a new image:
 
-- keep `/local` mounted and writable before Docker/OpenWhisk/SeBS startup
-- keep Docker's data root at `/local/docker`
+- keep `/usr/local/cosmos` created and writable before Docker/OpenWhisk/SeBS startup
+- keep Docker's data root at `/usr/local/cosmos/docker`
 - keep `/etc/profile.d/cosmos-benchmark.sh`
-- keep `/local/bin` wrappers
-- keep Rust/Cargo, Gradle, npm, pip, Go, and SeBS caches under `/local`
-- keep OpenWhisk state/config under `/local/benchmarks/openwhisk-home` and
-  `/local/benchmarks/wskprops`
+- keep `/usr/local/cosmos/bin` wrappers symlinked from `/usr/local/bin`
+- keep Rust/Cargo, Gradle, npm, pip, Go, and SeBS caches under `/usr/local/cosmos`
+- keep OpenWhisk state/config under `/usr/local/cosmos/benchmarks/openwhisk-home` and
+  `/usr/local/cosmos/benchmarks/wskprops`
 - do not bake benchmark output into `/home` or `/users/Hanning`
 
 After booting a baked image, re-run:
 
 ```sh
 source /etc/profile.d/cosmos-benchmark.sh
-cd /local/src/COSMOS
+cd /usr/local/src/COSMOS
 cargo run -p cosmos-bench-profiler -- preflight --strict
 cosmos-openwhisk-start
-REQUESTS=4 CONCURRENCY=2 BURN_MS=10 OUT_DIR=/local/benchmarks/runs \
+REQUESTS=4 CONCURRENCY=2 BURN_MS=10 OUT_DIR=/usr/local/cosmos/benchmarks/runs \
   cosmos-run-openwhisk-concurrent-load
 ```
 
@@ -419,7 +392,7 @@ REQUESTS=4 CONCURRENCY=2 BURN_MS=10 OUT_DIR=/local/benchmarks/runs \
 If `wsk` points at `https://host`, source the generated OpenWhisk environment:
 
 ```sh
-source /local/benchmarks/openwhisk-host.env
+source /usr/local/cosmos/benchmarks/openwhisk-host.env
 wsk --apihost "$OPENWHISK_APIHOST" --auth "$OPENWHISK_AUTH" property set \
   --apihost "$OPENWHISK_APIHOST" --auth "$OPENWHISK_AUTH"
 ```
@@ -441,4 +414,4 @@ ls -l /var/run/scx/root/stats
 
 If a benchmark accidentally writes state under `/users/Hanning`, move or delete
 that state before baking an image and update the relevant environment variable
-or wrapper to point at `/local`.
+or wrapper to point at `/usr/local/cosmos`.

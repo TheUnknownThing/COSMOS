@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+PROFILER="${PROFILER:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/cosmos-bench-profiler}"
 OUT_DIR="${OUT_DIR:-$ROOT/benchmarks/runs}"
 REPETITIONS="${REPETITIONS:-1}"
 SAMPLE_MS="${SAMPLE_MS:-100}"
@@ -35,7 +36,7 @@ run_command_workload() {
   local name="$1"
   local label="$2"
   shift 2
-  sudo -E "$ROOT/target/debug/cosmos-bench-profiler" standalone \
+  sudo -E "$PROFILER" standalone \
     --out-dir "$OUT_DIR" \
     --name "$name" \
     --workload command \
@@ -81,9 +82,10 @@ for rep in $(seq 1 "$REPETITIONS"); do
 done
 
 if [[ "$RUN_OPENWHISK_LOAD" == "1" ]]; then
-  if [[ -f /local/benchmarks/openwhisk-host.env ]]; then
+  COSMOS_PREFIX="${COSMOS_PREFIX:-/usr/local/cosmos}"
+  if [[ -f "$COSMOS_PREFIX/benchmarks/openwhisk-host.env" ]]; then
     # shellcheck disable=SC1091
-    . /local/benchmarks/openwhisk-host.env
+    . "$COSMOS_PREFIX/benchmarks/openwhisk-host.env"
   fi
   if [[ -n "${OPENWHISK_PID:-}" ]] && kill -0 "$OPENWHISK_PID" 2>/dev/null; then
     sudo docker ps -aq --filter name=wsk0_ | xargs -r sudo docker rm -f >/dev/null

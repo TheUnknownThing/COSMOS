@@ -3,10 +3,12 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 OUT_DIR="${OUT_DIR:-$ROOT/benchmarks/runs}"
-JAVA_HOME="${JAVA_HOME:-/opt/jdk-17}"
-PATH="$JAVA_HOME/bin:$PATH"
+PROFILER="${PROFILER:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/cosmos-bench-profiler}"
+COSMOS_PREFIX="${COSMOS_PREFIX:-/usr/local/cosmos}"
+JAVA_HOME="${JAVA_HOME:-/usr}"
+PATH="$PATH:$JAVA_HOME/bin"
 OW_DIR="$ROOT/benchmarks/third_party/openwhisk"
-OW_LOG="${OW_LOG:-/tmp/cosmos-openwhisk-standalone.log}"
+OW_LOG="${OW_LOG:-$COSMOS_PREFIX/benchmarks/logs/openwhisk-suite-standalone.log}"
 ACTION="${ACTION:-cosmos_bench_suite_$$}"
 REPETITIONS="${REPETITIONS:-1}"
 SFS_WAS_ACTIVE=0
@@ -46,7 +48,7 @@ HOST_IP="$(ip -4 route get 8.8.8.8 | awk '/src/{for(i=1;i<=NF;i++) if($i=="src")
   -jar bin/openwhisk-standalone.jar \
   -c "$ROOT/benchmarks/profiler/configs/openwhisk-host-network.conf" \
   -m "$ROOT/benchmarks/profiler/configs/runtimes-no-prewarm.json" \
-  --no-ui --dev-mode >"$OW_LOG" 2>&1 &
+  --no-ui --dev-mode --data-dir "$COSMOS_PREFIX/benchmarks/openwhisk-suite-home" >"$OW_LOG" 2>&1 &
 OW_PID="$!"
 
 for _ in $(seq 1 90); do
@@ -57,8 +59,8 @@ for _ in $(seq 1 90); do
 done
 curl -fsS "http://$HOST_IP:3233/api/v1" >/dev/null
 
-wsk property set --apihost "http://$HOST_IP:3233" >/dev/null
-AUTH="${OPENWHISK_AUTH:-$(wsk property get --auth | awk '{print $3}')}"
+AUTH="${OPENWHISK_AUTH:-23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP}"
+wsk property set --apihost "http://$HOST_IP:3233" --auth "$AUTH" >/dev/null
 ACTION_FILE="$(mktemp /tmp/cosmos-openwhisk-action.XXXXXX.js)"
 PARAM_FILE="$(mktemp /tmp/cosmos-openwhisk-params.XXXXXX.json)"
 cat >"$ACTION_FILE" <<'JS'
@@ -71,7 +73,7 @@ printf '%s\n' '{"name":"benchmark"}' >"$PARAM_FILE"
 
 cd "$ROOT"
 for rep in $(seq 1 "$REPETITIONS"); do
-  sudo "$ROOT/target/debug/cosmos-bench-profiler" open-whisk \
+  sudo -E env PATH="$PATH" "$PROFILER" open-whisk \
     --out-dir "$OUT_DIR" \
     --name "openwhisk-suite-r${rep}" \
     --action "$ACTION" \

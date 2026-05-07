@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+PROFILER="${PROFILER:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/cosmos-bench-profiler}"
 OUT_DIR="${OUT_DIR:-$ROOT/benchmarks/runs}"
 REPETITIONS="${REPETITIONS:-1}"
 DURATION_MS="${DURATION_MS:-1000}"
@@ -13,7 +14,7 @@ cargo run -p cosmos-bench-profiler -- preflight --strict
 
 for workload in cpu memory io network; do
   for rep in $(seq 1 "$REPETITIONS"); do
-    sudo "$ROOT/target/debug/cosmos-bench-profiler" standalone \
+    sudo -E "$PROFILER" standalone \
       --out-dir "$OUT_DIR" \
       --name "standalone-${workload}-suite-r${rep}" \
       --workload "$workload" \

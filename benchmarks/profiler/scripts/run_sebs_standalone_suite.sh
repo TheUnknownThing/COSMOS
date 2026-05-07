@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+PROFILER="${PROFILER:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/cosmos-bench-profiler}"
 OUT_DIR="${OUT_DIR:-$ROOT/benchmarks/runs}"
 REPETITIONS="${REPETITIONS:-1}"
 SAMPLE_MS="${SAMPLE_MS:-50}"
@@ -58,7 +59,7 @@ cargo run -p cosmos-bench-profiler -- preflight
 for rep in $(seq 1 "$REPETITIONS"); do
   sleep_input="$tmpdir/sleep-${rep}.json"
   write_sleep_input "$sleep_input"
-  sudo "$ROOT/target/debug/cosmos-bench-profiler" standalone \
+  sudo -E "$PROFILER" standalone \
     --out-dir "$OUT_DIR" \
     --name "sebs-010-sleep-nodejs-r${rep}" \
     --workload command \
@@ -72,7 +73,7 @@ for rep in $(seq 1 "$REPETITIONS"); do
   dynamic_input="$tmpdir/dynamic-html-${rep}.json"
   write_dynamic_html_input "$dynamic_input"
   ensure_node_deps "$SEBS/100.webapps/110.dynamic-html/nodejs" "110.dynamic-html-nodejs"
-  sudo "$ROOT/target/debug/cosmos-bench-profiler" standalone \
+  sudo -E "$PROFILER" standalone \
     --out-dir "$OUT_DIR" \
     --name "sebs-110-dynamic-html-nodejs-r${rep}" \
     --workload command \

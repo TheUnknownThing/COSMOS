@@ -7,10 +7,12 @@ ACTION="${ACTION:-cosmos_concurrent_load}"
 KIND="${KIND:-nodejs:20}"
 REQUESTS="${REQUESTS:-256}"
 CONCURRENCY="${CONCURRENCY:-64}"
+ACTION_CONCURRENCY="${ACTION_CONCURRENCY:-$REQUESTS}"
 BURN_MS="${BURN_MS:-25}"
 TIMEOUT_S="${TIMEOUT_S:-120}"
 WARMUP_REQUESTS="${WARMUP_REQUESTS:-1}"
-OPENWHISK_ENV_FILE="${OPENWHISK_ENV_FILE:-/local/benchmarks/openwhisk-host.env}"
+COSMOS_PREFIX="${COSMOS_PREFIX:-/usr/local/cosmos}"
+OPENWHISK_ENV_FILE="${OPENWHISK_ENV_FILE:-$COSMOS_PREFIX/benchmarks/openwhisk-host.env}"
 if [[ -f "$OPENWHISK_ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   . "$OPENWHISK_ENV_FILE"
@@ -65,7 +67,7 @@ wsk_args=(--apihost "$APIHOST" --auth "$AUTH")
 if [[ "$WSK_INSECURE" == "1" ]]; then
   wsk_args=(-i "${wsk_args[@]}")
 fi
-wsk "${wsk_args[@]}" action update "$ACTION" "$ACTION_FILE" --kind "$KIND" >/dev/null
+wsk "${wsk_args[@]}" action update "$ACTION" "$ACTION_FILE" --kind "$KIND" --concurrency "$ACTION_CONCURRENCY" >/dev/null
 
 load_args=(
   "$ROOT/benchmarks/profiler/scripts/openwhisk_concurrent_load.py"
