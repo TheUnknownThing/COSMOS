@@ -47,12 +47,23 @@ pub struct PoolChange {
 pub struct PoolManager {
     nr_cpus: usize,
     assignments: Vec<TaskPool>,
+    enabled: bool,
     latency_pct: u32,
     tail_guard_cpus: u32,
     /// Queue depth threshold above which a pool is considered "pressured"
     pressure_threshold: u64,
     /// Number of pool migrations performed (for stats)
     pub nr_pool_migrations: u64,
+}
+
+/// Tail guard only makes sense when the machine has enough CPUs left to keep
+/// the main latency pool from collapsing to a single core.
+pub fn effective_tail_guard_cpus(nr_cpus: usize, requested: u32) -> u32 {
+    if requested == 0 || nr_cpus < 5 {
+        0
+    } else {
+        requested.min(nr_cpus.saturating_sub(2) as u32)
+    }
 }
 
 impl PoolManager {
@@ -63,9 +74,11 @@ impl PoolManager {
     /// * `latency_pct` — target percentage of CPUs in the latency pool
     /// * `tail_guard_cpus` — fixed number of CPUs reserved for tail guard (0 = disabled)
     pub fn new(nr_cpus: usize, latency_pct: u32, tail_guard_cpus: u32) -> Self {
+        let tail_guard_cpus = effective_tail_guard_cpus(nr_cpus, tail_guard_cpus);
         let mut mgr = PoolManager {
             nr_cpus,
             assignments: vec![TaskPool::None; nr_cpus],
+            enabled: true,
             latency_pct,
             tail_guard_cpus,
             pressure_threshold: 4,
@@ -73,6 +86,23 @@ impl PoolManager {
         };
         mgr.initial_assign();
         mgr
+    }
+
+    /// Create a pool manager that keeps all CPUs on the legacy shared path.
+    pub fn disabled(nr_cpus: usize) -> Self {
+        PoolManager {
+            nr_cpus,
+            assignments: vec![TaskPool::None; nr_cpus],
+            enabled: false,
+            latency_pct: 0,
+            tail_guard_cpus: 0,
+            pressure_threshold: 4,
+            nr_pool_migrations: 0,
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     /// Perform initial CPU pool assignment.
@@ -89,8 +119,7 @@ impl PoolManager {
             return;
         }
 
-        // Clamp tail guard CPUs to leave at least 2 CPUs for latency+batch
-        let tg = (self.tail_guard_cpus as usize).min(nr.saturating_sub(2));
+        let tg = self.tail_guard_cpus as usize;
 
         // Assign tail guard CPUs at the end
         for i in (nr - tg)..nr {
@@ -145,6 +174,10 @@ impl PoolManager {
     ///
     /// Returns a list of changes made (empty if no rebalancing needed).
     pub fn rebalance(&mut self, metrics: &PoolMetrics) -> Vec<PoolChange> {
+        if !self.enabled {
+            return Vec::new();
+        }
+
         let mut changes = Vec::new();
 
         let latency_count = self.count_pool(TaskPool::Latency);
@@ -227,12 +260,12 @@ mod tests {
     #[test]
     fn initial_assign_4_cpus_50_pct_1_tg() {
         let mgr = PoolManager::new(4, 50, 1);
-        // 4 CPUs, 1 tail guard → 3 remaining
-        // 50% of 3 = 1.5 → 1 latency (min 1), 2 batch
+        // On a 4-CPU host we disable tail guard to avoid collapsing the
+        // latency pool to a single CPU.
         assert_eq!(mgr.assignments[0], TaskPool::Latency);
-        assert_eq!(mgr.assignments[1], TaskPool::Batch);
+        assert_eq!(mgr.assignments[1], TaskPool::Latency);
         assert_eq!(mgr.assignments[2], TaskPool::Batch);
-        assert_eq!(mgr.assignments[3], TaskPool::TailGuard);
+        assert_eq!(mgr.assignments[3], TaskPool::Batch);
     }
 
     #[test]
@@ -249,12 +282,26 @@ mod tests {
     }
 
     #[test]
+    fn effective_tail_guard_disabled_on_small_hosts() {
+        assert_eq!(effective_tail_guard_cpus(4, 1), 0);
+        assert_eq!(effective_tail_guard_cpus(5, 1), 1);
+        assert_eq!(effective_tail_guard_cpus(8, 2), 2);
+    }
+
+    #[test]
     fn initial_assign_2_cpus_no_tg() {
         let mgr = PoolManager::new(2, 50, 0);
         // 2 CPUs, 0 tail guard → 2 remaining
         // 50% of 2 = 1 latency, 1 batch
         assert_eq!(mgr.assignments[0], TaskPool::Latency);
         assert_eq!(mgr.assignments[1], TaskPool::Batch);
+    }
+
+    #[test]
+    fn disabled_manager_leaves_all_cpus_on_shared_path() {
+        let mgr = PoolManager::disabled(4);
+        assert!(!mgr.is_enabled());
+        assert!(mgr.assignments.iter().all(|pool| *pool == TaskPool::None));
     }
 
     #[test]

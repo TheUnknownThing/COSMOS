@@ -1,21 +1,60 @@
 # COSMOS Benchmarks
 
-This directory contains the benchmark plan and external benchmark/runtime
-dependencies for COSMOS.
+This directory now has two clearly separated benchmark paths:
+
+- `scripts/` + `workloads/`: the lightweight Phase 6 harness for the
+  sched_ext first product. Use this for direct CFS vs COSMOS comparisons.
+- `profiler/` + `third_party/`: the older deep-trace OpenWhisk/SeBS profiling
+  stack. Keep this for full lifecycle analysis, not for the day-to-day
+  first-product benchmark loop.
 
 ## Contents
 
+- `scripts/`: Phase 6 comparison runners, latency summarizer, and result
+  comparison tooling.
+- `workloads/`: synthetic local workloads plus the metadata wrapper used by the
+  Phase 6 harness.
 - `plan.md`: benchmark architecture, required stats, matrices, and first-week
   implementation plan.
-- `profiler/`: Rust standalone profiling harness and analysis CLI.
+- `profiler/`: Rust standalone profiling harness and analysis CLI for the older
+  OpenWhisk-heavy benchmark path.
 - `third_party/serverless-benchmarks`: SeBS, added as a Git submodule.
 - `third_party/openwhisk`: Apache OpenWhisk, added as a Git submodule.
 
 ## Direction
 
-The benchmark stack uses OpenWhisk standalone as the primary FaaS target because
-SeBS supports OpenWhisk directly and OpenWhisk activation records expose useful
-lifecycle metadata such as duration, status, `waitTime`, and `initTime`.
+For the first product, prefer the lightweight harness first:
+
+```sh
+cd benchmarks/scripts
+./burst_benchmark.py --concurrency 50 --workload cpu_burst --config cosmos-full
+./burst_benchmark.py --concurrency 50 --workload cpu_burst --config cfs-default
+python3 compare.py results/cosmos-full/ results/cfs-default/
+```
+
+Those scripts map directly to the Phase 6 baseline table:
+
+- `cfs-default`
+- `cosmos-heuristic`
+- `cosmos-metadata`
+- `cosmos-pooled`
+- `cosmos-full`
+
+The lightweight local workload set now includes these first-product synthetic
+profiles:
+
+- `cpu_burst`: short CPU burst, inspired by SeBS `010.sleep` as a low-overhead latency test
+- `sleep_short`: minimal baseline calibration, also inspired by `010.sleep`
+- `io_mixed`: small CPU + disk mix, loosely aligned with SeBS `311.compression` / `220.video-processing`
+- `memory_heavy`: allocation and scan pressure, inspired by `411.image-recognition` / `220.video-processing`
+- `network_heavy`: loopback TCP transfer, inspired by `120.uploader`
+- `compression_mixed`: repeated compress/decompress cycles, inspired by `311.compression`
+- `graph_bfs`: irregular graph traversal, inspired by `503.graph-bfs` / `501.graph-pagerank`
+
+The older benchmark stack still uses OpenWhisk standalone as the primary FaaS
+target because SeBS supports OpenWhisk directly and OpenWhisk activation
+records expose useful lifecycle metadata such as duration, status, `waitTime`,
+and `initTime`.
 
 The COSMOS profiler should still support a standalone mode that runs workload
 code or containers inside controlled cgroups. That mode is the local debug path

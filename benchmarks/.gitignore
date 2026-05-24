@@ -1,3 +1,4 @@
 runs/
+scripts/results/
 profile_db.json
 __pycache__/

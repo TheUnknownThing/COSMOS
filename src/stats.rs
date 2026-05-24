@@ -46,6 +46,8 @@ pub struct Metrics {
     pub nr_sched_congested: u64,
     #[stat(desc = "Number of tasks classified via invocation metadata")]
     pub nr_metadata_classified: u64,
+    #[stat(desc = "Number of tasks classified via heuristic fallback")]
+    pub nr_heuristic_classified: u64,
     #[stat(desc = "Number of tasks dispatched to latency pool")]
     pub nr_pool_latency: u64,
     #[stat(desc = "Number of tasks dispatched to batch pool")]
@@ -83,6 +85,7 @@ impl Metrics {
         )?;
         // Phase 1+2+3: print metadata, pool, migration, and tail guard stats on a separate line when non-zero
         if self.nr_metadata_classified > 0
+            || self.nr_heuristic_classified > 0
             || self.nr_pool_latency > 0
             || self.nr_pool_batch > 0
             || self.nr_pool_migrations > 0
@@ -91,8 +94,9 @@ impl Metrics {
         {
             writeln!(
                 w,
-                "  [meta] classified: {:<5} | pools -> lat: {:<5} batch: {:<5} tg: {:<5} | migrations: {:<5} | slo_viol: {:<5}",
+                "  [classify] meta: {:<5} heur: {:<5} | pools -> lat: {:<5} batch: {:<5} tg: {:<5} | migrations: {:<5} | slo_viol: {:<5}",
                 self.nr_metadata_classified,
+                self.nr_heuristic_classified,
                 self.nr_pool_latency,
                 self.nr_pool_batch,
                 self.nr_tail_guard_dispatches,
@@ -116,6 +120,7 @@ impl Metrics {
             nr_failed_dispatches: self.nr_failed_dispatches - rhs.nr_failed_dispatches,
             nr_sched_congested: self.nr_sched_congested - rhs.nr_sched_congested,
             nr_metadata_classified: self.nr_metadata_classified - rhs.nr_metadata_classified,
+            nr_heuristic_classified: self.nr_heuristic_classified - rhs.nr_heuristic_classified,
             nr_pool_latency: self.nr_pool_latency - rhs.nr_pool_latency,
             nr_pool_batch: self.nr_pool_batch - rhs.nr_pool_batch,
             nr_pool_migrations: self.nr_pool_migrations - rhs.nr_pool_migrations,
