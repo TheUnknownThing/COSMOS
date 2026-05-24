@@ -125,11 +125,6 @@ impl PoolManager {
         );
     }
 
-    /// Return the current pool assignments as a slice.
-    pub fn assignments(&self) -> &[TaskPool] {
-        &self.assignments
-    }
-
     /// Count CPUs in a given pool.
     fn count_pool(&self, pool: TaskPool) -> usize {
         self.assignments.iter().filter(|&&p| p == pool).count()
@@ -137,16 +132,7 @@ impl PoolManager {
 
     /// Find the last CPU assigned to a given pool (for stealing).
     fn find_last_cpu_in_pool(&self, pool: TaskPool) -> Option<usize> {
-        self.assignments
-            .iter()
-            .rposition(|&p| p == pool)
-    }
-
-    /// Find the first CPU assigned to a given pool (for stealing).
-    fn find_first_cpu_in_pool(&self, pool: TaskPool) -> Option<usize> {
-        self.assignments
-            .iter()
-            .position(|&p| p == pool)
+        self.assignments.iter().rposition(|&p| p == pool)
     }
 
     /// Rebalance CPU pool assignments based on queue pressure signals.
@@ -389,7 +375,10 @@ mod tests {
         }
 
         let tg_after = mgr.count_pool(TaskPool::TailGuard);
-        assert_eq!(tg_before, tg_after, "tail guard pool should never be modified");
+        assert_eq!(
+            tg_before, tg_after,
+            "tail guard pool should never be modified"
+        );
     }
 
     #[test]

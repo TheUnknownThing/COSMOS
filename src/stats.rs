@@ -82,7 +82,13 @@ impl Metrics {
             self.nr_sched_congested,
         )?;
         // Phase 1+2+3: print metadata, pool, migration, and tail guard stats on a separate line when non-zero
-        if self.nr_metadata_classified > 0 || self.nr_pool_latency > 0 || self.nr_pool_batch > 0 || self.nr_pool_migrations > 0 || self.nr_tail_guard_dispatches > 0 || self.nr_slo_violations > 0 {
+        if self.nr_metadata_classified > 0
+            || self.nr_pool_latency > 0
+            || self.nr_pool_batch > 0
+            || self.nr_pool_migrations > 0
+            || self.nr_tail_guard_dispatches > 0
+            || self.nr_slo_violations > 0
+        {
             writeln!(
                 w,
                 "  [meta] classified: {:<5} | pools -> lat: {:<5} batch: {:<5} tg: {:<5} | migrations: {:<5} | slo_viol: {:<5}",
