@@ -6,3 +6,5 @@
 /bpf_intf.rs
 /main.bpf.c
 /intf.h
+
+*.ignore.md
