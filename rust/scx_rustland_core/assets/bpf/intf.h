@@ -49,6 +49,22 @@ typedef int pid_t;
 #define TASK_COMM_LEN	16
 #endif
 
+/* Sentinel: no invocation metadata found for this task */
+#define SLO_CLASS_NONE 0xFF
+
+/* Pool DSQ IDs (after per-CPU DSQs + SHARED_DSQ + SCHED_DSQ) */
+#define LATENCY_POOL_DSQ  (MAX_CPUS + 2)
+#define BATCH_POOL_DSQ    (MAX_CPUS + 3)
+#define TAIL_GUARD_DSQ    (MAX_CPUS + 4)
+
+/* CPU pool assignment for dispatched tasks */
+enum cosmos_pool {
+	POOL_NONE       = 0,
+	POOL_LATENCY    = 1,
+	POOL_BATCH      = 2,
+	POOL_TAIL_GUARD = 3,
+};
+
 /* Special dispatch flags */
 enum {
 	/*
@@ -58,6 +74,17 @@ enum {
 	 * on the first CPU available.
 	 */
 	RL_CPU_ANY = 1 << 20,
+};
+
+/*
+ * Invocation metadata written by userspace shim, read by BPF enqueue path.
+ * Key: tgid (u32)
+ */
+struct invocation_meta_val {
+	u64 deadline_ns;     /* absolute CLOCK_MONOTONIC deadline */
+	u32 slo_class;       /* 0=latency-critical, 1=standard, 2=batch */
+	u32 is_cold_start;   /* 1=cold start invocation */
+	u64 invocation_id;   /* opaque correlation ID */
 };
 
 /*
@@ -95,6 +122,13 @@ struct queued_task_ctx {
 	u64 vtime; /* Current task's vruntime */
 	u64 enq_cnt;
 	char comm[TASK_COMM_LEN]; /* Task's executable name */
+	/* Phase 1: invocation metadata fields (appended for compatibility) */
+	u64 deadline_ns;       /* absolute deadline from invocation_meta */
+	u32 slo_class;         /* SLO class (0=latency, 1=standard, 2=batch, 0xFF=none) */
+	u32 has_invocation_meta; /* 1 if metadata was found for this task */
+	u32 is_cold_start;     /* 1 if cold start invocation */
+	u32 pad0;              /* alignment padding */
+	u64 invocation_id;     /* opaque correlation ID */
 };
 
 /*
@@ -110,6 +144,9 @@ struct dispatched_task_ctx {
 	u64 slice_ns; /* time slice assigned to the task (0=default) */
 	u64 vtime; /* task deadline / vruntime */
 	u64 enq_cnt;
+	/* Phase 1: pool assignment (appended for compatibility) */
+	u32 pool;  /* cosmos_pool: 0=none, 1=latency, 2=batch, 3=tail_guard */
+	u32 pad1;  /* alignment padding */
 };
 
 #endif /* __INTF_H */

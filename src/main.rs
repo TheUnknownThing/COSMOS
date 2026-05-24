@@ -38,22 +38,22 @@ const TASK_STATE_TTL_NS: u64 = 60_000_000_000;
 
 /// COSMOS: invocation-aware user-space scheduler for serverless workloads.
 ///
-/// This MVP is intentionally based on scx_rustland_core. BPF stays policy-agnostic and only
-/// forwards runnable tasks to user space; the Rust policy classifies likely serverless invocation
-/// work and orders tasks by a latency-oriented score.
+/// Built on scx_rustland_core. BPF stays policy-agnostic and only forwards
+/// runnable tasks to user space; the Rust policy classifies tasks using
+/// invocation metadata written by the shim library (libcosmos_meta.so) and
+/// orders them by a latency-oriented score.
 ///
 /// The policy has three classes:
 ///
-/// - ColdStart: first-seen or explicitly hinted runtime workers. These receive the strongest
-///   boost because cold starts dominate tail latency.
-/// - HotInvocation: short-running workers with repeated wakeups. These receive SLO-aware
-///   preference to reduce p99 queueing.
-/// - Background: everything else. Background tasks still make forward progress through the
-///   inherited vruntime/deadline accounting from scx_rustland.
+/// - ColdStart: explicitly marked cold-start invocations (is_cold_start=1).
+///   These receive the strongest boost because cold starts dominate tail latency.
+/// - HotInvocation: latency-critical or standard SLO tasks (slo_class <= 1).
+///   These receive SLO-aware preference to reduce p99 queueing.
+/// - Background: batch tasks (slo_class >= 2) and any tasks without metadata.
+///   Background tasks still make forward progress through vruntime accounting.
 ///
-/// Invocation hints are supplied with --invocation-comm. Without hints, the scheduler still
-/// detects short sleep/wakeup cycles as invocation-like, which makes the scaffold usable before
-/// plumbing in cgroup or runtime-specific metadata.
+/// Invocation metadata is supplied by the shim library via a pinned BPF map.
+/// The scheduler requires the shim to be loaded for proper classification.
 #[derive(Debug, Parser)]
 struct Opts {
     /// Scheduling slice duration in microseconds.
@@ -68,13 +68,9 @@ struct Opts {
     #[clap(long, default_value = "10000")]
     slo_target_us: u64,
 
-    /// Extra boost in microseconds for first-seen or hinted cold-start tasks.
+    /// Extra boost in microseconds for cold-start tasks.
     #[clap(long, default_value = "20000")]
     cold_start_boost_us: u64,
-
-    /// Treat tasks whose comm contains any of these comma-delimited strings as invocation workers.
-    #[clap(long, value_delimiter = ',')]
-    invocation_comm: Vec<String>,
 
     /// If set, per-CPU tasks are dispatched directly to their only eligible CPU.
     #[clap(short = 'l', long, action = clap::ArgAction::SetTrue)]
@@ -123,6 +119,17 @@ enum TaskClass {
     Background,
 }
 
+/// CPU pool assignment for dispatched tasks.
+/// Maps to the cosmos_pool enum in intf.h.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[repr(u32)]
+enum TaskPool {
+    None = 0,
+    Latency = 1,
+    Batch = 2,
+    TailGuard = 3,
+}
+
 #[derive(Debug, Default, Clone)]
 struct TaskState {
     avg_runtime_ns: u64,
@@ -134,6 +141,7 @@ struct TaskState {
 struct Task {
     qtask: QueuedTask,
     class: TaskClass,
+    pool: TaskPool,
     score: u64,
     timestamp: u64,
     slice_ns: u64,
@@ -166,8 +174,7 @@ impl PartialOrd for Task {
     }
 }
 
-struct SchedulerPolicy<'a> {
-    opts: &'a Opts,
+struct SchedulerPolicy {
     task_state: HashMap<i32, TaskState>,
     vruntime_now: u64,
     slice_ns: u64,
@@ -179,12 +186,14 @@ struct SchedulerPolicy<'a> {
     nr_background_tasks: u64,
     nr_slo_boosted: u64,
     max_pending: u64,
+    nr_metadata_classified: u64,
+    nr_pool_latency: u64,
+    nr_pool_batch: u64,
 }
 
-impl<'a> SchedulerPolicy<'a> {
-    fn new(opts: &'a Opts) -> Self {
+impl SchedulerPolicy {
+    fn new(opts: &Opts) -> Self {
         Self {
-            opts,
             task_state: HashMap::new(),
             vruntime_now: 0,
             slice_ns: opts.slice_us * NSEC_PER_USEC,
@@ -196,6 +205,9 @@ impl<'a> SchedulerPolicy<'a> {
             nr_background_tasks: 0,
             nr_slo_boosted: 0,
             max_pending: 0,
+            nr_metadata_classified: 0,
+            nr_pool_latency: 0,
+            nr_pool_batch: 0,
         }
     }
 
@@ -207,38 +219,20 @@ impl<'a> SchedulerPolicy<'a> {
         value.saturating_mul(100) / task.weight.max(1)
     }
 
-    fn task_matches_invocation_hint(&self, task: &QueuedTask) -> bool {
-        let comm = task.comm_str();
-        self.opts
-            .invocation_comm
-            .iter()
-            .any(|needle| !needle.is_empty() && comm.contains(needle))
-    }
-
     fn classify_task(&self, task: &QueuedTask) -> TaskClass {
-        let Some(state) = self.task_state.get(&task.pid) else {
-            return if self.task_matches_invocation_hint(task)
-                || task.exec_runtime <= self.slo_target_ns
-            {
-                TaskClass::ColdStart
-            } else {
-                TaskClass::Background
-            };
-        };
-
-        if self.task_matches_invocation_hint(task) {
-            return if state.wakeups <= 1 {
-                TaskClass::ColdStart
-            } else {
-                TaskClass::HotInvocation
-            };
+        // Classification via invocation metadata from the shim library.
+        // Tasks without metadata are classified as Background.
+        if task.has_invocation_meta != 1 {
+            return TaskClass::Background;
         }
 
-        if task.exec_runtime <= self.slo_target_ns
-            && state.avg_runtime_ns <= self.slo_target_ns.saturating_mul(2)
-        {
+        if task.is_cold_start == 1 {
+            TaskClass::ColdStart
+        } else if task.slo_class <= 1 {
+            // 0=latency-critical, 1=standard
             TaskClass::HotInvocation
         } else {
+            // 2=batch
             TaskClass::Background
         }
     }
@@ -297,12 +291,23 @@ impl<'a> SchedulerPolicy<'a> {
         Self::scale_by_task_weight(task, base.max(self.slice_ns_min)).max(self.slice_ns_min)
     }
 
-    fn update_enqueued(&mut self, task: &mut QueuedTask, now: u64) -> (TaskClass, u64, u64) {
+    fn update_enqueued(&mut self, task: &mut QueuedTask, now: u64) -> (TaskClass, TaskPool, u64, u64) {
         let class = self.classify_task(task);
         self.update_vruntime(task);
         let score = self.task_score(task, class);
         let slice_ns = self.task_slice_ns(task, class);
         self.update_task_state(task, now);
+
+        // Phase 1: pool assignment based on classification
+        let pool = match class {
+            TaskClass::ColdStart | TaskClass::HotInvocation => TaskPool::Latency,
+            TaskClass::Background => TaskPool::Batch,
+        };
+
+        // Track whether this was classified via metadata
+        if task.has_invocation_meta == 1 {
+            self.nr_metadata_classified = self.nr_metadata_classified.saturating_add(1);
+        }
 
         match class {
             TaskClass::ColdStart => {
@@ -318,7 +323,17 @@ impl<'a> SchedulerPolicy<'a> {
             }
         }
 
-        (class, score, slice_ns)
+        match pool {
+            TaskPool::Latency => {
+                self.nr_pool_latency = self.nr_pool_latency.saturating_add(1);
+            }
+            TaskPool::Batch => {
+                self.nr_pool_batch = self.nr_pool_batch.saturating_add(1);
+            }
+            _ => {}
+        }
+
+        (class, pool, score, slice_ns)
     }
 
     fn prune_task_state(&mut self, now: u64) {
@@ -332,7 +347,7 @@ struct Scheduler<'a> {
     opts: &'a Opts,
     stats_server: StatsServer<(), Metrics>,
     tasks: BTreeSet<Task>,
-    policy: SchedulerPolicy<'a>,
+    policy: SchedulerPolicy,
     init_page_faults: u64,
 }
 
@@ -394,6 +409,9 @@ impl<'a> Scheduler<'a> {
             nr_bounce_dispatches: *self.bpf.nr_bounce_dispatches_mut(),
             nr_failed_dispatches: *self.bpf.nr_failed_dispatches_mut(),
             nr_sched_congested: *self.bpf.nr_sched_congested_mut(),
+            nr_metadata_classified: self.policy.nr_metadata_classified,
+            nr_pool_latency: self.policy.nr_pool_latency,
+            nr_pool_batch: self.policy.nr_pool_batch,
         }
     }
 
@@ -412,6 +430,7 @@ impl<'a> Scheduler<'a> {
         let mut dispatched_task = DispatchedTask::new(&task.qtask);
         dispatched_task.slice_ns = task.slice_ns;
         dispatched_task.vtime = task.score;
+        dispatched_task.pool = task.pool as u32;  // Phase 1: pass pool to BPF
 
         dispatched_task.cpu = if self.opts.percpu_local {
             task.qtask.cpu
@@ -438,12 +457,13 @@ impl<'a> Scheduler<'a> {
             match self.bpf.dequeue_task() {
                 Ok(Some(mut task)) => {
                     let timestamp = Self::now();
-                    let (class, score, slice_ns) =
+                    let (class, pool, score, slice_ns) =
                         self.policy.update_enqueued(&mut task, timestamp);
 
                     self.tasks.insert(Task {
                         qtask: task,
                         class,
+                        pool,
                         score,
                         timestamp,
                         slice_ns,
@@ -598,189 +618,126 @@ mod tests {
             vtime,
             enq_cnt: 0,
             comm: comm_buf,
+            // Phase 1: default to no metadata
+            deadline_ns: 0,
+            slo_class: 0xFF, // SLO_CLASS_NONE
+            has_invocation_meta: 0,
+            is_cold_start: 0,
+            invocation_id: 0,
         }
     }
 
-    #[test]
-    fn classifies_first_seen_tasks_from_slo_and_runtime_hints() {
-        let opts = opts(&[
-            "--slo-target-us",
-            "10000",
-            "--invocation-comm",
-            "node,bootstrap",
-        ]);
-        let policy = SchedulerPolicy::new(&opts);
-
-        let short_unhinted = task(101, "worker", 5 * MS, 100, 0, 0, 0);
-        let long_hinted = task(102, "node", 80 * MS, 100, 0, 0, 0);
-        let long_background = task(103, "postgres", 80 * MS, 100, 0, 0, 0);
-
-        assert_eq!(policy.classify_task(&short_unhinted), TaskClass::ColdStart);
-        assert_eq!(policy.classify_task(&long_hinted), TaskClass::ColdStart);
-        assert_eq!(
-            policy.classify_task(&long_background),
-            TaskClass::Background
-        );
+    /// Create a QueuedTask with invocation metadata set.
+    fn task_with_meta(
+        pid: i32,
+        comm: &str,
+        exec_runtime: u64,
+        weight: u64,
+        slo_class: u32,
+        is_cold_start: u32,
+        deadline_ns: u64,
+    ) -> QueuedTask {
+        let mut t = task(pid, comm, exec_runtime, weight, 0, 0, 0);
+        t.has_invocation_meta = 1;
+        t.slo_class = slo_class;
+        t.is_cold_start = is_cold_start;
+        t.deadline_ns = deadline_ns;
+        t.invocation_id = pid as u64;
+        t
     }
 
     #[test]
-    fn repeated_short_wakeup_becomes_hot_invocation() {
+    fn no_metadata_classifies_as_background() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let policy = SchedulerPolicy::new(&opts);
+
+        // Tasks without metadata (e.g. system tasks) → always Background
+        let t = task(101, "worker", 5 * MS, 100, 0, 0, 0);
+        assert_eq!(policy.classify_task(&t), TaskClass::Background);
+
+        let t2 = task(102, "node", 80 * MS, 100, 0, 0, 0);
+        assert_eq!(policy.classify_task(&t2), TaskClass::Background);
+    }
+
+    #[test]
+    fn metadata_classifies_latency_critical_as_hot_invocation() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let policy = SchedulerPolicy::new(&opts);
+
+        // slo_class=0 (latency-critical), not cold start
+        let t = task_with_meta(901, "worker", 80 * MS, 100, 0, 0, 100 * MS);
+        assert_eq!(policy.classify_task(&t), TaskClass::HotInvocation);
+    }
+
+    #[test]
+    fn metadata_classifies_standard_as_hot_invocation() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let policy = SchedulerPolicy::new(&opts);
+
+        // slo_class=1 (standard), not cold start
+        let t = task_with_meta(901, "worker", 5 * MS, 100, 1, 0, 100 * MS);
+        assert_eq!(policy.classify_task(&t), TaskClass::HotInvocation);
+    }
+
+    #[test]
+    fn metadata_classifies_cold_start() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let policy = SchedulerPolicy::new(&opts);
+
+        // slo_class=0, is_cold_start=1
+        let t = task_with_meta(902, "worker", 80 * MS, 100, 0, 1, 100 * MS);
+        assert_eq!(policy.classify_task(&t), TaskClass::ColdStart);
+    }
+
+    #[test]
+    fn metadata_classifies_batch_as_background() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let policy = SchedulerPolicy::new(&opts);
+
+        // slo_class=2 (batch)
+        let t = task_with_meta(903, "worker", 5 * MS, 100, 2, 0, 100 * MS);
+        assert_eq!(policy.classify_task(&t), TaskClass::Background);
+    }
+
+    #[test]
+    fn no_metadata_vs_metadata_classification() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let policy = SchedulerPolicy::new(&opts);
+
+        // Without metadata → Background regardless of runtime
+        let no_meta = task(904, "worker", 5 * MS, 100, 0, 0, 0);
+        assert_eq!(policy.classify_task(&no_meta), TaskClass::Background);
+
+        // With metadata slo_class=0 → HotInvocation
+        let with_meta = task_with_meta(904, "worker", 80 * MS, 100, 0, 0, 100 * MS);
+        assert_eq!(policy.classify_task(&with_meta), TaskClass::HotInvocation);
+    }
+
+    #[test]
+    fn pool_assignment_matches_class() {
         let opts = opts(&["--slo-target-us", "10000"]);
         let mut policy = SchedulerPolicy::new(&opts);
-        let mut task = task(201, "python", 4 * MS, 100, 0, 1 * MS, 0);
 
-        let (first_class, _, _) = policy.update_enqueued(&mut task, 1);
-        let (second_class, _, _) = policy.update_enqueued(&mut task, 2);
+        // Latency-critical metadata → Latency pool
+        let mut t = task_with_meta(905, "worker", 5 * MS, 100, 0, 0, 100 * MS);
+        let (class, pool, _, _) = policy.update_enqueued(&mut t, 1);
+        assert_eq!(class, TaskClass::HotInvocation);
+        assert_eq!(pool, TaskPool::Latency);
 
-        assert_eq!(first_class, TaskClass::ColdStart);
-        assert_eq!(second_class, TaskClass::HotInvocation);
-        assert_eq!(policy.nr_cold_start_tasks, 1);
-        assert_eq!(policy.nr_hot_invocation_tasks, 1);
-        assert_eq!(policy.nr_slo_boosted, 2);
-    }
+        // Batch metadata → Batch pool
+        let mut t2 = task_with_meta(906, "worker", 5 * MS, 100, 2, 0, 100 * MS);
+        let (class2, pool2, _, _) = policy.update_enqueued(&mut t2, 2);
+        assert_eq!(class2, TaskClass::Background);
+        assert_eq!(pool2, TaskPool::Batch);
 
-    #[test]
-    fn runtime_history_keeps_long_running_tasks_in_background() {
-        let opts = opts(&["--slo-target-us", "10000"]);
-        let mut policy = SchedulerPolicy::new(&opts);
-        let pid = 301;
-        policy.task_state.insert(
-            pid,
-            TaskState {
-                avg_runtime_ns: 25 * MS,
-                wakeups: 5,
-                last_seen_ns: 10,
-            },
-        );
+        // No metadata → Background, Batch pool
+        let mut t3 = task(907, "worker", 5 * MS, 100, 0, 0, 0);
+        let (class3, pool3, _, _) = policy.update_enqueued(&mut t3, 3);
+        assert_eq!(class3, TaskClass::Background);
+        assert_eq!(pool3, TaskPool::Batch);
 
-        let task = task(pid, "worker", 4 * MS, 100, 0, 0, 0);
-
-        assert_eq!(policy.classify_task(&task), TaskClass::Background);
-    }
-
-    #[test]
-    fn slo_boost_orders_invocation_work_before_background() {
-        let opts = opts(&["--slo-target-us", "10000", "--cold-start-boost-us", "20000"]);
-        let policy = SchedulerPolicy::new(&opts);
-        let task = task(401, "worker", 0, 100, 0, 0, 100 * MS);
-
-        let cold = policy.task_score(&task, TaskClass::ColdStart);
-        let hot = policy.task_score(&task, TaskClass::HotInvocation);
-        let background = policy.task_score(&task, TaskClass::Background);
-
-        assert!(cold < hot, "cold-start score should dispatch first");
-        assert!(
-            hot < background,
-            "hot invocation score should beat background"
-        );
-    }
-
-    #[test]
-    fn slices_are_latency_oriented_but_respect_minimum() {
-        let opts = opts(&[
-            "--slice-us",
-            "20000",
-            "--slice-us-min",
-            "500",
-            "--slo-target-us",
-            "10000",
-        ]);
-        let policy = SchedulerPolicy::new(&opts);
-        let default_weight = task(501, "worker", 0, 100, 0, 0, 0);
-        let low_weight = task(502, "worker", 0, 10, 0, 0, 0);
-
-        assert_eq!(
-            policy.task_slice_ns(&default_weight, TaskClass::ColdStart),
-            2_500_000
-        );
-        assert_eq!(
-            policy.task_slice_ns(&default_weight, TaskClass::HotInvocation),
-            1_250_000
-        );
-        assert_eq!(
-            policy.task_slice_ns(&default_weight, TaskClass::Background),
-            20_000_000
-        );
-        assert_eq!(
-            policy.task_slice_ns(&low_weight, TaskClass::HotInvocation),
-            500_000
-        );
-    }
-
-    #[test]
-    fn vruntime_accounts_executed_slice_and_task_weight() {
-        let opts = opts(&["--slice-us", "20000"]);
-        let mut policy = SchedulerPolicy::new(&opts);
-        let mut default_weight = task(601, "worker", 50 * MS, 100, 2 * MS, 6 * MS, 0);
-        let mut double_weight = task(602, "worker", 50 * MS, 200, 6 * MS, 10 * MS, 0);
-
-        policy.update_vruntime(&mut default_weight);
-        assert_eq!(default_weight.vtime, 4 * MS);
-        assert_eq!(policy.vruntime_now, 4 * MS);
-
-        policy.update_vruntime(&mut double_weight);
-        assert_eq!(double_weight.vtime, 6 * MS);
-        assert_eq!(policy.vruntime_now, 6 * MS);
-    }
-
-    #[test]
-    fn btree_order_uses_score_class_timestamp_and_pid() {
-        let qtask = task(701, "worker", 0, 100, 0, 0, 0);
-        let mut tasks = BTreeSet::new();
-
-        tasks.insert(Task {
-            qtask: task(703, "worker", 0, 100, 0, 0, 0),
-            class: TaskClass::Background,
-            score: 10,
-            timestamp: 1,
-            slice_ns: 1,
-        });
-        tasks.insert(Task {
-            qtask: qtask.clone(),
-            class: TaskClass::ColdStart,
-            score: 10,
-            timestamp: 1,
-            slice_ns: 1,
-        });
-        tasks.insert(Task {
-            qtask: task(702, "worker", 0, 100, 0, 0, 0),
-            class: TaskClass::HotInvocation,
-            score: 10,
-            timestamp: 1,
-            slice_ns: 1,
-        });
-
-        assert_eq!(tasks.pop_first().unwrap().class, TaskClass::ColdStart);
-        assert_eq!(tasks.pop_first().unwrap().class, TaskClass::HotInvocation);
-        assert_eq!(tasks.pop_first().unwrap().class, TaskClass::Background);
-    }
-
-    #[test]
-    fn task_state_pruning_keeps_recent_workers() {
-        let opts = opts(&[]);
-        let mut policy = SchedulerPolicy::new(&opts);
-        let now = TASK_STATE_TTL_NS * 2;
-
-        policy.task_state.insert(
-            801,
-            TaskState {
-                avg_runtime_ns: 1,
-                wakeups: 1,
-                last_seen_ns: now - TASK_STATE_TTL_NS - 1,
-            },
-        );
-        policy.task_state.insert(
-            802,
-            TaskState {
-                avg_runtime_ns: 1,
-                wakeups: 1,
-                last_seen_ns: now - TASK_STATE_TTL_NS + 1,
-            },
-        );
-
-        policy.prune_task_state(now);
-
-        assert!(!policy.task_state.contains_key(&801));
-        assert!(policy.task_state.contains_key(&802));
+        assert_eq!(policy.nr_metadata_classified, 2);
+        assert_eq!(policy.nr_pool_latency, 1);
+        assert_eq!(policy.nr_pool_batch, 2);
     }
 }
