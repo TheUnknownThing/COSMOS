@@ -322,15 +322,21 @@ impl<'cb> BpfScheduler<'cb> {
             }
         }
 
-        // Phase 1: Pin the invocation_meta map so the shim library can write to it.
+        // Pin BPF maps so the shim library and external tools (bpftool) can access them.
         let pin_dir = Path::new("/sys/fs/bpf/cosmos");
         if !pin_dir.exists() {
             fs::create_dir_all(pin_dir).context("Failed to create /sys/fs/bpf/cosmos")?;
         }
+
+        // Phase 1: Pin invocation_meta (written by shim, read by BPF enqueue)
         let pin_path = pin_dir.join("invocation_meta");
-        // Remove stale pin if it exists
         let _ = fs::remove_file(&pin_path);
         skel.maps.invocation_meta.pin(&pin_path).context("Failed to pin invocation_meta map")?;
+
+        // Phase 2: Pin cpu_pool_map (written by pool manager, read by BPF dispatch)
+        let pool_pin_path = pin_dir.join("cpu_pool_map");
+        let _ = fs::remove_file(&pool_pin_path);
+        skel.maps.cpu_pool_map.pin(&pool_pin_path).context("Failed to pin cpu_pool_map")?;
 
         Ok(Self {
             skel,
@@ -640,8 +646,9 @@ impl Drop for BpfScheduler<'_> {
         if let Some(struct_ops) = self.struct_ops.take() {
             drop(struct_ops);
         }
-        // Phase 1: Unpin the invocation_meta map
+        // Unpin BPF maps
         let _ = fs::remove_file("/sys/fs/bpf/cosmos/invocation_meta");
+        let _ = fs::remove_file("/sys/fs/bpf/cosmos/cpu_pool_map");
         let _ = fs::remove_dir("/sys/fs/bpf/cosmos");
         ALLOCATOR.unlock_memory();
     }

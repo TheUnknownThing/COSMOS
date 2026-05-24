@@ -9,6 +9,7 @@ pub mod bpf_intf;
 mod bpf;
 use bpf::*;
 
+mod pool;
 mod stats;
 
 use std::cmp::Ordering;
@@ -17,18 +18,22 @@ use std::collections::HashMap;
 use std::io;
 use std::mem::MaybeUninit;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use anyhow::Result;
 use clap::Parser;
 use libbpf_rs::OpenObject;
 use log::info;
+use log::debug;
 use log::warn;
 use procfs::process::Process;
 use scx_stats::prelude::*;
 use scx_utils::build_id;
 use scx_utils::libbpf_clap_opts::LibbpfOpts;
 use scx_utils::UserExitInfo;
+use pool::PoolManager;
+use pool::PoolMetrics;
 use stats::Metrics;
 
 pub const SCHEDULER_NAME: &str = "COSMOS";
@@ -91,6 +96,18 @@ struct Opts {
     /// Enable verbose output, including libbpf details.
     #[clap(short = 'v', long, action = clap::ArgAction::SetTrue)]
     verbose: bool,
+
+    /// Percentage of CPUs to assign to the latency pool (Phase 2).
+    #[clap(long, default_value = "50")]
+    latency_pool_pct: u32,
+
+    /// Number of CPUs to reserve for the tail guard pool (0 = disabled) (Phase 2).
+    #[clap(long, default_value = "1")]
+    tail_guard_cpus: u32,
+
+    /// Pool rebalance interval in milliseconds (Phase 2).
+    #[clap(long, default_value = "500")]
+    pool_rebalance_ms: u64,
 
     /// Enable stats monitoring with the specified interval.
     #[clap(long)]
@@ -348,6 +365,7 @@ struct Scheduler<'a> {
     stats_server: StatsServer<(), Metrics>,
     tasks: BTreeSet<Task>,
     policy: SchedulerPolicy,
+    pool_manager: PoolManager,
     init_page_faults: u64,
 }
 
@@ -356,7 +374,7 @@ impl<'a> Scheduler<'a> {
         let stats_server = StatsServer::new(stats::server_data()).launch()?;
         let policy = SchedulerPolicy::new(opts);
 
-        let bpf = BpfScheduler::init(
+        let mut bpf = BpfScheduler::init(
             open_object,
             opts.libbpf.clone().into_bpf_open_opts(),
             opts.exit_dump_len,
@@ -375,12 +393,32 @@ impl<'a> Scheduler<'a> {
             scx_rustland_core::VERSION
         );
 
+        // Phase 2: Initialize the pool manager and apply initial CPU assignments
+        let nr_cpus = *bpf.nr_online_cpus_mut() as usize;
+        let pool_manager = PoolManager::new(
+            nr_cpus,
+            opts.latency_pool_pct,
+            opts.tail_guard_cpus,
+        );
+
+        // Write initial pool assignments to the BPF cpu_pool_map
+        pool_manager.apply_all(|cpu, pool| {
+            if let Err(e) = bpf.update_cpu_pool(cpu, pool) {
+                log::warn!("Failed to set initial pool for CPU {}: {}", cpu, e);
+            }
+        });
+        info!(
+            "Phase 2: Pool manager initialized ({} CPUs, {}% latency, {} tail guard, {}ms rebalance)",
+            nr_cpus, opts.latency_pool_pct, opts.tail_guard_cpus, opts.pool_rebalance_ms
+        );
+
         Ok(Self {
             bpf,
             opts,
             stats_server,
             tasks: BTreeSet::new(),
             policy,
+            pool_manager,
             init_page_faults: 0,
         })
     }
@@ -412,6 +450,7 @@ impl<'a> Scheduler<'a> {
             nr_metadata_classified: self.policy.nr_metadata_classified,
             nr_pool_latency: self.policy.nr_pool_latency,
             nr_pool_batch: self.policy.nr_pool_batch,
+            nr_pool_migrations: self.pool_manager.nr_pool_migrations,
         }
     }
 
@@ -498,11 +537,60 @@ impl<'a> Scheduler<'a> {
         Ok(stat.minflt + stat.majflt)
     }
 
+    /// Read pool queue depths by counting pending tasks in the user-space task queue.
+    ///
+    /// This measures the tasks waiting to be dispatched in each pool, providing
+    /// pressure signals for the rebalancer. We count tasks in the BTreeSet since
+    /// the BPF DSQ depth isn't directly queryable from user-space.
+    fn read_pool_metrics(&self) -> PoolMetrics {
+        let mut latency = 0u64;
+        let mut batch = 0u64;
+        let mut tail_guard = 0u64;
+
+        for task in &self.tasks {
+            match task.pool {
+                TaskPool::Latency => latency += 1,
+                TaskPool::Batch => batch += 1,
+                TaskPool::TailGuard => tail_guard += 1,
+                TaskPool::None => {}
+            }
+        }
+
+        PoolMetrics {
+            latency_queue_depth: latency,
+            batch_queue_depth: batch,
+            tail_guard_queue_depth: tail_guard,
+        }
+    }
+
     fn run(&mut self) -> Result<UserExitInfo> {
         let (res_ch, req_ch) = self.stats_server.channels();
+        let pool_rebalance_interval = Duration::from_millis(self.opts.pool_rebalance_ms);
+        let mut last_rebalance = Instant::now();
 
         while !self.bpf.exited() {
             self.schedule();
+
+            // Phase 2: Periodic pool rebalancing
+            if last_rebalance.elapsed() >= pool_rebalance_interval {
+                let metrics = self.read_pool_metrics();
+                let changes = self.pool_manager.rebalance(&metrics);
+                if !changes.is_empty() {
+                    pool::PoolManager::apply_changes(&changes, |cpu, pool| {
+                        if let Err(e) = self.bpf.update_cpu_pool(cpu, pool) {
+                            log::warn!("Failed to update pool for CPU {}: {}", cpu, e);
+                        }
+                    });
+                    debug!(
+                        "Pool rebalance: {} changes, depths: lat={} batch={} tg={}",
+                        changes.len(),
+                        metrics.latency_queue_depth,
+                        metrics.batch_queue_depth,
+                        metrics.tail_guard_queue_depth,
+                    );
+                }
+                last_rebalance = Instant::now();
+            }
 
             if req_ch.try_recv().is_ok() {
                 res_ch.send(self.get_metrics())?;

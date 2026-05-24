@@ -50,6 +50,8 @@ pub struct Metrics {
     pub nr_pool_latency: u64,
     #[stat(desc = "Number of tasks dispatched to batch pool")]
     pub nr_pool_batch: u64,
+    #[stat(desc = "Number of CPU pool migrations (rebalancing)")]
+    pub nr_pool_migrations: u64,
 }
 
 impl Metrics {
@@ -75,14 +77,15 @@ impl Metrics {
             self.nr_failed_dispatches,
             self.nr_sched_congested,
         )?;
-        // Phase 1: print metadata and pool stats on a separate line when non-zero
-        if self.nr_metadata_classified > 0 || self.nr_pool_latency > 0 || self.nr_pool_batch > 0 {
+        // Phase 1+2: print metadata, pool, and migration stats on a separate line when non-zero
+        if self.nr_metadata_classified > 0 || self.nr_pool_latency > 0 || self.nr_pool_batch > 0 || self.nr_pool_migrations > 0 {
             writeln!(
                 w,
-                "  [meta] classified: {:<5} | pools -> lat: {:<5} batch: {:<5}",
+                "  [meta] classified: {:<5} | pools -> lat: {:<5} batch: {:<5} | migrations: {:<5}",
                 self.nr_metadata_classified,
                 self.nr_pool_latency,
                 self.nr_pool_batch,
+                self.nr_pool_migrations,
             )?;
         }
         Ok(())
@@ -103,6 +106,7 @@ impl Metrics {
             nr_metadata_classified: self.nr_metadata_classified - rhs.nr_metadata_classified,
             nr_pool_latency: self.nr_pool_latency - rhs.nr_pool_latency,
             nr_pool_batch: self.nr_pool_batch - rhs.nr_pool_batch,
+            nr_pool_migrations: self.nr_pool_migrations - rhs.nr_pool_migrations,
             ..self.clone()
         }
     }
