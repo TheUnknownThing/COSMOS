@@ -190,6 +190,7 @@ cargo run -p cosmos-bench-profiler -- matrix --kind sanity
 cargo run -p cosmos-bench-profiler -- matrix --kind profile
 cargo run -p cosmos-bench-profiler -- matrix --kind interference
 cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk
+cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk-cold-warm
 cargo run -p cosmos-bench-profiler -- matrix --kind sebs-standalone
 ```
 
@@ -197,6 +198,20 @@ The SeBS matrices are generated from `configs/sebs-capabilities.json`. That
 manifest separates workloads that are expected to run under OpenWhisk standalone
 from workloads that have a verified local standalone adapter, and records known
 blockers for excluded workloads.
+
+Run the full SeBS OpenWhisk cold/warm matrix on a configured benchmark host:
+
+```sh
+WARM_REPETITIONS=5 OUT_DIR=/usr/local/cosmos/benchmarks/runs \
+  benchmarks/profiler/scripts/run_sebs_openwhisk_cold_warm_matrix.sh
+```
+
+Each workload/input cell removes existing `wsk0_` containers, invokes the SeBS
+cell once cold, then keeps the action container resident for the remaining warm
+repetitions. The runner writes `results.tsv`, per-cell SeBS logs, an
+`openwhisk-lifecycle.log` slice, and parsed `openwhisk_lifecycle.tsv` /
+`openwhisk_lifecycle_summary.json` files with container state, Docker run time,
+action init time, action run time, memory limit, and CPU shares.
 
 ## Profile DB
 

@@ -78,6 +78,8 @@
   - `profiler/configs/sebs-capabilities.json` records OpenWhisk standalone
     support, local standalone adapter support, required services, and blockers.
   - `matrix --kind sebs-openwhisk` is the canonical FaaS benchmark set.
+  - `matrix --kind sebs-openwhisk-cold-warm` adds one forced-cold invocation
+    plus warm container reuse repetitions for every OpenWhisk cell.
   - `matrix --kind sebs-standalone` is the local collector-debug set.
 - Sanity matrix:
   - Workloads: `dynamic-html`, `thumbnailer`, `compression`, `image-recognition`

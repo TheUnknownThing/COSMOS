@@ -321,6 +321,7 @@ Print the repo's supported matrices:
 ```sh
 cd /usr/local/src/COSMOS
 cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk
+cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk-cold-warm
 cargo run -p cosmos-bench-profiler -- matrix --kind sebs-standalone
 ```
 
@@ -330,6 +331,20 @@ Some workloads are intentionally excluded by the harness manifest because they
 need storage adapters, external services, model assets, or runtime work that is
 not yet implemented. That is a benchmark harness limitation, not a missing
 remote-machine dependency.
+
+Run the cold/warm OpenWhisk matrix:
+
+```sh
+cd /usr/local/src/COSMOS
+WARM_REPETITIONS=5 OUT_DIR=/usr/local/cosmos/benchmarks/runs \
+  benchmarks/profiler/scripts/run_sebs_openwhisk_cold_warm_matrix.sh
+```
+
+This runner forces one cold container start per workload/input cell by removing
+existing `wsk0_` containers, then runs the remaining repetitions without
+container cleanup so OpenWhisk can reuse the warm container. It writes
+`results.tsv`, per-cell SeBS logs, and parsed OpenWhisk lifecycle files:
+`openwhisk_lifecycle.tsv` and `openwhisk_lifecycle_summary.json`.
 
 ## Vendored Dependency Patches
 

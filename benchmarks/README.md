@@ -256,6 +256,7 @@ Print a plan matrix:
 ```sh
 cargo run -p cosmos-bench-profiler -- matrix --kind sanity
 cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk
+cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk-cold-warm
 cargo run -p cosmos-bench-profiler -- matrix --kind sebs-standalone
 ```
 
@@ -264,6 +265,17 @@ The SeBS-specific matrices are generated from
 canonical FaaS benchmark set and the standalone matrix as the collector-debug
 set; workloads without a verified local adapter stay excluded with blockers
 listed in the manifest.
+
+For cold/warm OpenWhisk behavior, run:
+
+```sh
+WARM_REPETITIONS=5 OUT_DIR=/usr/local/cosmos/benchmarks/runs \
+  benchmarks/profiler/scripts/run_sebs_openwhisk_cold_warm_matrix.sh
+```
+
+This mode records one forced-cold invocation and five warm container reuses per
+SeBS workload/input cell, then parses OpenWhisk lifecycle markers into
+`openwhisk_lifecycle.tsv` and `openwhisk_lifecycle_summary.json`.
 
 Build the aggregate profile DB from complete runs:
 

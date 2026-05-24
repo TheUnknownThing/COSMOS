@@ -136,6 +136,7 @@ enum MatrixKind {
     Profile,
     Interference,
     SebsOpenwhisk,
+    SebsOpenwhiskColdWarm,
     SebsStandalone,
 }
 
@@ -3202,6 +3203,7 @@ fn print_matrix(kind: MatrixKind) -> Result<()> {
             "repetitions": 10
         }),
         MatrixKind::SebsOpenwhisk => return print_sebs_matrix("openwhisk_standalone"),
+        MatrixKind::SebsOpenwhiskColdWarm => return print_sebs_cold_warm_matrix(),
         MatrixKind::SebsStandalone => return print_sebs_matrix("local_standalone"),
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
@@ -3235,6 +3237,7 @@ fn print_sebs_matrix(mode_field: &str) -> Result<()> {
                 "id": id,
                 "name": name,
                 "languages": languages,
+                "default_runtime": workload.get("default_openwhisk_runtime").cloned().unwrap_or(Value::Null),
                 "required_services": services
             }));
         } else {
@@ -3257,6 +3260,58 @@ fn print_sebs_matrix(mode_field: &str) -> Result<()> {
             "source": path.display().to_string(),
             "workloads": runnable,
             "excluded": excluded
+        }))?
+    );
+    Ok(())
+}
+
+fn print_sebs_cold_warm_matrix() -> Result<()> {
+    let path = Path::new("benchmarks/profiler/configs/sebs-capabilities.json");
+    let value: Value = serde_json::from_reader(File::open(path)?)
+        .with_context(|| format!("parse {}", path.display()))?;
+    let workloads = value
+        .get("workloads")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("{} lacks workloads array", path.display()))?;
+    let runnable: Vec<Value> = workloads
+        .iter()
+        .filter(|workload| {
+            workload
+                .get("openwhisk_standalone")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(|workload| {
+            json!({
+                "id": workload.get("id").cloned().unwrap_or(Value::Null),
+                "name": workload.get("name").cloned().unwrap_or(Value::Null),
+                "default_runtime": workload.get("default_openwhisk_runtime").cloned().unwrap_or(Value::Null),
+                "required_services": workload.get("required_services").cloned().unwrap_or(json!([]))
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "mode": "sebs-openwhisk-cold-warm",
+            "source": path.display().to_string(),
+            "runner": "benchmarks/profiler/scripts/run_sebs_openwhisk_cold_warm_matrix.sh",
+            "inputs": ["test", "small", "large"],
+            "repetitions_per_cell": {
+                "cold": 1,
+                "warm": 5,
+                "total": 6
+            },
+            "concurrency": 1,
+            "cleanup_policy": "remove wsk0_ action containers before each cell and after each cell; do not remove containers between repetitions inside a cell",
+            "outputs": [
+                "results.tsv",
+                "logs/*.log",
+                "openwhisk-lifecycle.log",
+                "openwhisk_lifecycle.tsv",
+                "openwhisk_lifecycle_summary.json"
+            ],
+            "workloads": runnable
         }))?
     );
     Ok(())
@@ -3459,6 +3514,8 @@ mod tests {
         assert!(matches!(sanity, MatrixKind::Sanity));
         let sebs = MatrixKind::SebsOpenwhisk;
         assert!(matches!(sebs, MatrixKind::SebsOpenwhisk));
+        let cold_warm = MatrixKind::SebsOpenwhiskColdWarm;
+        assert!(matches!(cold_warm, MatrixKind::SebsOpenwhiskColdWarm));
     }
 
     #[test]

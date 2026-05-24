@@ -267,7 +267,17 @@ record cgroup-level resource counters, but the full SeBS matrix was run through
 the SeBS CLI and OpenWhisk logs rather than through per-cell COSMOS profiler
 collection.
 
-To measure warm behavior, we should add a separate mode:
+To measure warm behavior, the benchmark tree now includes a separate matrix
+mode:
+
+```sh
+cargo run -p cosmos-bench-profiler -- matrix --kind sebs-openwhisk-cold-warm
+
+WARM_REPETITIONS=5 OUT_DIR=/usr/local/cosmos/benchmarks/runs \
+  benchmarks/profiler/scripts/run_sebs_openwhisk_cold_warm_matrix.sh
+```
+
+This mode:
 
 1. Clean existing `wsk0_` containers.
 2. Deploy one action.
