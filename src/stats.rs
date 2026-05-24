@@ -52,6 +52,10 @@ pub struct Metrics {
     pub nr_pool_batch: u64,
     #[stat(desc = "Number of CPU pool migrations (rebalancing)")]
     pub nr_pool_migrations: u64,
+    #[stat(desc = "Number of tasks dispatched to tail guard pool")]
+    pub nr_tail_guard_dispatches: u64,
+    #[stat(desc = "Number of tasks dispatched past their deadline (SLO violations)")]
+    pub nr_slo_violations: u64,
 }
 
 impl Metrics {
@@ -77,15 +81,17 @@ impl Metrics {
             self.nr_failed_dispatches,
             self.nr_sched_congested,
         )?;
-        // Phase 1+2: print metadata, pool, and migration stats on a separate line when non-zero
-        if self.nr_metadata_classified > 0 || self.nr_pool_latency > 0 || self.nr_pool_batch > 0 || self.nr_pool_migrations > 0 {
+        // Phase 1+2+3: print metadata, pool, migration, and tail guard stats on a separate line when non-zero
+        if self.nr_metadata_classified > 0 || self.nr_pool_latency > 0 || self.nr_pool_batch > 0 || self.nr_pool_migrations > 0 || self.nr_tail_guard_dispatches > 0 || self.nr_slo_violations > 0 {
             writeln!(
                 w,
-                "  [meta] classified: {:<5} | pools -> lat: {:<5} batch: {:<5} | migrations: {:<5}",
+                "  [meta] classified: {:<5} | pools -> lat: {:<5} batch: {:<5} tg: {:<5} | migrations: {:<5} | slo_viol: {:<5}",
                 self.nr_metadata_classified,
                 self.nr_pool_latency,
                 self.nr_pool_batch,
+                self.nr_tail_guard_dispatches,
                 self.nr_pool_migrations,
+                self.nr_slo_violations,
             )?;
         }
         Ok(())
@@ -107,6 +113,8 @@ impl Metrics {
             nr_pool_latency: self.nr_pool_latency - rhs.nr_pool_latency,
             nr_pool_batch: self.nr_pool_batch - rhs.nr_pool_batch,
             nr_pool_migrations: self.nr_pool_migrations - rhs.nr_pool_migrations,
+            nr_tail_guard_dispatches: self.nr_tail_guard_dispatches - rhs.nr_tail_guard_dispatches,
+            nr_slo_violations: self.nr_slo_violations - rhs.nr_slo_violations,
             ..self.clone()
         }
     }

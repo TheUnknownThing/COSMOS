@@ -109,6 +109,11 @@ struct Opts {
     #[clap(long, default_value = "500")]
     pool_rebalance_ms: u64,
 
+    /// Slack threshold in microseconds below which tasks are promoted to tail guard (Phase 3).
+    /// Default: slo_target_us / 2.  Set to 0 to disable tail guard promotion.
+    #[clap(long)]
+    tail_guard_threshold_us: Option<u64>,
+
     /// Enable stats monitoring with the specified interval.
     #[clap(long)]
     stats: Option<f64>,
@@ -198,6 +203,8 @@ struct SchedulerPolicy {
     slice_ns_min: u64,
     slo_target_ns: u64,
     cold_start_boost_ns: u64,
+    /// Phase 3: slack threshold below which tasks are promoted to tail guard pool.
+    tail_guard_threshold_ns: u64,
     nr_cold_start_tasks: u64,
     nr_hot_invocation_tasks: u64,
     nr_background_tasks: u64,
@@ -206,17 +213,27 @@ struct SchedulerPolicy {
     nr_metadata_classified: u64,
     nr_pool_latency: u64,
     nr_pool_batch: u64,
+    /// Phase 3: tasks promoted to tail guard pool.
+    nr_tail_guard_dispatches: u64,
+    /// Phase 3: tasks dispatched past their deadline.
+    nr_slo_violations: u64,
 }
 
 impl SchedulerPolicy {
     fn new(opts: &Opts) -> Self {
+        let slo_target_ns = opts.slo_target_us * NSEC_PER_USEC;
+        let tail_guard_threshold_ns = match opts.tail_guard_threshold_us {
+            Some(us) => us * NSEC_PER_USEC,
+            None => slo_target_ns / 2, // default: half the SLO target
+        };
         Self {
             task_state: HashMap::new(),
             vruntime_now: 0,
             slice_ns: opts.slice_us * NSEC_PER_USEC,
             slice_ns_min: opts.slice_us_min * NSEC_PER_USEC,
-            slo_target_ns: opts.slo_target_us * NSEC_PER_USEC,
+            slo_target_ns,
             cold_start_boost_ns: opts.cold_start_boost_us * NSEC_PER_USEC,
+            tail_guard_threshold_ns,
             nr_cold_start_tasks: 0,
             nr_hot_invocation_tasks: 0,
             nr_background_tasks: 0,
@@ -225,6 +242,8 @@ impl SchedulerPolicy {
             nr_metadata_classified: 0,
             nr_pool_latency: 0,
             nr_pool_batch: 0,
+            nr_tail_guard_dispatches: 0,
+            nr_slo_violations: 0,
         }
     }
 
@@ -283,7 +302,12 @@ impl SchedulerPolicy {
         self.vruntime_now = self.vruntime_now.saturating_add(vslice);
     }
 
-    fn task_score(&self, task: &QueuedTask, class: TaskClass) -> u64 {
+    fn task_score(&self, task: &QueuedTask, class: TaskClass, pool: TaskPool) -> u64 {
+        // Phase 3: Tail guard tasks use EDF scoring (deadline directly)
+        if pool == TaskPool::TailGuard && task.deadline_ns > 0 {
+            return task.deadline_ns.saturating_sub(self.vruntime_now);
+        }
+
         let runtime_penalty = task.exec_runtime.min(self.slice_ns.saturating_mul(100));
         let fair_deadline = task.vtime.saturating_add(runtime_penalty);
         let boost = match class {
@@ -298,7 +322,12 @@ impl SchedulerPolicy {
         fair_deadline.saturating_sub(Self::scale_by_task_weight(task, boost))
     }
 
-    fn task_slice_ns(&self, task: &QueuedTask, class: TaskClass) -> u64 {
+    fn task_slice_ns(&self, task: &QueuedTask, class: TaskClass, pool: TaskPool) -> u64 {
+        // Phase 3: Tail guard tasks get full SLO budget to maximize chance of completion
+        if pool == TaskPool::TailGuard {
+            return self.slo_target_ns.max(self.slice_ns_min);
+        }
+
         let base = match class {
             TaskClass::ColdStart => self.slo_target_ns / 4,
             TaskClass::HotInvocation => self.slo_target_ns / 8,
@@ -311,15 +340,37 @@ impl SchedulerPolicy {
     fn update_enqueued(&mut self, task: &mut QueuedTask, now: u64) -> (TaskClass, TaskPool, u64, u64) {
         let class = self.classify_task(task);
         self.update_vruntime(task);
-        let score = self.task_score(task, class);
-        let slice_ns = self.task_slice_ns(task, class);
         self.update_task_state(task, now);
 
         // Phase 1: pool assignment based on classification
-        let pool = match class {
+        let mut pool = match class {
             TaskClass::ColdStart | TaskClass::HotInvocation => TaskPool::Latency,
             TaskClass::Background => TaskPool::Batch,
         };
+
+        // Phase 3: Tail guard promotion — if the task has metadata with a
+        // deadline and the remaining slack is below the threshold, promote
+        // it to the TailGuard pool for priority execution.
+        if task.has_invocation_meta == 1 && task.deadline_ns > 0 && self.tail_guard_threshold_ns > 0 {
+            let task_state = self.task_state.get(&task.pid);
+            let estimated_remaining = task_state.map_or(0, |s| s.avg_runtime_ns);
+            let slack_ns = task.deadline_ns
+                .saturating_sub(now)
+                .saturating_sub(estimated_remaining);
+
+            if slack_ns < self.tail_guard_threshold_ns {
+                pool = TaskPool::TailGuard;
+                self.nr_tail_guard_dispatches = self.nr_tail_guard_dispatches.saturating_add(1);
+            }
+
+            // Phase 3: SLO violation detection — task already past deadline
+            if now > task.deadline_ns {
+                self.nr_slo_violations = self.nr_slo_violations.saturating_add(1);
+            }
+        }
+
+        let score = self.task_score(task, class, pool);
+        let slice_ns = self.task_slice_ns(task, class, pool);
 
         // Track whether this was classified via metadata
         if task.has_invocation_meta == 1 {
@@ -346,6 +397,9 @@ impl SchedulerPolicy {
             }
             TaskPool::Batch => {
                 self.nr_pool_batch = self.nr_pool_batch.saturating_add(1);
+            }
+            TaskPool::TailGuard => {
+                // already counted via nr_tail_guard_dispatches above
             }
             _ => {}
         }
@@ -411,6 +465,11 @@ impl<'a> Scheduler<'a> {
             "Phase 2: Pool manager initialized ({} CPUs, {}% latency, {} tail guard, {}ms rebalance)",
             nr_cpus, opts.latency_pool_pct, opts.tail_guard_cpus, opts.pool_rebalance_ms
         );
+        info!(
+            "Phase 3: Tail guard threshold = {}us ({}ns)",
+            policy.tail_guard_threshold_ns / NSEC_PER_USEC,
+            policy.tail_guard_threshold_ns
+        );
 
         Ok(Self {
             bpf,
@@ -451,6 +510,8 @@ impl<'a> Scheduler<'a> {
             nr_pool_latency: self.policy.nr_pool_latency,
             nr_pool_batch: self.policy.nr_pool_batch,
             nr_pool_migrations: self.pool_manager.nr_pool_migrations,
+            nr_tail_guard_dispatches: self.policy.nr_tail_guard_dispatches,
+            nr_slo_violations: self.policy.nr_slo_violations,
         }
     }
 
@@ -827,5 +888,210 @@ mod tests {
         assert_eq!(policy.nr_metadata_classified, 2);
         assert_eq!(policy.nr_pool_latency, 1);
         assert_eq!(policy.nr_pool_batch, 2);
+    }
+
+    // =========================================================================
+    // Phase 3: Tail Guard Mechanism tests
+    // =========================================================================
+
+    #[test]
+    fn tail_guard_promotion_when_slack_below_threshold() {
+        // SLO target = 10ms, threshold defaults to 5ms (half)
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+        assert_eq!(policy.tail_guard_threshold_ns, 5 * MS);
+
+        // Task with deadline only 3ms in the future (slack = 3ms < threshold 5ms)
+        let now = 100 * MS;
+        let deadline = now + 3 * MS;
+        let mut t = task_with_meta(1001, "worker", 1 * MS, 100, 0, 0, deadline);
+        let (_class, pool, _score, _slice) = policy.update_enqueued(&mut t, now);
+        assert_eq!(pool, TaskPool::TailGuard, "should be promoted to tail guard");
+        assert_eq!(policy.nr_tail_guard_dispatches, 1);
+    }
+
+    #[test]
+    fn no_tail_guard_when_slack_above_threshold() {
+        // SLO target = 10ms, threshold = 5ms
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        // Task with deadline 20ms in the future (slack = 20ms > threshold 5ms)
+        let now = 100 * MS;
+        let deadline = now + 20 * MS;
+        let mut t = task_with_meta(1002, "worker", 1 * MS, 100, 0, 0, deadline);
+        let (_class, pool, _score, _slice) = policy.update_enqueued(&mut t, now);
+        assert_eq!(pool, TaskPool::Latency, "should stay in latency pool");
+        assert_eq!(policy.nr_tail_guard_dispatches, 0);
+    }
+
+    #[test]
+    fn slo_violation_detected_when_past_deadline() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        // Task with deadline already in the past
+        let now = 200 * MS;
+        let deadline = 100 * MS;  // expired 100ms ago
+        let mut t = task_with_meta(1003, "worker", 1 * MS, 100, 0, 0, deadline);
+        let (_class, pool, _score, _slice) = policy.update_enqueued(&mut t, now);
+
+        // Should be promoted to tail guard (slack is 0 < threshold)
+        assert_eq!(pool, TaskPool::TailGuard);
+        assert_eq!(policy.nr_tail_guard_dispatches, 1);
+        // Should count as SLO violation
+        assert_eq!(policy.nr_slo_violations, 1);
+    }
+
+    #[test]
+    fn no_slo_violation_when_within_deadline() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        let now = 100 * MS;
+        let deadline = now + 20 * MS;
+        let mut t = task_with_meta(1004, "worker", 1 * MS, 100, 0, 0, deadline);
+        policy.update_enqueued(&mut t, now);
+        assert_eq!(policy.nr_slo_violations, 0);
+    }
+
+    #[test]
+    fn tail_guard_gets_edf_scoring() {
+        // Two tasks with different deadlines — earlier deadline should get lower score
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        let now = 100 * MS;
+        let early_deadline = now + 2 * MS;
+        let late_deadline = now + 4 * MS;
+
+        let mut t_early = task_with_meta(1005, "worker", 1 * MS, 100, 0, 0, early_deadline);
+        let (_, pool_e, score_early, _) = policy.update_enqueued(&mut t_early, now);
+        assert_eq!(pool_e, TaskPool::TailGuard);
+
+        let mut t_late = task_with_meta(1006, "worker", 1 * MS, 100, 0, 0, late_deadline);
+        let (_, pool_l, score_late, _) = policy.update_enqueued(&mut t_late, now);
+        assert_eq!(pool_l, TaskPool::TailGuard);
+
+        // EDF: earlier deadline → lower score → dispatched first
+        assert!(
+            score_early < score_late,
+            "earlier deadline should have lower score: {} vs {}",
+            score_early,
+            score_late
+        );
+    }
+
+    #[test]
+    fn tail_guard_gets_full_slo_slice() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        let now = 100 * MS;
+        let deadline = now + 2 * MS; // tight deadline → tail guard
+        let mut t = task_with_meta(1007, "worker", 1 * MS, 100, 0, 0, deadline);
+        let (_, pool, _, slice_ns) = policy.update_enqueued(&mut t, now);
+        assert_eq!(pool, TaskPool::TailGuard);
+        // Tail guard tasks get full SLO budget
+        assert_eq!(slice_ns, policy.slo_target_ns);
+    }
+
+    #[test]
+    fn tail_guard_threshold_cli_override() {
+        // Override threshold to 2ms
+        let opts = opts(&["--slo-target-us", "10000", "--tail-guard-threshold-us", "2000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+        assert_eq!(policy.tail_guard_threshold_ns, 2 * MS);
+
+        let now = 100 * MS;
+
+        // 3ms slack — above 2ms threshold → NOT tail guard
+        let mut t1 = task_with_meta(1008, "worker", 1 * MS, 100, 0, 0, now + 3 * MS);
+        let (_, pool1, _, _) = policy.update_enqueued(&mut t1, now);
+        assert_eq!(pool1, TaskPool::Latency);
+
+        // 1ms slack — below 2ms threshold → tail guard
+        let mut t2 = task_with_meta(1009, "worker", 1 * MS, 100, 0, 0, now + 1 * MS);
+        let (_, pool2, _, _) = policy.update_enqueued(&mut t2, now);
+        assert_eq!(pool2, TaskPool::TailGuard);
+    }
+
+    #[test]
+    fn tail_guard_disabled_with_zero_threshold() {
+        // Explicitly disable tail guard promotion
+        let opts = opts(&["--slo-target-us", "10000", "--tail-guard-threshold-us", "0"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+        assert_eq!(policy.tail_guard_threshold_ns, 0);
+
+        let now = 100 * MS;
+        // Even with tight deadline, should NOT be promoted
+        let mut t = task_with_meta(1010, "worker", 1 * MS, 100, 0, 0, now + 1 * MS);
+        let (_, pool, _, _) = policy.update_enqueued(&mut t, now);
+        assert_ne!(pool, TaskPool::TailGuard);
+        assert_eq!(policy.nr_tail_guard_dispatches, 0);
+    }
+
+    #[test]
+    fn no_tail_guard_without_metadata() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        // Task without metadata should never get tail guard, even with tight timing
+        let now = 100 * MS;
+        let mut t = task(1011, "worker", 1 * MS, 100, 0, 0, 0);
+        let (_, pool, _, _) = policy.update_enqueued(&mut t, now);
+        assert_eq!(pool, TaskPool::Batch); // Background → Batch
+        assert_eq!(policy.nr_tail_guard_dispatches, 0);
+    }
+
+    #[test]
+    fn no_tail_guard_without_deadline() {
+        // Metadata present but deadline_ns=0 → no tail guard promotion
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        let now = 100 * MS;
+        let mut t = task_with_meta(1012, "worker", 1 * MS, 100, 0, 0, 0); // deadline=0
+        let (_, pool, _, _) = policy.update_enqueued(&mut t, now);
+        assert_eq!(pool, TaskPool::Latency); // stays in latency
+        assert_eq!(policy.nr_tail_guard_dispatches, 0);
+    }
+
+    #[test]
+    fn tail_guard_considers_estimated_runtime() {
+        // If estimated remaining runtime eats into the slack, it should trigger tail guard
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        let now = 100 * MS;
+        // First enqueue to build up avg_runtime_ns state
+        let mut t1 = task_with_meta(1013, "worker", 8 * MS, 100, 0, 0, now + 20 * MS);
+        policy.update_enqueued(&mut t1, now);
+
+        // Second enqueue: deadline 12ms away, but avg_runtime ~8ms → slack ~4ms < 5ms threshold
+        let mut t2 = task_with_meta(1013, "worker", 8 * MS, 100, 0, 0, now + 12 * MS);
+        let (_, pool, _, _) = policy.update_enqueued(&mut t2, now);
+        assert_eq!(pool, TaskPool::TailGuard, "should promote because estimated_remaining eats into slack");
+    }
+
+    #[test]
+    fn multiple_tail_guard_stats_accumulate() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+        let now = 100 * MS;
+
+        // 3 tasks with tight deadlines → all promoted to tail guard
+        for pid in 2001..2004 {
+            let mut t = task_with_meta(pid, "worker", 1 * MS, 100, 0, 0, now + 1 * MS);
+            let (_, pool, _, _) = policy.update_enqueued(&mut t, now);
+            assert_eq!(pool, TaskPool::TailGuard);
+        }
+        assert_eq!(policy.nr_tail_guard_dispatches, 3);
+
+        // 1 past-deadline task
+        let mut t_late = task_with_meta(2005, "worker", 1 * MS, 100, 0, 0, now - 1 * MS);
+        policy.update_enqueued(&mut t_late, now);
+        assert_eq!(policy.nr_slo_violations, 1);
+        assert_eq!(policy.nr_tail_guard_dispatches, 4); // also promoted to tail guard
     }
 }
