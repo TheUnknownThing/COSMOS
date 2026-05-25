@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TextIO
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -50,6 +50,22 @@ class WorkloadSpec:
     runner: Path
     inspired_by: tuple[str, ...]
     description: str
+
+
+@dataclass
+class StagedInvocation:
+    output_json: Path
+    stderr_file: TextIO
+    process: subprocess.Popen[bytes]
+    invocation_id: int
+    workload: str
+    config: str
+    deadline_us: int
+    launch_start_ns: int
+    metadata_ready_ns: int
+    metadata_tgid: int
+    metadata_tgids: list[int]
+    metadata_key_visible: bool | None
 
 
 def default_deadline_us_for_duration(duration_ms: int) -> int:
@@ -87,7 +103,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
-        default_slo_class=0,
+        default_slo_class=1,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("010.sleep",),
         description="minimal baseline overhead calibration",
@@ -109,7 +125,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
-        default_slo_class=2,
+        default_slo_class=1,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("411.image-recognition", "220.video-processing"),
         description="allocation and scanning workload that stresses memory bandwidth and cache locality",
@@ -131,7 +147,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
-        default_slo_class=2,
+        default_slo_class=1,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("311.compression",),
         description="repeated compress/decompress cycles over moderately sized buffers",
@@ -142,7 +158,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
-        default_slo_class=2,
+        default_slo_class=1,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("503.graph-bfs", "501.graph-pagerank"),
         description="graph traversal workload with irregular memory access",
@@ -452,7 +468,9 @@ def run_workload_invocation(
     stderr_path = output_json.with_suffix(".stderr")
     command = workload_command(workload, duration_ms)
     spec = workload_spec(workload)
-    start_ns = time.monotonic_ns()
+    launch_start_ns = time.monotonic_ns()
+    start_ns = launch_start_ns
+    metadata_ready_ns = None
     env = None
     process: subprocess.Popen[bytes] | None = None
     metadata_tgid = None
@@ -503,6 +521,8 @@ def run_workload_invocation(
             if DEBUG_BPF_MAP:
                 metadata_key_visible = wait_for_invocation_meta_key(metadata_tgid)
                 dump_invocation_meta_map(output_json.with_suffix(".bpfmap.json"))
+            metadata_ready_ns = time.monotonic_ns()
+            start_ns = metadata_ready_ns
             os.kill(metadata_tgid, signal.SIGCONT)
             returncode = process.wait()
             for tgid in reversed(metadata_tgids):
@@ -520,9 +540,16 @@ def run_workload_invocation(
         "invocation_id": invocation_id,
         "status": "ok" if returncode == 0 else "failed",
         "exit_code": returncode,
+        "launch_start_monotonic_ns": launch_start_ns,
         "start_monotonic_ns": start_ns,
         "end_monotonic_ns": end_ns,
         "duration_ms": (end_ns - start_ns) / 1_000_000.0,
+        "metadata_ready_monotonic_ns": metadata_ready_ns,
+        "metadata_setup_ms": (
+            (metadata_ready_ns - launch_start_ns) / 1_000_000.0
+            if metadata_ready_ns is not None
+            else None
+        ),
         "deadline_us": deadline_us,
         "workload": workload,
         "config": config,
@@ -533,6 +560,173 @@ def run_workload_invocation(
     }
     output_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return returncode
+
+
+def stage_metadata_bridge_invocation(
+    output_json: Path,
+    workload: str,
+    duration_ms: int,
+    deadline_us: int,
+    invocation_id: int,
+    config: str,
+    metadata_bridge_port: int,
+) -> StagedInvocation:
+    stderr_path = output_json.with_suffix(".stderr")
+    command = stopped_workload_command(workload_command(workload, duration_ms))
+    spec = workload_spec(workload)
+    launch_start_ns = time.monotonic_ns()
+    stderr_file = stderr_path.open("w", encoding="utf-8")
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            command,
+            env=os.environ.copy(),
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_file,
+        )
+        metadata_tgid = wait_for_process_stopped(process.pid)
+        metadata_tgids = list(dict.fromkeys([process.pid, metadata_tgid]))
+        for tgid in metadata_tgids:
+            send_event_bridge_event(
+                metadata_bridge_port,
+                {
+                    "type": "local_start",
+                    "activation_id": f"{config}-{workload}-{invocation_id}",
+                    "tgid": tgid,
+                    "timeout_ms": max(1, deadline_us // 1_000),
+                    "slo_class": spec.default_slo_class,
+                    "action_name": workload,
+                    "kind": "local-rust",
+                    "cold_start": False,
+                },
+            )
+        metadata_key_visible = None
+        if DEBUG_BPF_MAP:
+            metadata_key_visible = wait_for_invocation_meta_key(metadata_tgid)
+            dump_invocation_meta_map(output_json.with_suffix(".bpfmap.json"))
+        metadata_ready_ns = time.monotonic_ns()
+        return StagedInvocation(
+            output_json=output_json,
+            stderr_file=stderr_file,
+            process=process,
+            invocation_id=invocation_id,
+            workload=workload,
+            config=config,
+            deadline_us=deadline_us,
+            launch_start_ns=launch_start_ns,
+            metadata_ready_ns=metadata_ready_ns,
+            metadata_tgid=metadata_tgid,
+            metadata_tgids=metadata_tgids,
+            metadata_key_visible=metadata_key_visible,
+        )
+    except Exception:
+        stop_process(process, signal.SIGKILL)
+        stderr_file.close()
+        raise
+
+
+def complete_metadata_bridge_invocation(
+    staged: StagedInvocation,
+    start_ns: int,
+    metadata_bridge_port: int,
+) -> int:
+    returncode = staged.process.wait()
+    end_ns = time.monotonic_ns()
+    for tgid in reversed(staged.metadata_tgids):
+        send_event_bridge_event(
+            metadata_bridge_port,
+            {
+                "type": "local_end",
+                "activation_id": f"{staged.config}-{staged.workload}-{staged.invocation_id}",
+                "tgid": tgid,
+            },
+        )
+    staged.stderr_file.close()
+
+    payload = {
+        "invocation_id": staged.invocation_id,
+        "status": "ok" if returncode == 0 else "failed",
+        "exit_code": returncode,
+        "launch_start_monotonic_ns": staged.launch_start_ns,
+        "start_monotonic_ns": start_ns,
+        "end_monotonic_ns": end_ns,
+        "duration_ms": (end_ns - start_ns) / 1_000_000.0,
+        "metadata_ready_monotonic_ns": staged.metadata_ready_ns,
+        "metadata_setup_ms": (
+            staged.metadata_ready_ns - staged.launch_start_ns
+        )
+        / 1_000_000.0,
+        "deadline_us": staged.deadline_us,
+        "workload": staged.workload,
+        "config": staged.config,
+        "stderr_path": str(staged.output_json.with_suffix(".stderr")),
+        "metadata_tgid": staged.metadata_tgid,
+        "metadata_tgids": staged.metadata_tgids,
+        "metadata_key_visible": staged.metadata_key_visible,
+    }
+    staged.output_json.write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    return returncode
+
+
+def cleanup_staged_invocations(staged: Iterable[StagedInvocation]) -> None:
+    for invocation in staged:
+        stop_process(invocation.process, signal.SIGKILL)
+        invocation.stderr_file.close()
+
+
+def run_metadata_bridge_invocations(
+    run_dir: Path,
+    workload: str,
+    concurrency: int,
+    duration_ms: int,
+    deadline_us: int,
+    config: str,
+    metadata_bridge_port: int,
+) -> int:
+    staged_invocations: list[StagedInvocation] = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = [
+                executor.submit(
+                    stage_metadata_bridge_invocation,
+                    run_dir / "invocations" / f"{invocation_id}.json",
+                    workload,
+                    duration_ms,
+                    deadline_us,
+                    invocation_id,
+                    config,
+                    metadata_bridge_port,
+                )
+                for invocation_id in range(1, concurrency + 1)
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                staged_invocations.append(future.result())
+
+        staged_invocations.sort(key=lambda invocation: invocation.invocation_id)
+        start_ns = time.monotonic_ns()
+        for invocation in staged_invocations:
+            os.kill(invocation.metadata_tgid, signal.SIGCONT)
+
+        failures = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = [
+                executor.submit(
+                    complete_metadata_bridge_invocation,
+                    invocation,
+                    start_ns,
+                    metadata_bridge_port,
+                )
+                for invocation in staged_invocations
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                if future.result() != 0:
+                    failures += 1
+        return failures
+    except Exception:
+        cleanup_staged_invocations(staged_invocations)
+        raise
 
 
 def write_manifest(
@@ -577,9 +771,12 @@ def write_client_latency_csv(run_dir: Path) -> None:
                 "invocation_id",
                 "status",
                 "exit_code",
+                "launch_start_monotonic_ns",
                 "start_monotonic_ns",
                 "end_monotonic_ns",
                 "duration_ms",
+                "metadata_ready_monotonic_ns",
+                "metadata_setup_ms",
                 "deadline_us",
                 "workload",
                 "config",
@@ -613,6 +810,19 @@ def run_invocations(
 ) -> int:
     run_dir.joinpath("invocations").mkdir(parents=True, exist_ok=True)
     ensure_benchmark_workload_build()
+    if use_metadata and metadata_bridge_port is not None:
+        failures = run_metadata_bridge_invocations(
+            run_dir,
+            workload,
+            concurrency,
+            duration_ms,
+            deadline_us,
+            config,
+            metadata_bridge_port,
+        )
+        write_client_latency_csv(run_dir)
+        return failures
+
     failures = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = [

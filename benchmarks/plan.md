@@ -31,10 +31,13 @@ workloads. See `profiler/README.md`.
 | `cosmos-heuristic`  | COSMOS    | no       | no    | no               | no         |
 | `cosmos-metadata`   | COSMOS    | yes      | no    | no               | no         |
 | `cosmos-pooled`     | COSMOS    | yes      | yes   | no               | no         |
-| `cosmos-full`       | COSMOS    | yes      | yes   | yes              | yes        |
+| `cosmos-full`       | COSMOS    | yes      | yes   | yes              | opt-in     |
 
 `cosmos-heuristic` relies on the scheduler's built-in heuristic classification.
-`cosmos-full` enables the complete pipeline.
+`cosmos-full` enables metadata, pools, and deadline scoring. Tail guard is
+available through scheduler flags but is not reserved by default; keeping an
+idle tail-guard lane for standard-only local benchmark runs distorted fair-load
+memory results.
 
 ## Workloads
 
@@ -72,7 +75,7 @@ results/<config>/<timestamp>/
   scheduler_stats.jsonl      — scx_stats samples (COSMOS only)
   scheduler.log              — scheduler stdout
   event_bridge.log           — metadata bridge log (metadata configs only)
-  summary.json               — aggregated latency, load, compute, scheduler
+  summary.json               — aggregated latency, metadata setup, load, compute, scheduler
 ```
 
 ## Compare

@@ -71,9 +71,9 @@ fn monotonic_now_ns() -> u64 {
 ///
 /// - ColdStart: explicitly marked cold-start invocations (is_cold_start=1) or
 ///   first-seen heuristic matches.
-/// - HotInvocation: latency-critical or standard SLO tasks (slo_class <= 1) or
-///   repeated short-running heuristic matches.
-/// - Background: batch tasks (slo_class >= 2) and non-invocation fallback work.
+/// - HotInvocation: latency-critical follow-up work or repeated short-running
+///   heuristic matches.
+/// - Background: explicit batch tasks and non-invocation fallback work.
 ///
 /// Invocation metadata comes first when available. When the shim is absent, the
 /// scheduler falls back to runtime / wakeup heuristics so mixed deployments
@@ -125,7 +125,7 @@ struct Opts {
     latency_pool_pct: u32,
 
     /// Number of CPUs to reserve for the tail guard pool (0 = disabled) (Phase 2).
-    #[clap(long, default_value = "1")]
+    #[clap(long, default_value = "0")]
     tail_guard_cpus: u32,
 
     /// Pool rebalance interval in milliseconds (Phase 2).
@@ -441,12 +441,12 @@ impl SchedulerPolicy {
                     .saturating_add(metadata_anchor)
                     .saturating_sub(Self::scale_by_task_weight(task, urgency_boost));
                 return match class {
-                    TaskClass::ColdStart => metadata_base.saturating_sub(
-                        Self::scale_by_task_weight(
+                    TaskClass::ColdStart => {
+                        metadata_base.saturating_sub(Self::scale_by_task_weight(
                             task,
                             self.slo_target_ns.saturating_add(self.cold_start_boost_ns),
-                        ),
-                    ),
+                        ))
+                    }
                     TaskClass::HotInvocation => metadata_base
                         .saturating_sub(Self::scale_by_task_weight(task, self.slo_target_ns)),
                     TaskClass::Background => metadata_base.saturating_add(self.slo_target_ns),
@@ -616,12 +616,19 @@ impl<'a> Scheduler<'a> {
         let effective_tail_guard_cpus =
             pool::effective_tail_guard_cpus(nr_cpus, opts.tail_guard_cpus);
         let auto_disable_small_host_features = nr_cpus <= 4;
-        if effective_tail_guard_cpus != opts.tail_guard_cpus {
+        if effective_tail_guard_cpus == 0 {
+            policy.tail_guard_threshold_ns = 0;
+            if opts.tail_guard_cpus != 0 {
+                info!(
+                    "Phase 2: tail guard auto-disabled on {}-CPU host (requested {}, using {})",
+                    nr_cpus, opts.tail_guard_cpus, effective_tail_guard_cpus
+                );
+            }
+        } else if effective_tail_guard_cpus != opts.tail_guard_cpus {
             info!(
-                "Phase 2: tail guard auto-disabled on {}-CPU host (requested {}, using {})",
+                "Phase 2: tail guard reduced on {}-CPU host (requested {}, using {})",
                 nr_cpus, opts.tail_guard_cpus, effective_tail_guard_cpus
             );
-            policy.tail_guard_threshold_ns = 0;
         }
         if auto_disable_small_host_features {
             if policy.pools_enabled {
@@ -714,16 +721,7 @@ impl<'a> Scheduler<'a> {
             nr_metadata_classified: self.policy.nr_metadata_classified,
             nr_heuristic_classified: self.policy.nr_heuristic_classified,
             nr_metadata_refreshed: self.policy.nr_metadata_refreshed,
-            nr_invocation_meta_enqueues: {
-                let v = *self.bpf.nr_invocation_meta_enqueues_mut();
-                if self.policy.nr_metadata_classified > 0 || v > 0 {
-                    eprintln!(
-                        "COSMOS_DEBUG: get_metrics meta_classified={} meta_enq={} heur={}",
-                        self.policy.nr_metadata_classified, v, self.policy.nr_heuristic_classified
-                    );
-                }
-                v
-            },
+            nr_invocation_meta_enqueues: *self.bpf.nr_invocation_meta_enqueues_mut(),
             nr_pool_latency: self.policy.nr_pool_latency,
             nr_pool_batch: self.policy.nr_pool_batch,
             nr_pool_migrations: self.pool_manager.nr_pool_migrations,
@@ -760,9 +758,13 @@ impl<'a> Scheduler<'a> {
             return TaskPool::None;
         }
 
-        let latency_like = self.pending_latency_tasks
+        let latency_like = self
+            .pending_latency_tasks
             .saturating_add(self.pending_tail_guard_tasks)
-            .saturating_add(u64::from(matches!(pool, TaskPool::Latency | TaskPool::TailGuard)));
+            .saturating_add(u64::from(matches!(
+                pool,
+                TaskPool::Latency | TaskPool::TailGuard
+            )));
         let batch_like = self
             .pending_batch_tasks
             .saturating_add(u64::from(matches!(pool, TaskPool::Batch)));
@@ -1181,7 +1183,10 @@ mod tests {
         assert_eq!(class, TaskClass::ColdStart);
 
         let state = policy.task_state.get(&902).unwrap();
-        assert_eq!(state.wakeups, 1, "new invocation should reset wakeup history");
+        assert_eq!(
+            state.wakeups, 1,
+            "new invocation should reset wakeup history"
+        );
         assert_eq!(state.avg_runtime_ns, 2 * MS);
         assert_eq!(state.last_invocation_id, 9902);
     }
@@ -1544,12 +1549,7 @@ mod tests {
 
     #[test]
     fn edf_earlier_deadline_gets_lower_score() {
-        let opts = opts(&[
-            "--slo-target-us",
-            "10000",
-            "--tail-guard-threshold-us",
-            "0",
-        ]);
+        let opts = opts(&["--slo-target-us", "10000", "--tail-guard-threshold-us", "0"]);
         let mut policy = SchedulerPolicy::new(&opts);
 
         let now = 100 * MS;
@@ -1607,12 +1607,7 @@ mod tests {
 
     #[test]
     fn batch_metadata_uses_heuristic_scoring() {
-        let opts = opts(&[
-            "--slo-target-us",
-            "10000",
-            "--tail-guard-threshold-us",
-            "0",
-        ]);
+        let opts = opts(&["--slo-target-us", "10000", "--tail-guard-threshold-us", "0"]);
         let mut policy = SchedulerPolicy::new(&opts);
 
         let now = 100 * MS;
@@ -1638,12 +1633,7 @@ mod tests {
 
     #[test]
     fn metadata_deadline_scoring_still_respects_vruntime_progress() {
-        let opts = opts(&[
-            "--slo-target-us",
-            "10000",
-            "--tail-guard-threshold-us",
-            "0",
-        ]);
+        let opts = opts(&["--slo-target-us", "10000", "--tail-guard-threshold-us", "0"]);
         let mut policy = SchedulerPolicy::new(&opts);
 
         let now = 100 * MS;

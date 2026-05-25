@@ -60,7 +60,9 @@ pub fn write_meta(tgid: u32, meta: &InvocationMeta) -> Result<()> {
 
     let ret = unsafe { sys_bpf(BPF_MAP_UPDATE_ELEM, attr.as_ptr(), BPF_ATTR_SZ as u32) };
 
-    unsafe { libc::close(map_fd); }
+    unsafe {
+        libc::close(map_fd);
+    }
 
     if ret < 0 {
         let err = std::io::Error::last_os_error();
@@ -84,7 +86,9 @@ pub fn delete_meta(tgid: u32) -> Result<()> {
 
     let ret = unsafe { sys_bpf(BPF_MAP_DELETE_ELEM, attr.as_ptr(), BPF_ATTR_SZ as u32) };
 
-    unsafe { libc::close(map_fd); }
+    unsafe {
+        libc::close(map_fd);
+    }
 
     if ret < 0 {
         let err = std::io::Error::last_os_error();

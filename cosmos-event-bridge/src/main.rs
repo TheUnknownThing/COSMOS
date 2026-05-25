@@ -4,20 +4,24 @@ use anyhow::{Context, Result};
 use bpf_writer::InvocationMeta;
 use clap::Parser;
 use serde::Deserialize;
-use std::collections::BTreeSet;
 use std::collections::hash_map::Entry;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Parser)]
 #[command(name = "cosmos-event-bridge")]
-#[command(about = "COSMOS event bridge — consumes OpenWhisk invocation events, writes BPF metadata")]
+#[command(
+    about = "COSMOS event bridge — consumes OpenWhisk invocation events, writes BPF metadata"
+)]
 struct Args {
     #[arg(short, long, default_value = "9731")]
     port: u16,
@@ -87,12 +91,7 @@ fn hash_activation_id(id: &str) -> u64 {
 
 fn docker_inspect_pid(container_id: &str) -> Result<u32> {
     let output = Command::new("docker")
-        .args([
-            "inspect",
-            "--format",
-            "{{.State.Pid}}",
-            container_id,
-        ])
+        .args(["inspect", "--format", "{{.State.Pid}}", container_id])
         .output()
         .context("failed to run docker inspect")?;
 
@@ -101,9 +100,7 @@ fn docker_inspect_pid(container_id: &str) -> Result<u32> {
         anyhow::bail!("docker inspect failed: {}", stderr);
     }
 
-    let pid_str = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
+    let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let pid: u32 = pid_str
         .parse()
         .with_context(|| format!("invalid PID from docker inspect: '{}'", pid_str))?;
@@ -266,38 +263,102 @@ impl BridgeState {
         }
         Ok(())
     }
+}
 
-    fn handle_local_start(&mut self, ev: &LocalStartEvent) -> Result<()> {
-        let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
-        let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
-        let invocation_id = hash_activation_id(&ev.activation_id);
+fn handle_local_start(ev: &LocalStartEvent) -> Result<()> {
+    let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
+    let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
+    let invocation_id = hash_activation_id(&ev.activation_id);
 
-        let meta = InvocationMeta {
-            deadline_ns,
-            slo_class,
-            is_cold_start: if ev.cold_start { 1 } else { 0 },
-            invocation_id,
-        };
+    let meta = InvocationMeta {
+        deadline_ns,
+        slo_class,
+        is_cold_start: if ev.cold_start { 1 } else { 0 },
+        invocation_id,
+    };
 
-        bpf_writer::write_meta(ev.tgid, &meta)
-            .with_context(|| format!("failed to write BPF map for local tgid={}", ev.tgid))?;
+    bpf_writer::write_meta(ev.tgid, &meta)
+        .with_context(|| format!("failed to write BPF map for local tgid={}", ev.tgid))?;
 
-        eprintln!(
-            "COSMOS local_start: activation={} tgid={} action={} kind={} timeout_ms={} slo={} cold={} deadline_ns={}",
-            ev.activation_id, ev.tgid,
-            ev.action_name, ev.kind, ev.timeout_ms, slo_class, ev.cold_start, deadline_ns
-        );
-        Ok(())
-    }
+    eprintln!(
+        "COSMOS local_start: activation={} tgid={} action={} kind={} timeout_ms={} slo={} cold={} deadline_ns={}",
+        ev.activation_id, ev.tgid,
+        ev.action_name, ev.kind, ev.timeout_ms, slo_class, ev.cold_start, deadline_ns
+    );
+    Ok(())
+}
 
-    fn handle_local_end(&mut self, ev: &LocalEndEvent) -> Result<()> {
-        bpf_writer::delete_meta(ev.tgid)
-            .with_context(|| format!("failed to delete BPF map for local tgid={}", ev.tgid))?;
-        eprintln!(
-            "COSMOS local_end: activation={} tgid={} (deleted)",
-            ev.activation_id, ev.tgid
-        );
-        Ok(())
+fn handle_local_end(ev: &LocalEndEvent) -> Result<()> {
+    bpf_writer::delete_meta(ev.tgid)
+        .with_context(|| format!("failed to delete BPF map for local tgid={}", ev.tgid))?;
+    eprintln!(
+        "COSMOS local_end: activation={} tgid={} (deleted)",
+        ev.activation_id, ev.tgid
+    );
+    Ok(())
+}
+
+async fn handle_connection(stream: TcpStream, peer: SocketAddr, state: Arc<Mutex<BridgeState>>) {
+    eprintln!("connection from {}", peer);
+
+    let (reader, mut writer) = stream.into_split();
+    let buf_reader = BufReader::new(reader);
+    let mut lines = buf_reader.lines();
+
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let mut ok = true;
+                match serde_json::from_str::<CosmosEvent>(&line) {
+                    Ok(CosmosEvent::Start(ev)) => {
+                        let mut state = state.lock().expect("bridge state mutex poisoned");
+                        if let Err(e) = state.handle_start(&ev) {
+                            eprintln!("error handling start event: {:#}", e);
+                            ok = false;
+                        }
+                    }
+                    Ok(CosmosEvent::End(ev)) => {
+                        let mut state = state.lock().expect("bridge state mutex poisoned");
+                        if let Err(e) = state.handle_end(&ev) {
+                            eprintln!("error handling end event: {:#}", e);
+                            ok = false;
+                        }
+                    }
+                    Ok(CosmosEvent::LocalStart(ev)) => {
+                        if let Err(e) = handle_local_start(&ev) {
+                            eprintln!("error handling local_start event: {:#}", e);
+                            ok = false;
+                        }
+                    }
+                    Ok(CosmosEvent::LocalEnd(ev)) => {
+                        if let Err(e) = handle_local_end(&ev) {
+                            eprintln!("error handling local_end event: {:#}", e);
+                            ok = false;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("failed to parse event: {} (line={})", e, line);
+                        ok = false;
+                    }
+                }
+                let response: &[u8] = if ok { b"ok\n" } else { b"error\n" };
+                if let Err(e) = writer.write_all(response).await {
+                    eprintln!("write error to {}: {}", peer, e);
+                    break;
+                }
+            }
+            Ok(None) => {
+                eprintln!("connection from {} closed", peer);
+                break;
+            }
+            Err(e) => {
+                eprintln!("read error from {}: {}", peer, e);
+                break;
+            }
+        }
     }
 }
 
@@ -312,7 +373,7 @@ async fn main() -> Result<()> {
 
     eprintln!("COSMOS event bridge listening on {}", addr);
 
-    let mut state = BridgeState::new();
+    let state = Arc::new(Mutex::new(BridgeState::new()));
 
     loop {
         let (stream, peer) = listener
@@ -320,64 +381,9 @@ async fn main() -> Result<()> {
             .await
             .context("failed to accept connection")?;
 
-        eprintln!("connection from {}", peer);
-
-        let (reader, mut writer) = stream.into_split();
-        let buf_reader = BufReader::new(reader);
-        let mut lines = buf_reader.lines();
-
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    let mut ok = true;
-                    match serde_json::from_str::<CosmosEvent>(&line) {
-                        Ok(CosmosEvent::Start(ev)) => {
-                            if let Err(e) = state.handle_start(&ev) {
-                                eprintln!("error handling start event: {:#}", e);
-                                ok = false;
-                            }
-                        }
-                        Ok(CosmosEvent::End(ev)) => {
-                            if let Err(e) = state.handle_end(&ev) {
-                                eprintln!("error handling end event: {:#}", e);
-                                ok = false;
-                            }
-                        }
-                        Ok(CosmosEvent::LocalStart(ev)) => {
-                            if let Err(e) = state.handle_local_start(&ev) {
-                                eprintln!("error handling local_start event: {:#}", e);
-                                ok = false;
-                            }
-                        }
-                        Ok(CosmosEvent::LocalEnd(ev)) => {
-                            if let Err(e) = state.handle_local_end(&ev) {
-                                eprintln!("error handling local_end event: {:#}", e);
-                                ok = false;
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("failed to parse event: {} (line={})", e, line);
-                            ok = false;
-                        }
-                    }
-                    let response: &[u8] = if ok { b"ok\n" } else { b"error\n" };
-                    if let Err(e) = writer.write_all(response).await {
-                        eprintln!("write error to {}: {}", peer, e);
-                        break;
-                    }
-                }
-                Ok(None) => {
-                    eprintln!("connection from {} closed", peer);
-                    break;
-                }
-                Err(e) => {
-                    eprintln!("read error from {}: {}", peer, e);
-                    break;
-                }
-            }
-        }
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            handle_connection(stream, peer, state).await;
+        });
     }
 }

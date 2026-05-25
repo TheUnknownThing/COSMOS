@@ -83,6 +83,25 @@ def load_client_rows(run_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def summarize_optional_ms(rows: list[dict[str, Any]], field: str) -> dict[str, float] | None:
+    values = [
+        float(row[field])
+        for row in rows
+        if row.get(field) not in (None, "")
+    ]
+    if not values:
+        return None
+    return {
+        "count": len(values),
+        "min_ms": min(values),
+        "max_ms": max(values),
+        "mean_ms": sum(values) / len(values),
+        "p50_ms": percentile(values, 0.50),
+        "p95_ms": percentile(values, 0.95),
+        "p99_ms": percentile(values, 0.99),
+    }
+
+
 def load_scheduler_samples(run_dir: Path) -> list[dict[str, Any]]:
     path = run_dir / "scheduler_stats.jsonl"
     if not path.exists():
@@ -308,6 +327,9 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
             "total": scheduler_total,
         },
     }
+    metadata_setup = summarize_optional_ms(rows, "metadata_setup_ms")
+    if metadata_setup is not None:
+        summary["metadata_setup"] = metadata_setup
 
     (run_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
