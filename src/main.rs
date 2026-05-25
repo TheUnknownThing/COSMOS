@@ -313,23 +313,7 @@ impl SchedulerPolicy {
             .unwrap_or(true)
     }
 
-    fn classify_task(&self, task: &QueuedTask) -> TaskClass {
-        // Metadata-first classification from the shim library.
-        if task.has_invocation_meta == 1 {
-            return if task.is_cold_start == 1 {
-                TaskClass::ColdStart
-            } else if self.is_new_metadata_invocation(task) && task.slo_class <= 1 {
-                // A fresh invocation still needs bootstrap runway even when the
-                // runtime marks it as warm. Otherwise every new metadata-backed
-                // burst starts in the shortest "hot" slice configuration.
-                TaskClass::ColdStart
-            } else if task.slo_class <= 1 {
-                TaskClass::HotInvocation
-            } else {
-                TaskClass::Background
-            };
-        }
-
+    fn heuristic_classify_task(&self, task: &QueuedTask) -> TaskClass {
         let Some(state) = self.task_state.get(&task.pid) else {
             return if self.task_matches_invocation_hint(task)
                 || task.exec_runtime <= self.slo_target_ns
@@ -355,6 +339,29 @@ impl SchedulerPolicy {
         } else {
             TaskClass::Background
         }
+    }
+
+    fn classify_task(&self, task: &QueuedTask) -> TaskClass {
+        // Metadata-first classification from the shim library.
+        if task.has_invocation_meta == 1 {
+            return match task.slo_class {
+                0 => {
+                    if task.is_cold_start == 1 || self.is_new_metadata_invocation(task) {
+                        // Only explicit latency-critical work gets the
+                        // metadata cold-start runway. Standard metadata should
+                        // preserve the heuristic shape instead of forcing every
+                        // request into the aggressive latency path.
+                        TaskClass::ColdStart
+                    } else {
+                        TaskClass::HotInvocation
+                    }
+                }
+                1 => self.heuristic_classify_task(task),
+                _ => TaskClass::Background,
+            };
+        }
+
+        self.heuristic_classify_task(task)
     }
 
     fn update_task_state(&mut self, task: &QueuedTask, now: u64) {
@@ -411,7 +418,11 @@ impl SchedulerPolicy {
         // Phase 4: EDF scoring for all tasks with invocation metadata + deadline.
         // Lower slack still matters, but we preserve vruntime fairness by applying
         // only a bounded urgency adjustment to the fair-deadline score.
-        if self.deadline_scoring_enabled && task.has_invocation_meta == 1 && task.deadline_ns > 0 {
+        if self.deadline_scoring_enabled
+            && task.has_invocation_meta == 1
+            && task.slo_class == 0
+            && task.deadline_ns > 0
+        {
             let urgency_window = self.slice_ns.max(self.slice_ns_min);
             let metadata_anchor = urgency_window
                 .saturating_add(self.slo_target_ns)
@@ -482,9 +493,14 @@ impl SchedulerPolicy {
 
         // Phase 1: pool assignment based on classification
         let mut pool = if self.pools_enabled {
-            match class {
-                TaskClass::ColdStart | TaskClass::HotInvocation => TaskPool::Latency,
-                TaskClass::Background => TaskPool::Batch,
+            match task.slo_class {
+                0 if task.has_invocation_meta == 1 => TaskPool::Latency,
+                1 if task.has_invocation_meta == 1 => TaskPool::None,
+                2 if task.has_invocation_meta == 1 => TaskPool::Batch,
+                _ => match class {
+                    TaskClass::ColdStart | TaskClass::HotInvocation => TaskPool::Latency,
+                    TaskClass::Background => TaskPool::Batch,
+                },
             }
         } else {
             TaskPool::None
@@ -493,7 +509,7 @@ impl SchedulerPolicy {
         // Phase 3: Tail guard promotion — if the task has metadata with a
         // deadline and the remaining slack is below the threshold, promote
         // it to the TailGuard pool for priority execution.
-        if task.has_invocation_meta == 1 && task.deadline_ns > 0 {
+        if task.has_invocation_meta == 1 && task.slo_class == 0 && task.deadline_ns > 0 {
             if now > task.deadline_ns {
                 self.nr_slo_violations = self.nr_slo_violations.saturating_add(1);
             } else if self.pools_enabled && self.tail_guard_threshold_ns > 0 {
@@ -1133,7 +1149,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_repeated_standard_invocation_becomes_hot() {
+    fn metadata_standard_invocation_preserves_heuristic_shape() {
         let opts = opts(&["--slo-target-us", "10000"]);
         let mut policy = SchedulerPolicy::new(&opts);
 
@@ -1260,13 +1276,20 @@ mod tests {
         assert_eq!(class2, TaskClass::Background);
         assert_eq!(pool2, TaskPool::Batch);
 
+        // Standard metadata keeps the shared path so deadlines don't force a
+        // pool partition when the workload is not explicitly latency-critical.
+        let mut t_std = task_with_meta(908, "worker", 5 * MS, 100, 1, 0, 100 * MS);
+        let (class_std, pool_std, _, _) = policy.update_enqueued(&mut t_std, 2);
+        assert_eq!(class_std, TaskClass::ColdStart);
+        assert_eq!(pool_std, TaskPool::None);
+
         // No metadata but short runtime → heuristic ColdStart, Latency pool
         let mut t3 = task(907, "worker", 5 * MS, 100, 0, 0, 0);
         let (class3, pool3, _, _) = policy.update_enqueued(&mut t3, 3);
         assert_eq!(class3, TaskClass::ColdStart);
         assert_eq!(pool3, TaskPool::Latency);
 
-        assert_eq!(policy.nr_metadata_classified, 2);
+        assert_eq!(policy.nr_metadata_classified, 3);
         assert_eq!(policy.nr_heuristic_classified, 1);
         assert_eq!(policy.nr_pool_latency, 2);
         assert_eq!(policy.nr_pool_batch, 1);
@@ -1462,6 +1485,18 @@ mod tests {
     }
 
     #[test]
+    fn standard_metadata_does_not_use_tail_guard() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        let now = 100 * MS;
+        let mut t = task_with_meta(1014, "worker", 1 * MS, 100, 1, 0, now + 1 * MS);
+        let (_, pool, _, _) = policy.update_enqueued(&mut t, now);
+        assert_eq!(pool, TaskPool::None);
+        assert_eq!(policy.nr_tail_guard_dispatches, 0);
+    }
+
+    #[test]
     fn tail_guard_considers_estimated_runtime() {
         // If estimated remaining runtime eats into the slack, it should trigger tail guard
         let opts = opts(&["--slo-target-us", "10000"]);
@@ -1571,7 +1606,7 @@ mod tests {
     }
 
     #[test]
-    fn edf_background_penalty_applied() {
+    fn batch_metadata_uses_heuristic_scoring() {
         let opts = opts(&[
             "--slo-target-us",
             "10000",
@@ -1592,11 +1627,10 @@ mod tests {
         let (class_bg, _, score_bg, _) = policy.update_enqueued(&mut t_bg, now);
         assert_eq!(class_bg, TaskClass::Background);
 
-        // Background should get a HIGHER score (penalized with slo_target_ns addition)
-        // → lower priority than hot invocation
+        assert_eq!(score_bg, expected_heuristic_score(&policy, &t_bg, class_bg));
         assert!(
-            score_bg > score_hot,
-            "background should have higher score (lower priority) than hot: bg={} vs hot={}",
+            score_bg < score_hot,
+            "batch metadata should stay on heuristic scoring while latency-critical work gets EDF urgency: bg={} vs hot={}",
             score_bg,
             score_hot
         );
@@ -1687,6 +1721,19 @@ mod tests {
 
         let now = 100 * MS;
         let mut t = task_with_meta(3012, "worker", 5 * MS, 100, 0, 0, now + 20 * MS);
+        let (class, _, score, _) = policy.update_enqueued(&mut t, now);
+
+        assert_eq!(class, TaskClass::ColdStart);
+        assert_eq!(score, expected_heuristic_score(&policy, &t, class));
+    }
+
+    #[test]
+    fn standard_metadata_uses_heuristic_scoring() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        let now = 100 * MS;
+        let mut t = task_with_meta(3013, "worker", 5 * MS, 100, 1, 0, now + 20 * MS);
         let (class, _, score, _) = policy.update_enqueued(&mut t, now);
 
         assert_eq!(class, TaskClass::ColdStart);

@@ -784,6 +784,15 @@ static bool task_needs_metadata_userspace(const struct task_struct *p)
 	if (meta->is_cold_start)
 		return true;
 
+	/*
+	 * Only latency-critical metadata should force the userspace path near
+	 * the deadline. Standard and batch metadata can still inform scoring and
+	 * accounting when they do reach userspace, but they should otherwise
+	 * preserve the cheaper heuristic / builtin-idle fast path.
+	 */
+	if (meta->slo_class != 0)
+		return false;
+
 	if (!meta->deadline_ns)
 		return false;
 

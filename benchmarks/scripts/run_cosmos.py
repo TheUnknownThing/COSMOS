@@ -126,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     event_bridge = None
 
     try:
+        harness.remove_stale_unix_socket(args.stats_socket)
         with scheduler_log.open("w", encoding="utf-8") as log_file:
             scheduler = subprocess.Popen(
                 [str(args.scheduler_bin), *scheduler_flags],

@@ -16,6 +16,7 @@ const DEFAULT_DURATION_MS: u64 = 250;
 const WALL_TIME_SAMPLE_FLOOR_MS: u64 = 8;
 const CPU_TIME_SAMPLE_FLOOR_MS: u64 = 8;
 const MAX_SAMPLE_ITERS: u64 = 256;
+const MEMORY_HEAVY_BYTES: usize = 8 * 1024 * 1024;
 
 type AppResult<T> = Result<T, String>;
 
@@ -186,7 +187,7 @@ fn run_io_mixed(target: Duration) -> AppResult<()> {
 }
 
 fn run_memory_heavy(target: Duration) -> AppResult<()> {
-    let mut job = MemoryHeavyJob::new(64 * 1024 * 1024);
+    let mut job = MemoryHeavyJob::new(MEMORY_HEAVY_BYTES);
     execute_calibrated_wall_time(target, || {
         job.run_once();
         Ok(())

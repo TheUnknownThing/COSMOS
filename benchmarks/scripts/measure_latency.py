@@ -316,7 +316,7 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
 
 
 STATS_REQUEST_PAYLOAD = json.dumps({"req": "stats", "args": {}}).encode("utf-8") + b"\n"
-STATS_SOCKET_TIMEOUT_S = 1.0
+STATS_SOCKET_TIMEOUT_S = 5.0
 
 
 def _decode_stats_response(raw: bytes) -> dict[str, Any]:

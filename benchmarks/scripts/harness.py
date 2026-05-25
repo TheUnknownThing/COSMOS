@@ -8,6 +8,7 @@ import json
 import os
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -28,6 +29,7 @@ DEFAULT_STATS_SOCKET = Path("/var/run/scx/root/stats")
 DEFAULT_EVENT_BRIDGE_PORT = 9731
 DEFAULT_SLO_MIN_SLACK_US = 5_000
 DEFAULT_WORKLOAD_DURATION_MS = 250
+SCHEDULER_STATS_READY_TIMEOUT_S = 30.0
 TIME_BIN = Path("/usr/bin/time")
 BPFTOOL_BIN = Path("/usr/sbin/bpftool")
 if not BPFTOOL_BIN.exists():
@@ -44,6 +46,7 @@ class WorkloadSpec:
     name: str
     default_duration_ms: int
     default_deadline_us: int
+    default_slo_class: int
     runner: Path
     inspired_by: tuple[str, ...]
     description: str
@@ -73,6 +76,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
+        default_slo_class=1,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("010.sleep",),
         description="calibrated dense matrix CPU burst for scheduler overhead and tail latency pressure",
@@ -83,6 +87,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
+        default_slo_class=0,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("010.sleep",),
         description="minimal baseline overhead calibration",
@@ -93,6 +98,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
+        default_slo_class=1,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("311.compression", "220.video-processing"),
         description="small CPU plus synchronous file IO mix",
@@ -103,6 +109,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
+        default_slo_class=2,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("411.image-recognition", "220.video-processing"),
         description="allocation and scanning workload that stresses memory bandwidth and cache locality",
@@ -113,6 +120,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
+        default_slo_class=1,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("120.uploader",),
         description="loopback TCP transfer workload for network wait and copy pressure",
@@ -123,6 +131,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
+        default_slo_class=2,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("311.compression",),
         description="repeated compress/decompress cycles over moderately sized buffers",
@@ -133,6 +142,7 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         default_deadline_us=default_deadline_us_for_duration(
             DEFAULT_WORKLOAD_DURATION_MS
         ),
+        default_slo_class=2,
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("503.graph-bfs", "501.graph-pagerank"),
         description="graph traversal workload with irregular memory access",
@@ -441,6 +451,7 @@ def run_workload_invocation(
 ) -> int:
     stderr_path = output_json.with_suffix(".stderr")
     command = workload_command(workload, duration_ms)
+    spec = workload_spec(workload)
     start_ns = time.monotonic_ns()
     env = None
     process: subprocess.Popen[bytes] | None = None
@@ -483,6 +494,7 @@ def run_workload_invocation(
                         "activation_id": f"{config}-{workload}-{invocation_id}",
                         "tgid": tgid,
                         "timeout_ms": max(1, deadline_us // 1_000),
+                        "slo_class": spec.default_slo_class,
                         "action_name": workload,
                         "kind": "local-rust",
                         "cold_start": False,
@@ -631,7 +643,8 @@ def summarize_run(run_dir: Path) -> dict:
 def wait_for_scheduler_stats(
     socket_path: Path, scheduler: subprocess.Popen[bytes], log_path: Path
 ) -> None:
-    for _ in range(50):
+    deadline = time.monotonic() + SCHEDULER_STATS_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
         if scheduler.poll() is not None:
             raise RuntimeError(log_path.read_text(encoding="utf-8", errors="replace"))
         try:
@@ -645,6 +658,15 @@ def wait_for_scheduler_stats(
         except Exception:
             time.sleep(0.1)
     raise TimeoutError(f"timed out waiting for scheduler stats socket at {socket_path}")
+
+
+def remove_stale_unix_socket(socket_path: Path) -> None:
+    try:
+        mode = socket_path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISSOCK(mode):
+        socket_path.unlink()
 
 
 def start_scheduler_stats_capture(

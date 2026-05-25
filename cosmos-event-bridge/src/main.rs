@@ -28,6 +28,7 @@ struct StartEvent {
     activation_id: String,
     container_id: String,
     timeout_ms: u64,
+    slo_class: Option<u32>,
     action_name: String,
     kind: String,
     cold_start: bool,
@@ -44,6 +45,7 @@ struct LocalStartEvent {
     activation_id: String,
     tgid: u32,
     timeout_ms: u64,
+    slo_class: Option<u32>,
     action_name: String,
     kind: String,
     cold_start: bool,
@@ -149,9 +151,16 @@ fn container_tgids(root: u32) -> Vec<u32> {
 
 fn slo_class_from_timeout(timeout_ms: u64) -> u32 {
     match timeout_ms {
-        t if t <= 500 => 0,
+        t if t <= 100 => 0,
         t if t <= 30000 => 1,
         _ => 2,
+    }
+}
+
+fn resolve_slo_class(timeout_ms: u64, explicit: Option<u32>) -> u32 {
+    match explicit {
+        Some(v @ 0..=2) => v,
+        _ => slo_class_from_timeout(timeout_ms),
     }
 }
 
@@ -177,7 +186,7 @@ impl BridgeState {
         let tgid = docker_inspect_pid(&ev.container_id)?;
         let tgids = container_tgids(tgid);
         let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
-        let slo_class = slo_class_from_timeout(ev.timeout_ms);
+        let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
         let invocation_id = hash_activation_id(&ev.activation_id);
 
         let meta = InvocationMeta {
@@ -260,7 +269,7 @@ impl BridgeState {
 
     fn handle_local_start(&mut self, ev: &LocalStartEvent) -> Result<()> {
         let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
-        let slo_class = slo_class_from_timeout(ev.timeout_ms);
+        let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
         let invocation_id = hash_activation_id(&ev.activation_id);
 
         let meta = InvocationMeta {
