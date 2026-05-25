@@ -1,138 +1,117 @@
-# COSMOS Benchmark Plan
+# COSMOS Benchmark Architecture
 
-## Summary
-- Learn resource phases from traces, not workload names: offline profiling uses `perf`, cgroup, eBPF, qdisc, lifecycle, and client-side latency data.
-- Use **OpenWhisk standalone + SeBS native OpenWhisk backend** as the main FaaS benchmark target.
-- Keep a **standalone COSMOS profiling harness** for local/debug runs so profiling work is not blocked by OpenWhisk.
-- Avoid Kubernetes, SeBS core changes, and OpenLambda integration unless OpenWhisk fails the initial 3-day OpenWhisk viability run.
+## Two benchmark paths
 
-## Key Changes
-- Add benchmark tooling under `benchmarks/profiler/` using rust:
-  - `configs/`: workload, event, sanity/profile/interference matrices.
-  - `runners/`: standalone runner, OpenWhisk runner, interference launcher.
-  - `collectors/`: cgroup sampler, `perf stat -G`, network/qdisc sampler, OpenWhisk activation collector, client latency collector.
-  - `analysis/`: trace joiner, feature extraction, phase segmentation, profile DB generation.
-- Produce one run directory containing:
-  - `run_meta.json`, `events.jsonl`, `stdout.log`, `stderr.log`, `perf_stat.csv`
-  - `cgroup_cpu.csv`, `cgroup_memory.csv`, `cgroup_io.csv`, `cgroup_pressure.csv`
-  - `net.csv`, `qdisc.csv`, `scheduler_stats.csv`, `client_latency.csv`, `openwhisk_activation.json`, `summary.json`
-- In standalone mode:
-  - Create one cgroup per run.
-  - Launch workload process/container inside that cgroup.
-  - Emit synthetic invocation events matching the OpenWhisk/OpenLambda-style lifecycle.
-- In OpenWhisk mode:
-  - Collect activation records: activation id, action, start/end, duration, status, `waitTime`, `initTime`, limits.
-  - Patch only the invoker if needed to emit `activation_id -> container_id -> host_pid -> cgroup_path`.
+### Lightweight Rust path (`scripts/` + `workloads/`) — primary
 
-## Required Stats
-- Client latency:
-  - request send timestamp
-  - first byte timestamp
-  - response end timestamp
-  - timeout/error/status
-- Platform lifecycle:
-  - activation/run id
-  - queue wait
-  - init time
-  - run duration
-  - cold/warm/prewarm classification
-  - container id
-  - host pid
-  - cgroup path
-  - reuse age
-- COSMOS scheduler:
-  - existing scheduler counters from `src/stats.rs`
-  - per-window queued/scheduled/running counts
-  - class counts: cold, hot, background
-  - boost counts
-  - dispatch failures/cancellations/bounces
-  - scheduler congestion
-  - later: sched_ext queue delay from enqueue/runnable to dispatch
-- Per-cgroup resources:
-  - `cpu.stat`: usage, user/system, throttling periods, throttled time
-  - `memory.current`, `memory.peak`, `memory.stat`, `memory.events`, swap if enabled
-  - `io.stat` and IO pressure
-  - `cpu.pressure`, `memory.pressure`, `io.pressure`
-- Perf counters:
-  - cycles, instructions, cache references/misses
-  - branches, branch misses
-  - context switches, CPU migrations
-  - page faults and major faults
-- Network/storage:
-  - container network-namespace rx/tx bytes where a container host pid is known
-  - host veth rx/tx bytes and qdisc backlog/drops where veth mapping is available
-  - host `/proc/net/dev` rx/tx bytes only as a diagnostic fallback
-  - retransmits/RTT where available
-  - MinIO/S3 request count, bytes, latency, status
-- Run environment:
-  - kernel version
-  - CPU model/core count
-  - RAM
-  - CPU governor/frequency state
-  - Docker/OpenWhisk/SeBS versions
-  - COSMOS git commit
-  - benchmark config hash
+The Rust workload runner (`cosmos-benchmark-workload`) provides seven synthetic
+calibrated workloads. A Python harness (`harness.py`) runs them concurrently,
+launches the COSMOS scheduler, collects stats, and produces comparison-ready
+output. Dispatch happens through `burst_benchmark.py`.
 
-## Benchmark Matrices
-- SeBS capability manifest:
-  - `profiler/configs/sebs-capabilities.json` records OpenWhisk standalone
-    support, local standalone adapter support, required services, and blockers.
-  - `matrix --kind sebs-openwhisk` is the canonical FaaS benchmark set.
-  - `matrix --kind sebs-openwhisk-cold-warm` adds one forced-cold invocation
-    plus warm container reuse repetitions for every OpenWhisk cell.
-  - `matrix --kind sebs-standalone` is the local collector-debug set.
-- Sanity matrix:
-  - Workloads: `dynamic-html`, `thumbnailer`, `compression`, `image-recognition`
-  - Inputs: `small`, `medium`
-  - Warmth: `cold`, `warm`
-  - Repetitions: `5`
-  - Concurrency: `1`
-- Profile matrix:
-  - Workloads: `dynamic-html`, `uploader`, `thumbnailer`, `video-processing`, `compression`, `image-recognition`, `pagerank`, `bfs`
-  - Inputs: `small`, `medium`, `large`
-  - Warmth: `cold`, `warm`, `lukewarm`
-  - Repetitions: `10`
-  - Concurrency: `1`
-- Interference matrix:
-  - Targets: `thumbnailer`, `compression`, `image-recognition`, `uploader`
-  - Interference: `none`, `cpu`, `memory`, `network`, `io`
-  - Input: `medium`
-  - Warmth: `warm`
-  - Repetitions: `10`
+This is the path for day-to-day CFS-vs-COSMOS SLO comparison. It avoids
+OpenWhisk, SeBS, Docker, and the profiler stack.
 
-## Analysis Outputs
-- Per-run `summary.json` with:
-  - latency decomposition: client latency, platform wait/init/run, resource windows
-  - peak and aggregate CPU/memory/IO/network metrics
-  - phase windows: `CPU_BOUND`, `CACHE_OR_MEM_BOUND`, `IO_PAGECACHE`, `NETWORK_WAIT`, `MIXED_UNKNOWN`
-- Aggregated profile DB:
-  - one profile per workload/input/warmth
-  - median, p95, p99 latency
-  - dominant resource phases
-  - stable online-counter features for scheduler use
-- Scheduler-facing rules must use cheap online signals, not live `perf record`.
+Workloads use fixed-cost calibration — each runs a unit of work, measures how
+long it takes, then estimates total iterations to fill the target budget. No
+clock-polling hot loops.
 
-## Test Plan
-- Preflight:
-  - cgroup v2 mounted
-  - `perf stat` usable
-  - Docker usable
-  - OpenWhisk standalone starts
-  - SeBS can run at least two OpenWhisk workloads
-  - disk space and permissions are sufficient
-- Integration:
-  - run CPU, memory, IO, and network micro-workloads and confirm expected classification
-  - run one standalone SeBS workload and produce all required files
-  - run two OpenWhisk SeBS workloads and join activation id to client latency and resource trace
-  - verify missing lifecycle/cgroup mappings fail the run clearly
-- Acceptance:
-  - every successful run has complete latency decomposition
-  - every run has a stable run id joining client, platform, cgroup, perf, and scheduler data
-  - phase extraction works from 50ms or 100ms windows
+### Profiler path (`profiler/`) — secondary / offline analysis
 
-## Assumptions
-- Main benchmark platform is OpenWhisk standalone.
-- Standalone harness remains required for local testing and fallback.
-- `actionConcurrency = 1`, one invoker, one host, and fixed prewarm policy are required.
-- OpenLambda integration is paused unless OpenWhisk + SeBS cannot run two workloads locally within three days.
-- P2-only additions, such as RAPL energy, NUMA locality, LLC occupancy, memory bandwidth, and selective flamegraphs, are deferred until the core trace pipeline is stable.
+`cosmos-bench-profiler` records deep resource traces (perf, cgroup, eBPF,
+qdisc, lifecycle) for offline phase classification and profile DB generation.
+It supports standalone cgroup mode and OpenWhisk activation mode with SeBS
+workloads. See `profiler/README.md`.
+
+## Configs
+
+| config              | scheduler | metadata | pools | deadline scoring | tail guard |
+|---------------------|-----------|----------|-------|------------------|------------|
+| `cfs-default`       | CFS       | no       | no    | no               | no         |
+| `cosmos-heuristic`  | COSMOS    | no       | no    | no               | no         |
+| `cosmos-metadata`   | COSMOS    | yes      | no    | no               | no         |
+| `cosmos-pooled`     | COSMOS    | yes      | yes   | no               | no         |
+| `cosmos-full`       | COSMOS    | yes      | yes   | yes              | yes        |
+
+`cosmos-heuristic` relies on the scheduler's built-in heuristic classification.
+`cosmos-full` enables the complete pipeline.
+
+## Workloads
+
+| workload            | calibration | resource pressure |
+|---------------------|-------------|-------------------|
+| `cpu_burst`         | CPU time    | dense matrix multiply |
+| `sleep_short`       | wall time   | baseline (thread sleep) |
+| `io_mixed`          | wall time   | file write/read/sync |
+| `memory_heavy`      | wall time   | large-buffer strided scan |
+| `network_heavy`     | wall time   | loopback TCP echo |
+| `compression_mixed` | wall time   | RLE compress/decompress roundtrip |
+| `graph_bfs`         | wall time   | irregular graph BFS |
+
+Default duration: 250 ms. Default deadline: 2x duration.
+
+## Run lifecycle
+
+1. Build: `cargo build --release -p cosmos-benchmark-workload` (harness
+   auto-checks and rebuilds if sources are newer).
+2. For COSMOS configs: the harness starts the scheduler, waits for the
+   `scx_stats` socket, optionally starts the metadata event bridge, then begins
+   stats capture.
+3. Concurrent invocations launch via `ThreadPoolExecutor`. Each invocation runs
+   the Rust binary wrapped with `/usr/bin/time` for CPU accounting.
+4. After all invocations complete, the harness stops the scheduler and event
+   bridge, writes `summary.json`, and creates a `latest` symlink.
+
+## Result directory layout
+
+```
+results/<config>/<timestamp>/
+  manifest.json              — config, workload, concurrency, flags
+  client_latency.csv         — per-invocation wall-clock durations
+  invocations/               — per-invocation json + stderr
+  scheduler_stats.jsonl      — scx_stats samples (COSMOS only)
+  scheduler.log              — scheduler stdout
+  event_bridge.log           — metadata bridge log (metadata configs only)
+  summary.json               — aggregated latency, load, compute, scheduler
+```
+
+## Compare
+
+```sh
+python3 benchmarks/scripts/compare.py results/cfs-default/ results/cosmos-full/
+```
+
+Prints a metric table (p50, p95, p99, mean, SLO violations) plus a
+capacity-fairness verdict.
+
+## Fair-case judgment
+
+A run is `unfair-overloaded` when:
+
+```
+total_compute_ms >= deadline_ms * cpu_cores
+```
+
+Fair load classes: `underloaded` (< 0.80), `full` (0.80–0.95),
+`slightly-overloaded` (0.95–1.00), `unfair-overloaded` (>= 1.00).
+
+CPU demand comes from `/usr/bin/time` when available, falling back to
+`duration_ms * concurrency`.
+
+## Metrics that matter
+
+For scheduler evaluation, the key comparison metrics are:
+- Client-side p99 latency and SLO hit rate
+- Per-invocation CPU time (from `/usr/bin/time`)
+- Scheduler counters: SLO violations, dispatch failures, boosts, pool migrations
+- Load ratio and fairness class
+
+## Build system note
+
+On the CloudLab benchmark hosts, the cargo target directory is configured at
+`/usr/local/cosmos/build/cosmos-target` rather than the project-local `target/`.
+The harness Python scripts expect `REPO_ROOT/target/release/`. Create a symlink:
+
+```sh
+ln -s /usr/local/cosmos/build/cosmos-target /path/to/COSMOS/target
+```
