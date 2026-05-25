@@ -88,6 +88,9 @@ pub fn delete_meta(tgid: u32) -> Result<()> {
 
     if ret < 0 {
         let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ENOENT) {
+            return Ok(());
+        }
         anyhow::bail!("BPF_MAP_DELETE_ELEM failed for tgid={}: {}", tgid, err);
     }
     Ok(())

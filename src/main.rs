@@ -136,6 +136,10 @@ struct Opts {
     #[clap(long, action = clap::ArgAction::SetTrue)]
     disable_pools: bool,
 
+    /// Disable direct idle-CPU dispatch so user space can refresh late metadata before dispatch.
+    #[clap(long, action = clap::ArgAction::SetTrue)]
+    disable_builtin_idle: bool,
+
     /// Use heuristic vtime scoring even when invocation deadlines are present.
     #[clap(long, action = clap::ArgAction::SetTrue)]
     disable_deadline_scoring: bool,
@@ -241,6 +245,7 @@ struct SchedulerPolicy {
     max_pending: u64,
     nr_metadata_classified: u64,
     nr_heuristic_classified: u64,
+    nr_metadata_refreshed: u64,
     nr_pool_latency: u64,
     nr_pool_batch: u64,
     /// Phase 3: tasks promoted to tail guard pool.
@@ -274,6 +279,7 @@ impl SchedulerPolicy {
             max_pending: 0,
             nr_metadata_classified: 0,
             nr_heuristic_classified: 0,
+            nr_metadata_refreshed: 0,
             nr_pool_latency: 0,
             nr_pool_batch: 0,
             nr_tail_guard_dispatches: 0,
@@ -394,10 +400,22 @@ impl SchedulerPolicy {
         self.vruntime_now = self.vruntime_now.saturating_add(vslice);
     }
 
+    fn fair_deadline_score(&self, task: &QueuedTask) -> u64 {
+        let runtime_penalty = task.exec_runtime.min(self.slice_ns.saturating_mul(100));
+        task.vtime.saturating_add(runtime_penalty)
+    }
+
     fn task_score(&self, task: &QueuedTask, class: TaskClass, _pool: TaskPool, now: u64) -> u64 {
+        let fair_deadline = self.fair_deadline_score(task);
+
         // Phase 4: EDF scoring for all tasks with invocation metadata + deadline.
-        // Lower deadline = higher priority (lower score = dispatched first).
+        // Lower slack still matters, but we preserve vruntime fairness by applying
+        // only a bounded urgency adjustment to the fair-deadline score.
         if self.deadline_scoring_enabled && task.has_invocation_meta == 1 && task.deadline_ns > 0 {
+            let urgency_window = self.slice_ns.max(self.slice_ns_min);
+            let metadata_anchor = urgency_window
+                .saturating_add(self.slo_target_ns)
+                .saturating_add(self.cold_start_boost_ns);
             let estimated_remaining = self
                 .task_state
                 .get(&task.pid)
@@ -406,21 +424,26 @@ impl SchedulerPolicy {
             let remaining_budget = task.deadline_ns.saturating_sub(now);
 
             if remaining_budget > estimated_remaining {
-                let base = task.deadline_ns;
+                let slack_ns = remaining_budget.saturating_sub(estimated_remaining);
+                let urgency_boost = urgency_window.saturating_sub(slack_ns.min(urgency_window));
+                let metadata_base = fair_deadline
+                    .saturating_add(metadata_anchor)
+                    .saturating_sub(Self::scale_by_task_weight(task, urgency_boost));
                 return match class {
-                    // ColdStart: boost (lower score → higher priority)
-                    TaskClass::ColdStart => base.saturating_sub(self.cold_start_boost_ns),
-                    // HotInvocation: no adjustment
-                    TaskClass::HotInvocation => base,
-                    // Background: penalty (higher score → lower priority)
-                    TaskClass::Background => base.saturating_add(self.slo_target_ns),
+                    TaskClass::ColdStart => metadata_base.saturating_sub(
+                        Self::scale_by_task_weight(
+                            task,
+                            self.slo_target_ns.saturating_add(self.cold_start_boost_ns),
+                        ),
+                    ),
+                    TaskClass::HotInvocation => metadata_base
+                        .saturating_sub(Self::scale_by_task_weight(task, self.slo_target_ns)),
+                    TaskClass::Background => metadata_base.saturating_add(self.slo_target_ns),
                 };
             }
         }
 
         // Existing heuristic scoring for tasks without metadata (unchanged)
-        let runtime_penalty = task.exec_runtime.min(self.slice_ns.saturating_mul(100));
-        let fair_deadline = task.vtime.saturating_add(runtime_penalty);
         let boost = match class {
             TaskClass::ColdStart => self
                 .slo_target_ns
@@ -558,9 +581,10 @@ impl<'a> Scheduler<'a> {
             opts.exit_dump_len,
             opts.partial,
             opts.verbose,
-            true,
+            !opts.disable_builtin_idle,
             opts.numa_local,
             policy.slice_ns_min,
+            policy.slice_ns.max(policy.slice_ns_min),
             "cosmos",
         )?;
 
@@ -575,6 +599,7 @@ impl<'a> Scheduler<'a> {
         let nr_cpus = *bpf.nr_online_cpus_mut() as usize;
         let effective_tail_guard_cpus =
             pool::effective_tail_guard_cpus(nr_cpus, opts.tail_guard_cpus);
+        let auto_disable_small_host_features = nr_cpus <= 4;
         if effective_tail_guard_cpus != opts.tail_guard_cpus {
             info!(
                 "Phase 2: tail guard auto-disabled on {}-CPU host (requested {}, using {})",
@@ -582,7 +607,23 @@ impl<'a> Scheduler<'a> {
             );
             policy.tail_guard_threshold_ns = 0;
         }
-        let pool_manager = if opts.disable_pools {
+        if auto_disable_small_host_features {
+            if policy.pools_enabled {
+                info!(
+                    "Phase 2: auto-disabling pools on {}-CPU host to avoid partitioning limited CPU capacity",
+                    nr_cpus
+                );
+                policy.pools_enabled = false;
+            }
+            if policy.deadline_scoring_enabled {
+                info!(
+                    "Phase 4: auto-disabling deadline scoring on {}-CPU host to protect tail latency under oversubscription",
+                    nr_cpus
+                );
+                policy.deadline_scoring_enabled = false;
+            }
+        }
+        let pool_manager = if opts.disable_pools || auto_disable_small_host_features {
             PoolManager::disabled(nr_cpus)
         } else {
             PoolManager::new(nr_cpus, opts.latency_pool_pct, effective_tail_guard_cpus)
@@ -656,6 +697,17 @@ impl<'a> Scheduler<'a> {
             nr_sched_congested: *self.bpf.nr_sched_congested_mut(),
             nr_metadata_classified: self.policy.nr_metadata_classified,
             nr_heuristic_classified: self.policy.nr_heuristic_classified,
+            nr_metadata_refreshed: self.policy.nr_metadata_refreshed,
+            nr_invocation_meta_enqueues: {
+                let v = *self.bpf.nr_invocation_meta_enqueues_mut();
+                if self.policy.nr_metadata_classified > 0 || v > 0 {
+                    eprintln!(
+                        "COSMOS_DEBUG: get_metrics meta_classified={} meta_enq={} heur={}",
+                        self.policy.nr_metadata_classified, v, self.policy.nr_heuristic_classified
+                    );
+                }
+                v
+            },
             nr_pool_latency: self.policy.nr_pool_latency,
             nr_pool_batch: self.policy.nr_pool_batch,
             nr_pool_migrations: self.pool_manager.nr_pool_migrations,
@@ -743,6 +795,16 @@ impl<'a> Scheduler<'a> {
             match self.bpf.dequeue_task() {
                 Ok(Some(mut task)) => {
                     let timestamp = Self::now();
+                    if task.has_invocation_meta != 1 {
+                        match self.bpf.refresh_invocation_meta(&mut task) {
+                            Ok(true) => {
+                                self.policy.nr_metadata_refreshed =
+                                    self.policy.nr_metadata_refreshed.saturating_add(1);
+                            }
+                            Ok(false) => {}
+                            Err(err) => warn!("Failed to refresh invocation metadata: {err}"),
+                        }
+                    }
                     let (class, pool, score, slice_ns) =
                         self.policy.update_enqueued(&mut task, timestamp);
 
@@ -767,8 +829,46 @@ impl<'a> Scheduler<'a> {
         }
     }
 
+    fn refresh_pending_metadata(&mut self) {
+        if self.tasks.is_empty() {
+            return;
+        }
+
+        let timestamp = Self::now();
+        let mut refreshed = BTreeSet::new();
+        self.pending_latency_tasks = 0;
+        self.pending_batch_tasks = 0;
+        self.pending_tail_guard_tasks = 0;
+
+        while let Some(mut task) = self.tasks.pop_first() {
+            if !task.has_metadata {
+                match self.bpf.refresh_invocation_meta(&mut task.qtask) {
+                    Ok(true) => {
+                        self.policy.nr_metadata_refreshed =
+                            self.policy.nr_metadata_refreshed.saturating_add(1);
+                        let (class, pool, score, slice_ns) =
+                            self.policy.update_enqueued(&mut task.qtask, timestamp);
+                        task.class = class;
+                        task.pool = pool;
+                        task.score = score;
+                        task.timestamp = timestamp;
+                        task.slice_ns = slice_ns;
+                        task.has_metadata = true;
+                    }
+                    Ok(false) => {}
+                    Err(err) => warn!("Failed to refresh pending invocation metadata: {err}"),
+                }
+            }
+            self.track_pending_pool(task.pool, 1);
+            refreshed.insert(task);
+        }
+
+        self.tasks = refreshed;
+    }
+
     fn schedule(&mut self) {
         self.drain_queued_tasks();
+        self.refresh_pending_metadata();
         self.dispatch_task();
 
         let pending = self.tasks.len() as u64;
@@ -990,8 +1090,7 @@ mod tests {
         task: &QueuedTask,
         class: TaskClass,
     ) -> u64 {
-        let runtime_penalty = task.exec_runtime.min(policy.slice_ns.saturating_mul(100));
-        let fair_deadline = task.vtime.saturating_add(runtime_penalty);
+        let fair_deadline = policy.fair_deadline_score(task);
         let boost = match class {
             TaskClass::ColdStart => policy
                 .slo_target_ns
@@ -1410,14 +1509,19 @@ mod tests {
 
     #[test]
     fn edf_earlier_deadline_gets_lower_score() {
-        let opts = opts(&["--slo-target-us", "10000"]);
+        let opts = opts(&[
+            "--slo-target-us",
+            "10000",
+            "--tail-guard-threshold-us",
+            "0",
+        ]);
         let mut policy = SchedulerPolicy::new(&opts);
 
         let now = 100 * MS;
 
         // Two tasks with different deadlines, both in latency pool (not tail guard)
-        let early_deadline = now + 20 * MS; // plenty of slack, stays in latency pool
-        let late_deadline = now + 30 * MS;
+        let early_deadline = now + 2 * MS;
+        let late_deadline = now + 3 * MS;
 
         let mut t_early = task_with_meta(3001, "worker", 1 * MS, 100, 0, 0, early_deadline);
         let (_, pool_e, score_early, _) = policy.update_enqueued(&mut t_early, now);
@@ -1468,11 +1572,16 @@ mod tests {
 
     #[test]
     fn edf_background_penalty_applied() {
-        let opts = opts(&["--slo-target-us", "10000"]);
+        let opts = opts(&[
+            "--slo-target-us",
+            "10000",
+            "--tail-guard-threshold-us",
+            "0",
+        ]);
         let mut policy = SchedulerPolicy::new(&opts);
 
         let now = 100 * MS;
-        let deadline = now + 20 * MS;
+        let deadline = now + 3 * MS;
 
         // Hot invocation (slo_class=0, no cold start)
         let mut t_hot = task_with_meta(3005, "worker", 1 * MS, 100, 0, 0, deadline);
@@ -1494,12 +1603,17 @@ mod tests {
     }
 
     #[test]
-    fn edf_score_depends_on_deadline_not_vruntime_progress() {
-        let opts = opts(&["--slo-target-us", "10000"]);
+    fn metadata_deadline_scoring_still_respects_vruntime_progress() {
+        let opts = opts(&[
+            "--slo-target-us",
+            "10000",
+            "--tail-guard-threshold-us",
+            "0",
+        ]);
         let mut policy = SchedulerPolicy::new(&opts);
 
         let now = 100 * MS;
-        let deadline = now + 20 * MS;
+        let deadline = now + 3 * MS;
 
         let mut short = task_with_meta(3007, "worker", 1 * MS, 100, 0, 0, deadline);
         let (_, _, score_short, _) = policy.update_enqueued(&mut short, now);
@@ -1508,9 +1622,30 @@ mod tests {
         long.stop_ts = 6 * MS;
         let (_, _, score_long, _) = policy.update_enqueued(&mut long, now);
 
-        assert_eq!(
-            score_short, score_long,
-            "equal deadlines should produce equal EDF scores regardless of vruntime drift"
+        assert!(
+            score_short < score_long,
+            "metadata scoring should preserve fair progress for equal deadlines: short={} long={}",
+            score_short,
+            score_long
+        );
+    }
+
+    #[test]
+    fn metadata_deadline_boost_is_bounded_for_large_slack() {
+        let opts = opts(&["--slo-target-us", "10000"]);
+        let mut policy = SchedulerPolicy::new(&opts);
+
+        let now = 100 * MS;
+        let deadline = now + 120 * MS;
+        let mut t = task_with_meta(3014, "worker", 1 * MS, 100, 0, 0, deadline);
+        let (class, _, score, _) = policy.update_enqueued(&mut t, now);
+
+        assert_eq!(class, TaskClass::ColdStart);
+        assert!(
+            score >= expected_heuristic_score(&policy, &t, class),
+            "wide-slack metadata tasks should not get more urgency than the heuristic path: meta={} heur={}",
+            score,
+            expected_heuristic_score(&policy, &t, class)
         );
     }
 

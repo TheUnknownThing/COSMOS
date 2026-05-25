@@ -27,9 +27,9 @@ For the first product, prefer the lightweight harness first:
 
 ```sh
 cd benchmarks/scripts
-./burst_benchmark.py --concurrency 50 --workload cpu_burst --config cosmos-full
-./burst_benchmark.py --concurrency 50 --workload cpu_burst --config cfs-default
-python3 compare.py results/cosmos-full/ results/cfs-default/
+./burst_benchmark.py --concurrency 100 --workload cpu_burst --config cfs-default
+sudo ./burst_benchmark.py --concurrency 100 --workload cpu_burst --config cosmos-full
+python3 compare.py results/cfs-default/ results/cosmos-full/
 ```
 
 Those scripts map directly to the Phase 6 baseline table:
@@ -43,13 +43,53 @@ Those scripts map directly to the Phase 6 baseline table:
 The lightweight local workload set now includes these first-product synthetic
 profiles:
 
-- `cpu_burst`: short CPU burst, inspired by SeBS `010.sleep` as a low-overhead latency test
+- `cpu_burst`: calibrated dense matrix CPU burst, inspired by SeBS `010.sleep` as a low-overhead latency test
 - `sleep_short`: minimal baseline calibration, also inspired by `010.sleep`
 - `io_mixed`: small CPU + disk mix, loosely aligned with SeBS `311.compression` / `220.video-processing`
 - `memory_heavy`: allocation and scan pressure, inspired by `411.image-recognition` / `220.video-processing`
 - `network_heavy`: loopback TCP transfer, inspired by `120.uploader`
 - `compression_mixed`: repeated compress/decompress cycles, inspired by `311.compression`
 - `graph_bfs`: irregular graph traversal, inspired by `503.graph-bfs` / `501.graph-pagerank`
+
+The lightweight workloads now run through a compiled Rust runner under
+`target/release/cosmos-benchmark-workload`, so the harness no longer pays
+Python interpreter startup cost on every invocation. By default each workload
+runs 250 ms of synthetic work and uses a 500 ms deadline / `--slo-target-us`.
+If you override `--duration-ms` without `--deadline-us`, the harness derives a
+matching default deadline with the same headroom policy. Pass `--deadline-us`
+only when you want an explicit tighter or looser SLO experiment.
+
+These Rust workloads also avoid the old "poll the clock inside the hot loop"
+pattern. `cpu_burst` now calibrates fixed matrix-multiply work to the target
+CPU budget, and the other shapes similarly calibrate fixed work units instead
+of repeatedly checking whether a timer has expired mid-iteration.
+
+## Fair-case judgment
+
+COSMOS should be judged against CFS on cases where the host has enough CPU
+capacity to make the SLO feasible. The comparison tooling now records measured
+CPU demand from `/usr/bin/time` when available and applies this hard-capacity
+rule:
+
+```text
+total_compute_ms < deadline_ms * cpu_cores
+```
+
+If `total_compute_ms >= deadline_ms * cpu_cores`, the run is marked
+`unfair-overloaded`: no scheduler can simultaneously optimize p99 and SLO hit
+rate once the workload demands at least the entire SLO window on every CPU. In
+that case `compare.py` still prints metrics, but its verdict says not to use the
+run as the p99/SLO judgment.
+
+Fair runs are labeled as:
+
+- `underloaded`: load ratio `< 0.80`
+- `full`: load ratio `0.80-0.95`
+- `slightly-overloaded`: load ratio `0.95-1.00`
+- `unfair-overloaded`: load ratio `>= 1.00`
+
+Use `cfs-default` as the baseline and `cosmos-full` as the candidate when asking
+whether COSMOS improves or preserves both p99 and SLO hit rate in the fair case.
 
 The older benchmark stack still uses OpenWhisk standalone as the primary FaaS
 target because SeBS supports OpenWhisk directly and OpenWhisk activation

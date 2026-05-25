@@ -57,7 +57,11 @@ def cosmos_config(config: str, deadline_us: int) -> tuple[list[str], str, bool]:
             True,
         )
     if config == "cosmos-full":
-        return (["--slo-target-us", str(deadline_us)], "metadata-full", True)
+        return (
+            ["--slo-target-us", str(deadline_us)],
+            "metadata-full",
+            True,
+        )
     raise KeyError(f"unknown COSMOS config: {config}")
 
 
@@ -73,8 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration-ms", type=int)
     parser.add_argument("--deadline-us", type=int)
     parser.add_argument("--out-dir", type=Path)
-    parser.add_argument("--scheduler-bin", type=Path, default=harness.REPO_ROOT / "target" / "release" / "cosmos")
-    parser.add_argument("--stats-socket", type=Path, default=harness.DEFAULT_STATS_SOCKET)
+    parser.add_argument(
+        "--scheduler-bin",
+        type=Path,
+        default=harness.REPO_ROOT / "target" / "release" / "cosmos",
+    )
+    parser.add_argument(
+        "--stats-socket", type=Path, default=harness.DEFAULT_STATS_SOCKET
+    )
+    parser.add_argument(
+        "--event-bridge-port", type=int, default=harness.DEFAULT_EVENT_BRIDGE_PORT
+    )
     parser.add_argument("--scheduler-flag", action="append", default=[])
     return parser
 
@@ -83,8 +96,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     spec = harness.workload_spec(args.workload)
     duration_ms = args.duration_ms or spec.default_duration_ms
-    deadline_us = args.deadline_us or spec.default_deadline_us
-    scheduler_flags, metadata_mode, use_metadata = cosmos_config(args.config, deadline_us)
+    deadline_us = harness.resolve_deadline_us(spec, duration_ms, args.deadline_us)
+    scheduler_flags, metadata_mode, use_metadata = cosmos_config(
+        args.config, deadline_us
+    )
     scheduler_flags.extend(args.scheduler_flag)
 
     config_root = args.out_dir or harness.default_results_dir(args.config)
@@ -105,8 +120,10 @@ def main(argv: list[str] | None = None) -> int:
     harness.ensure_shim_build()
 
     scheduler_log = run_dir / "scheduler.log"
+    event_bridge_log = run_dir / "event_bridge.log"
     stats_capture = None
     scheduler = None
+    event_bridge = None
 
     try:
         with scheduler_log.open("w", encoding="utf-8") as log_file:
@@ -118,7 +135,21 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         harness.wait_for_scheduler_stats(args.stats_socket, scheduler, scheduler_log)
-        stats_capture = harness.start_scheduler_stats_capture(run_dir / "scheduler_stats.jsonl", args.stats_socket)
+        metadata_bridge_port = None
+        if use_metadata:
+            event_bridge = harness.start_event_bridge(
+                event_bridge_log, args.event_bridge_port
+            )
+            harness.wait_for_event_bridge(
+                args.event_bridge_port, event_bridge, event_bridge_log
+            )
+            metadata_bridge_port = args.event_bridge_port
+
+        scheduler_stats_path = run_dir / "scheduler_stats.jsonl"
+        stats_capture = harness.start_scheduler_stats_capture(
+            scheduler_stats_path, args.stats_socket
+        )
+        harness.wait_for_scheduler_stats_sample(scheduler_stats_path, stats_capture)
         failures = harness.run_invocations(
             run_dir,
             args.workload,
@@ -127,9 +158,11 @@ def main(argv: list[str] | None = None) -> int:
             deadline_us,
             use_metadata,
             args.config,
+            metadata_bridge_port,
         )
     finally:
         harness.stop_process(stats_capture, signal.SIGINT)
+        harness.stop_process(event_bridge, signal.SIGINT)
         harness.stop_process(scheduler, signal.SIGINT)
 
     harness.finalize_run(run_dir, config_root)

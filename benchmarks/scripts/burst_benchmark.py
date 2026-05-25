@@ -20,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--scheduler-bin", type=Path)
     parser.add_argument("--stats-socket", type=Path)
+    parser.add_argument("--event-bridge-port", type=int)
     parser.add_argument("--scheduler-flag", action="append", default=[])
     return parser
 
@@ -45,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         command.extend(["--scheduler-bin", str(args.scheduler_bin)])
     if args.stats_socket is not None:
         command.extend(["--stats-socket", str(args.stats_socket)])
+    if args.event_bridge_port is not None:
+        command.extend(["--event-bridge-port", str(args.event_bridge_port)])
     for flag in args.scheduler_flag:
         command.extend(["--scheduler-flag", flag])
 

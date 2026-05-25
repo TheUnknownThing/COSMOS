@@ -13,6 +13,8 @@ use std::ffi::c_int;
 use std::ffi::c_ulong;
 use std::ffi::CStr;
 use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 use std::sync::atomic::AtomicBool;
@@ -92,11 +94,11 @@ pub struct QueuedTask {
     pub enq_cnt: u64,
     pub comm: [c_char; TASK_COMM_LEN], // Task's executable name
     // Phase 1: invocation metadata fields
-    pub deadline_ns: u64,        // absolute deadline from invocation_meta
-    pub slo_class: u32,          // SLO class (0=latency, 1=standard, 2=batch, 0xFF=none)
+    pub deadline_ns: u64,         // absolute deadline from invocation_meta
+    pub slo_class: u32,           // SLO class (0=latency, 1=standard, 2=batch, 0xFF=none)
     pub has_invocation_meta: u32, // 1 if metadata was found for this task
-    pub is_cold_start: u32,      // 1 if cold start invocation
-    pub invocation_id: u64,      // opaque correlation ID
+    pub is_cold_start: u32,       // 1 if cold start invocation
+    pub invocation_id: u64,       // opaque correlation ID
 }
 
 impl QueuedTask {
@@ -121,7 +123,7 @@ pub struct DispatchedTask {
     pub vtime: u64, // this value can be used to send the task's vruntime or deadline directly to the underlying BPF dispatcher
     pub enq_cnt: u64,
     // Phase 1: pool assignment
-    pub pool: u32,     // cosmos_pool: 0=none, 1=latency, 2=batch, 3=tail_guard
+    pub pool: u32, // cosmos_pool: 0=none, 1=latency, 2=batch, 3=tail_guard
 }
 
 impl DispatchedTask {
@@ -232,6 +234,7 @@ impl<'cb> BpfScheduler<'cb> {
         builtin_idle: bool,
         numa_local: bool,
         slice_ns: u64,
+        metadata_queue_threshold_ns: u64,
         name: &str,
     ) -> Result<Self> {
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -287,6 +290,11 @@ impl<'cb> BpfScheduler<'cb> {
         skel.maps.rodata_data.as_mut().unwrap().builtin_idle = builtin_idle;
         skel.maps.rodata_data.as_mut().unwrap().numa_local = numa_local;
         skel.maps.rodata_data.as_mut().unwrap().slice_ns = slice_ns;
+        skel.maps
+            .rodata_data
+            .as_mut()
+            .unwrap()
+            .metadata_queue_threshold_ns = metadata_queue_threshold_ns;
         skel.maps.rodata_data.as_mut().unwrap().debug = debug;
         let _ = Self::set_scx_ops_name(&mut skel.struct_ops.rustland_mut().name, name);
 
@@ -331,12 +339,18 @@ impl<'cb> BpfScheduler<'cb> {
         // Phase 1: Pin invocation_meta (written by shim, read by BPF enqueue)
         let pin_path = pin_dir.join("invocation_meta");
         let _ = fs::remove_file(&pin_path);
-        skel.maps.invocation_meta.pin(&pin_path).context("Failed to pin invocation_meta map")?;
+        skel.maps
+            .invocation_meta
+            .pin(&pin_path)
+            .context("Failed to pin invocation_meta map")?;
 
         // Phase 2: Pin cpu_pool_map (written by pool manager, read by BPF dispatch)
         let pool_pin_path = pin_dir.join("cpu_pool_map");
         let _ = fs::remove_file(&pool_pin_path);
-        skel.maps.cpu_pool_map.pin(&pool_pin_path).context("Failed to pin cpu_pool_map")?;
+        skel.maps
+            .cpu_pool_map
+            .pin(&pool_pin_path)
+            .context("Failed to pin cpu_pool_map")?;
 
         Ok(Self {
             skel,
@@ -505,15 +519,77 @@ impl<'cb> BpfScheduler<'cb> {
         &mut self.skel.maps.bss_data.as_mut().unwrap().nr_sched_congested
     }
 
-    // Phase 1: Update the pool assignment for a specific CPU in the cpu_pool_map.
+    // Counter of tasks whose invocation metadata was observed by BPF at enqueue time.
+    #[allow(dead_code)]
+    pub fn nr_invocation_meta_enqueues_mut(&mut self) -> &mut u64 {
+        &mut self
+            .skel
+            .maps
+            .bss_data
+            .as_mut()
+            .unwrap()
+            .nr_invocation_meta_enqueues
+    }
+
+    // Update the pool assignment for a specific CPU in the cpu_pool_map.
     #[allow(dead_code)]
     pub fn update_cpu_pool(&mut self, cpu: u32, pool: u32) -> Result<()> {
         let key = cpu.to_ne_bytes();
         let value = pool.to_ne_bytes();
-        self.skel.maps.cpu_pool_map
+        self.skel
+            .maps
+            .cpu_pool_map
             .update(&key, &value, libbpf_rs::MapFlags::ANY)
             .context(format!("Failed to update cpu_pool_map for cpu {cpu}"))?;
         Ok(())
+    }
+
+    // Refresh invocation metadata from the map in case user space populated it
+    // after the BPF enqueue snapshot was captured.
+    fn task_tgid(pid: i32) -> u32 {
+        let mut status = String::new();
+        if File::open(format!("/proc/{pid}/status"))
+            .and_then(|mut file| file.read_to_string(&mut status))
+            .is_ok()
+        {
+            for line in status.lines() {
+                if let Some(raw) = line.strip_prefix("Tgid:") {
+                    if let Ok(tgid) = raw.trim().parse::<u32>() {
+                        return tgid;
+                    }
+                }
+            }
+        }
+        pid as u32
+    }
+
+    pub fn refresh_invocation_meta(&mut self, task: &mut QueuedTask) -> Result<bool> {
+        let key = Self::task_tgid(task.pid).to_ne_bytes();
+        let mut value = vec![0u8; std::mem::size_of::<bpf_intf::invocation_meta_val>()];
+        let found = self
+            .skel
+            .maps
+            .invocation_meta
+            .lookup_into(&key, &mut value, libbpf_rs::MapFlags::empty())
+            .context(format!(
+                "Failed to refresh invocation_meta for pid {}",
+                task.pid
+            ))?;
+
+        if !found {
+            return Ok(false);
+        }
+
+        let meta = unsafe {
+            std::ptr::read_unaligned(value.as_ptr() as *const bpf_intf::invocation_meta_val)
+        };
+
+        task.deadline_ns = meta.deadline_ns;
+        task.slo_class = meta.slo_class;
+        task.is_cold_start = meta.is_cold_start;
+        task.invocation_id = meta.invocation_id;
+        task.has_invocation_meta = 1;
+        Ok(true)
     }
 
     // Set scheduling class for the scheduler itself to SCHED_EXT
@@ -565,7 +641,7 @@ impl<'cb> BpfScheduler<'cb> {
     #[allow(static_mut_refs)]
     pub fn dequeue_task(&mut self) -> Result<Option<QueuedTask>, i32> {
         let bss_data = self.skel.maps.bss_data.as_mut().unwrap();
-        
+
         // Try to consume the first task from the ring buffer.
         match self.queued.consume_raw_n(1) {
             0 => {

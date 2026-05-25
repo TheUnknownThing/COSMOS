@@ -102,6 +102,9 @@ volatile u64 nr_user_dispatches, nr_kernel_dispatches,
 /* Failure statistics */
 volatile u64 nr_failed_dispatches, nr_sched_congested;
 
+/* Invocation metadata observed by BPF at enqueue time. */
+volatile u64 nr_invocation_meta_enqueues;
+
 /* Report additional debugging information */
 const volatile bool debug;
 
@@ -116,6 +119,14 @@ const volatile bool numa_local;
 	if (debug)							\
 		bpf_printk(_fmt, ##__VA_ARGS__);			\
 } while(0)
+
+/*
+ * Metadata-backed tasks are only forced through user space when their
+ * deadlines are close enough to matter. Tasks with ample slack can still use
+ * the direct idle-CPU fast path to avoid paying scheduling overhead for no
+ * tail-latency benefit.
+ */
+const volatile u64 metadata_queue_threshold_ns;
 
 /*
  * CPUs in the system have SMT is enabled.
@@ -748,6 +759,7 @@ static void get_task_info(struct queued_task_ctx *task,
 			task->is_cold_start = meta->is_cold_start;
 			task->invocation_id = meta->invocation_id;
 			task->has_invocation_meta = 1;
+			__sync_fetch_and_add(&nr_invocation_meta_enqueues, 1);
 		} else {
 			task->deadline_ns = 0;
 			task->slo_class = SLO_CLASS_NONE;
@@ -757,6 +769,29 @@ static void get_task_info(struct queued_task_ctx *task,
 		}
 		task->pad0 = 0;
 	}
+}
+
+static bool task_needs_metadata_userspace(const struct task_struct *p)
+{
+	struct invocation_meta_val *meta;
+	u32 tgid = p->tgid;
+	u64 now;
+
+	meta = bpf_map_lookup_elem(&invocation_meta, &tgid);
+	if (!meta)
+		return false;
+
+	if (meta->is_cold_start)
+		return true;
+
+	if (!meta->deadline_ns)
+		return false;
+
+	now = bpf_ktime_get_ns();
+	if (meta->deadline_ns <= now)
+		return true;
+
+	return meta->deadline_ns - now <= metadata_queue_threshold_ns;
 }
 
 /*
@@ -846,6 +881,17 @@ void BPF_STRUCT_OPS(rustland_enqueue, struct task_struct *p, u64 enq_flags)
 		scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(prev_cpu),
 					 slice_ns, p->scx.dsq_vtime, enq_flags);
 		__sync_fetch_and_add(&nr_kernel_dispatches, 1);
+		goto out_kick;
+	}
+
+	/*
+	 * Invocation metadata means the task has an external deadline/SLO signal.
+	 * Always send these tasks to user space so COSMOS can apply metadata-first
+	 * classification, EDF scoring, and pool selection even when an idle CPU is
+	 * immediately available.
+	 */
+	if (task_needs_metadata_userspace(p)) {
+		queue_task_to_userspace(p, prev_cpu, enq_flags);
 		goto out_kick;
 	}
 

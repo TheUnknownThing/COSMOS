@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     spec = harness.workload_spec(args.workload)
     duration_ms = args.duration_ms or spec.default_duration_ms
-    deadline_us = args.deadline_us or spec.default_deadline_us
+    deadline_us = harness.resolve_deadline_us(spec, duration_ms, args.deadline_us)
     config_root = args.out_dir or harness.default_results_dir(args.config)
     run_dir = config_root / harness.timestamped_run_id()
     run_dir.mkdir(parents=True, exist_ok=True)

@@ -10,6 +10,7 @@ license = "GPL-2.0-only"
 members = [
     ".",
     "benchmarks/profiler",
+    "benchmarks/workloads/runner",
     "rust/scx_cargo",
     "rust/scx_rustland_core",
     "rust/scx_stats",
