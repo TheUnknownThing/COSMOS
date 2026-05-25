@@ -770,10 +770,24 @@ impl<'a> Scheduler<'a> {
             .saturating_add(u64::from(matches!(pool, TaskPool::Batch)));
 
         if latency_like == 0 || batch_like == 0 {
-            TaskPool::None
-        } else {
-            pool
+            return TaskPool::None;
         }
+
+        // Oversubscription overflow: when a pool has more pending tasks than
+        // the CPUs assigned to it, overflow to the shared DSQ so tasks can
+        // run on any available CPU instead of being bottlenecked by the pool
+        // partition. Prevents pathological queue buildup when all tasks share
+        // the same slo_class. Use a low threshold so homogeneous workloads
+        // (all latency or all batch) don't get stuck on a fraction of CPUs.
+        const OVERFLOW_THRESHOLD: u64 = 4;
+        if pool == TaskPool::Latency && self.pending_latency_tasks > OVERFLOW_THRESHOLD {
+            return TaskPool::None;
+        }
+        if pool == TaskPool::Batch && self.pending_batch_tasks > OVERFLOW_THRESHOLD {
+            return TaskPool::None;
+        }
+
+        pool
     }
 
     fn dispatch_task(&mut self) -> bool {

@@ -155,7 +155,7 @@ impl PoolManager {
     }
 
     /// Count CPUs in a given pool.
-    fn count_pool(&self, pool: TaskPool) -> usize {
+    pub fn count_pool(&self, pool: TaskPool) -> usize {
         self.assignments.iter().filter(|&&p| p == pool).count()
     }
 

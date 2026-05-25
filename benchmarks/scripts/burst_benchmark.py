@@ -10,10 +10,22 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
+def parse_mix_concurrency(mix_str: str) -> int:
+    total = 0
+    for part in mix_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        _, count = part.rsplit(":", 1)
+        total += int(count.strip())
+    return total
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Dispatch a Phase 6 benchmark run.")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--workload", required=True)
+    parser.add_argument("--workload", default=None)
+    parser.add_argument("--mix", default=None, help="Mixed workloads e.g. cpu_burst:50,sleep_short:50")
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--duration-ms", type=int)
     parser.add_argument("--deadline-us", type=int)
@@ -27,7 +39,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    command = []
+
+    if args.mix and args.workload:
+        raise SystemExit("cannot specify both --workload and --mix")
+    if not args.mix and not args.workload:
+        raise SystemExit("one of --workload or --mix is required")
+
+    workload = args.workload or args.mix
+    concurrency = args.concurrency
+    if args.mix:
+        concurrency = parse_mix_concurrency(args.mix)
+
     if args.config == "cfs-default":
         command = ["python3", str(SCRIPT_DIR / "run_baseline.py")]
     elif args.config in {"cosmos-heuristic", "cosmos-metadata", "cosmos-pooled", "cosmos-full"}:
@@ -35,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raise SystemExit(f"unknown benchmark config: {args.config}")
 
-    command.extend(["--config", args.config, "--workload", args.workload, "--concurrency", str(args.concurrency)])
+    command.extend(["--config", args.config, "--workload", workload, "--concurrency", str(concurrency)])
     if args.duration_ms is not None:
         command.extend(["--duration-ms", str(args.duration_ms)])
     if args.deadline_us is not None:

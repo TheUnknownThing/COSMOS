@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="cosmos-full",
         choices=["cosmos-heuristic", "cosmos-metadata", "cosmos-pooled", "cosmos-full"],
     )
-    parser.add_argument("--workload", required=True, choices=harness.workload_names())
+    parser.add_argument("--workload", required=True)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--duration-ms", type=int)
     parser.add_argument("--deadline-us", type=int)
@@ -94,9 +94,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    spec = harness.workload_spec(args.workload)
-    duration_ms = args.duration_ms or spec.default_duration_ms
-    deadline_us = harness.resolve_deadline_us(spec, duration_ms, args.deadline_us)
+    is_mixed = "," in args.workload
+    if is_mixed:
+        duration_ms = args.duration_ms or harness.DEFAULT_WORKLOAD_DURATION_MS
+        deadline_us = args.deadline_us or (duration_ms * 2 * 1000)
+    else:
+        spec = harness.workload_spec(args.workload)
+        duration_ms = args.duration_ms or spec.default_duration_ms
+        deadline_us = harness.resolve_deadline_us(spec, duration_ms, args.deadline_us)
     scheduler_flags, metadata_mode, use_metadata = cosmos_config(
         args.config, deadline_us
     )

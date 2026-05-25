@@ -148,7 +148,7 @@ fn container_tgids(root: u32) -> Vec<u32> {
 
 fn slo_class_from_timeout(timeout_ms: u64) -> u32 {
     match timeout_ms {
-        t if t <= 100 => 0,
+        t if t <= 1000 => 0,
         t if t <= 30000 => 1,
         _ => 2,
     }
@@ -156,7 +156,7 @@ fn slo_class_from_timeout(timeout_ms: u64) -> u32 {
 
 fn resolve_slo_class(timeout_ms: u64, explicit: Option<u32>) -> u32 {
     match explicit {
-        Some(v @ 0..=2) => v,
+        Some(v @ 0..=2) if v != 1 => v,
         _ => slo_class_from_timeout(timeout_ms),
     }
 }

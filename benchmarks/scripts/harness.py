@@ -729,6 +729,113 @@ def run_metadata_bridge_invocations(
         raise
 
 
+def parse_mix_spec(mix_str: str) -> list[tuple[str, int]]:
+    """Parse 'cpu_burst:50,sleep_short:50' into list of (workload, count) pairs."""
+    specs: list[tuple[str, int]] = []
+    for part in mix_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        workload, count = part.rsplit(":", 1)
+        specs.append((workload.strip(), int(count.strip())))
+    return specs
+
+
+def run_mixed_metadata_bridge_invocations(
+    run_dir: Path,
+    mix_specs: list[tuple[str, int]],
+    deadline_us: int,
+    config: str,
+    metadata_bridge_port: int,
+) -> int:
+    total = sum(count for _, count in mix_specs)
+    staged_invocations: list[StagedInvocation] = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=total) as executor:
+            futures: list[concurrent.futures.Future[StagedInvocation]] = []
+            inv_id = 1
+            for workload, count in mix_specs:
+                spec = workload_spec(workload)
+                duration_ms = spec.default_duration_ms
+                for _ in range(count):
+                    futures.append(
+                        executor.submit(
+                            stage_metadata_bridge_invocation,
+                            run_dir / "invocations" / f"{inv_id}.json",
+                            workload,
+                            duration_ms,
+                            deadline_us,
+                            inv_id,
+                            config,
+                            metadata_bridge_port,
+                        )
+                    )
+                    inv_id += 1
+            for future in concurrent.futures.as_completed(futures):
+                staged_invocations.append(future.result())
+
+        staged_invocations.sort(key=lambda invocation: invocation.invocation_id)
+        start_ns = time.monotonic_ns()
+        for invocation in staged_invocations:
+            os.kill(invocation.metadata_tgid, signal.SIGCONT)
+
+        failures = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=total) as executor:
+            futures = [
+                executor.submit(
+                    complete_metadata_bridge_invocation,
+                    invocation,
+                    start_ns,
+                    metadata_bridge_port,
+                )
+                for invocation in staged_invocations
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                if future.result() != 0:
+                    failures += 1
+        return failures
+    except Exception:
+        cleanup_staged_invocations(staged_invocations)
+        raise
+
+
+def run_mixed_direct_invocations(
+    run_dir: Path,
+    mix_specs: list[tuple[str, int]],
+    deadline_us: int,
+    use_metadata: bool,
+    config: str,
+    metadata_bridge_port: int | None = None,
+) -> int:
+    total = sum(count for _, count in mix_specs)
+    failures = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=total) as executor:
+        futures: list[concurrent.futures.Future[int]] = []
+        inv_id = 1
+        for workload, count in mix_specs:
+            spec = workload_spec(workload)
+            duration_ms = spec.default_duration_ms
+            for _ in range(count):
+                futures.append(
+                    executor.submit(
+                        run_workload_invocation,
+                        run_dir / "invocations" / f"{inv_id}.json",
+                        workload,
+                        duration_ms,
+                        deadline_us,
+                        inv_id,
+                        use_metadata,
+                        config,
+                        metadata_bridge_port,
+                    )
+                )
+                inv_id += 1
+        for future in concurrent.futures.as_completed(futures):
+            if future.result() != 0:
+                failures += 1
+    return failures
+
+
 def write_manifest(
     run_dir: Path,
     config: str,
@@ -739,12 +846,9 @@ def write_manifest(
     metadata_mode: str,
     scheduler_flags: Iterable[str],
 ) -> None:
-    spec = workload_spec(workload)
-    payload = {
+    payload: dict = {
         "config": config,
         "workload": workload,
-        "workload_description": spec.description,
-        "inspired_by_sebs": list(spec.inspired_by),
         "concurrency": concurrency,
         "duration_ms": duration_ms,
         "deadline_us": deadline_us,
@@ -753,6 +857,10 @@ def write_manifest(
         "scheduler_flags": list(scheduler_flags),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    if "," not in workload:
+        spec = workload_spec(workload)
+        payload["workload_description"] = spec.description
+        payload["inspired_by_sebs"] = list(spec.inspired_by)
     (run_dir / "manifest.json").write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8"
     )
@@ -810,6 +918,21 @@ def run_invocations(
 ) -> int:
     run_dir.joinpath("invocations").mkdir(parents=True, exist_ok=True)
     ensure_benchmark_workload_build()
+
+    # Heterogeneous: workload string contains commas → mixed workload types
+    if "," in workload:
+        mix_specs = parse_mix_spec(workload)
+        if use_metadata and metadata_bridge_port is not None:
+            failures = run_mixed_metadata_bridge_invocations(
+                run_dir, mix_specs, deadline_us, config, metadata_bridge_port
+            )
+        else:
+            failures = run_mixed_direct_invocations(
+                run_dir, mix_specs, deadline_us, use_metadata, config, metadata_bridge_port
+            )
+        write_client_latency_csv(run_dir)
+        return failures
+
     if use_metadata and metadata_bridge_port is not None:
         failures = run_metadata_bridge_invocations(
             run_dir,

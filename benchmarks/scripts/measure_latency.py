@@ -331,6 +331,35 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
     if metadata_setup is not None:
         summary["metadata_setup"] = metadata_setup
 
+    per_workload: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        wl = row.get("workload", "unknown")
+        if wl not in per_workload:
+            per_workload[wl] = {"durations": [], "ok_rows": []}
+        per_workload[wl]["durations"].append(row["duration_ms"])
+        if row["status"] == "ok":
+            per_workload[wl]["ok_rows"].append(row)
+    if len(per_workload) > 1:
+        summary["per_workload"] = {}
+        for wl, data in sorted(per_workload.items()):
+            durs = data["durations"]
+            ok = data["ok_rows"]
+            wl_violations = sum(
+                1 for row in ok if deadline_ms and row["duration_ms"] > deadline_ms
+            )
+            summary["per_workload"][wl] = {
+                "count": len(durs),
+                "successes": len(ok),
+                "failures": len(durs) - len(ok),
+                "min_ms": min(durs) if durs else 0.0,
+                "max_ms": max(durs) if durs else 0.0,
+                "mean_ms": sum(durs) / len(durs) if durs else 0.0,
+                "p50_ms": percentile(durs, 0.50),
+                "p95_ms": percentile(durs, 0.95),
+                "p99_ms": percentile(durs, 0.99),
+                "client_slo_violations": wl_violations,
+            }
+
     (run_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
