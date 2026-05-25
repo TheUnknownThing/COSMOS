@@ -808,10 +808,12 @@ impl<'a> Scheduler<'a> {
         true
     }
 
-    fn drain_queued_tasks(&mut self) {
+    fn drain_queued_tasks(&mut self) -> usize {
+        let mut count = 0;
         loop {
             match self.bpf.dequeue_task() {
                 Ok(Some(mut task)) => {
+                    count += 1;
                     let timestamp = Self::now();
                     if task.has_invocation_meta != 1 {
                         match self.bpf.refresh_invocation_meta(&mut task) {
@@ -845,6 +847,7 @@ impl<'a> Scheduler<'a> {
                 }
             }
         }
+        count
     }
 
     fn refresh_pending_metadata(&mut self) {
@@ -885,9 +888,16 @@ impl<'a> Scheduler<'a> {
     }
 
     fn schedule(&mut self) {
-        self.drain_queued_tasks();
-        self.refresh_pending_metadata();
-        self.dispatch_task();
+        let new_tasks = self.drain_queued_tasks();
+        if new_tasks > 0 {
+            self.refresh_pending_metadata();
+        }
+
+        let mut batch = 4u32;
+        while batch > 0 && !self.tasks.is_empty() {
+            self.dispatch_task();
+            batch -= 1;
+        }
 
         let pending = self.tasks.len() as u64;
         self.policy.max_pending = self.policy.max_pending.max(pending);
