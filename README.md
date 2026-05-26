@@ -2,90 +2,150 @@
 
 **CO-Scheduling Multi-resource OS for Serverless**
 
-COSMOS is an MVP invocation-aware scheduler for serverless applications,
-optimized around SLO and p99 latency. The first scheduler prototype is based on
-`scx_rustland_core`, so the low-level sched_ext BPF dispatcher stays generic and
-the scheduling policy lives in Rust.
+COSMOS is an invocation-aware CPU scheduler for serverless workloads, built on
+`sched_ext`. The kernel-side BPF dispatcher stays generic — all policy lives in
+Rust user space. Classification uses invocation metadata (deadlines, SLO
+classes, cold-start flags) with heuristic fallback.
 
-## Goals
+## Status
 
-- Prefer cold-start and hot invocation workers when CPU contention threatens p99
-  latency.
-- Keep the first version easy to modify: classification, scoring, and slicing
-  are all in `src/main.rs`.
-- Preserve forward progress for background work through the inherited
-  vruntime/deadline accounting from `scx_rustland`.
-- Provide a foundation for multi-resource serverless co-scheduling, starting
-  with CPU scheduling and leaving clear hooks for memory, IO, accelerator, and
-  per-function SLO signals.
+| Version | Branch / Ref | Status |
+|---------|-------------|--------|
+| **V1** | commit `484e993` (`main`) | **stable** — runs on kernel 7.0.9, passes benchmarks |
+| **V2** | uncommitted (workspace) | WIP — 3-layer architecture (registry / adapter / policy); stalls under watchdog due to scheduler self-starvation |
 
-## Policy Sketch
+Work continues on V2; all benchmarks below are from V1.
 
-The current scheduler classifies queued tasks into three buckets:
+## Quick Start
 
-- `ColdStart`: first-seen tasks or tasks matching an explicit invocation
-  runtime hint.
-- `HotInvocation`: short-running tasks with repeated wakeups, which approximates
-  active request handling.
-- `Background`: everything else.
-
-Each task receives a fair deadline from the `scx_rustland` vruntime model. The
-invocation classes then receive an SLO-oriented boost before tasks are inserted
-into the user-space ordered set. Smaller scores dispatch first.
-
-This is SLO-aware in the MVP sense: the scheduler is parameterized by
-`--slo-target-us` and uses that budget in scoring and slicing. It is not yet
-feedback-driven by observed per-function p99 or SLO miss signals.
-
-## Usage
-
-This repository is self-contained for the scheduler prototype. The minimal
-`scx` support crates used by the scheduler are vendored under `rust/`, including
-`scx_rustland_core` and its BPF assets.
-
-Build the scheduler:
+**Requirements:** Linux >= 6.12 with `CONFIG_SCHED_CLASS_EXT=y`.
 
 ```sh
 cargo build --release
-```
-
-Run with a 10ms target SLO:
-
-```sh
 sudo target/release/cosmos --slo-target-us 10000
 ```
 
-Provide runtime hints for serverless workers:
-
+Check status:
 ```sh
-sudo target/release/cosmos \
-  --slo-target-us 10000 \
-  --cold-start-boost-us 20000 \
-  --invocation-comm node,python,bootstrap,firecracker
+cat /sys/kernel/sched_ext/state    # enabled / disabled
+cat /sys/kernel/sched_ext/root/ops # cosmos_*
 ```
 
-Monitor scheduler stats without launching it:
+## Policy
+
+Tasks are classified into three buckets:
+
+| Class | Criteria |
+|-------|----------|
+| **ColdStart** | Metadata `is_cold_start=1`, or first-seen heuristic match |
+| **HotInvocation** | Latency-critical follow-ups or repeated short-running heuristic matches |
+| **Background** | Explicit batch SLO class or non-invocation fallback work |
+
+When invocation metadata is present (via shim or event bridge), the scheduler
+uses metadata-first classification with EDF scoring. Without metadata it falls
+back to runtime / wakeup heuristics, so mixed deployments still get sensible
+latency-aware behavior.
+
+## CLI Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-s, --slice-us` | 20000 | Scheduling slice (us) |
+| `-S, --slice-us-min` | 500 | Minimum slice (us) |
+| `--slo-target-us` | 10000 | Target invocation SLO (us) |
+| `--cold-start-boost-us` | 20000 | Extra boost for cold-start tasks (us) |
+| `--invocation-comm` | — | Comma-separated comm patterns for invocation workers |
+| `--disable-pools` | false | Disable CPU pool partitioning |
+| `--disable-builtin-idle` | false | Disable direct idle-CPU dispatch |
+| `--disable-deadline-scoring` | false | Use vtime scoring only |
+| `--tail-guard-threshold-us` | — | Slack threshold for tail guard promotion |
+| `--latency-pool-pct` | 50 | % of CPUs in latency pool |
+| `--stats <N>` | off | Print stats every N seconds |
+
+## Benchmarks
+
+Seven synthetic workloads via `cosmos-benchmark-workload`:
+`cpu_burst`, `sleep_short`, `io_mixed`, `memory_heavy`, `network_heavy`,
+`compression_mixed`, `graph_bfs`.
+
+Five configs: `cfs-default`, `cosmos-heuristic`, `cosmos-metadata`,
+`cosmos-pooled`, `cosmos-full`.
 
 ```sh
-sudo target/release/cosmos --monitor 1
+# Build everything
+cargo build --release --workspace
+
+# CFS baseline
+sudo python3 benchmarks/scripts/burst_benchmark.py \
+    --config cfs-default --workload cpu_burst --concurrency 100 \
+    --duration-ms 5000 --out-dir results/
+
+# COSMOS full
+sudo python3 benchmarks/scripts/burst_benchmark.py \
+    --config cosmos-full --workload cpu_burst --concurrency 100 \
+    --duration-ms 5000 --out-dir results/ \
+    --scheduler-bin target/release/cosmos
+
+# Compare
+python3 benchmarks/scripts/compare.py results/<cfs>/summary.json results/<cosmos>/summary.json
 ```
+
+### Results (V1, 48-core CloudLab, cpu_burst @ 100 concurrency)
+
+| Metric | CFS | COSMOS V1 | Delta |
+|--------|-----|-----------|-------|
+| p50 latency | 10347 ms | 7598 ms | **-26.6%** |
+| Mean latency | 10087 ms | 8647 ms | **-14.3%** |
+| SLO violations | 73 | 25 | **-65.8%** |
+
+COSMOS eliminated two-thirds of SLO violations while cutting mean latency 14%.
 
 ## Repository Layout
 
-- `src/`: COSMOS scheduler policy, CLI, and stats.
-- `rust/scx_rustland_core/`: RustLand user-space scheduler core and BPF
-  dispatcher assets.
-- `rust/scx_cargo/`: build helpers used to generate BPF bindings and skeletons.
-- `rust/scx_utils/`: sched_ext utility library.
-- `rust/scx_stats/`: stats transport and derive macro support.
+```
+.
+├── src/               # COSMOS scheduler (V1: main.rs; V2: adapter/, policy/, registry/, scheduler.rs)
+├── rust/              # Vendored sched_ext crates
+│   ├── scx_rustland_core/   # User-space scheduler core + BPF assets
+│   ├── scx_utils/           # Topology, exit info, compat
+│   ├── scx_stats/           # Stats transport + derive macro
+│   └── scx_cargo/           # BPF binding / skeleton generation
+├── main.bpf.c         # BPF kernel-side dispatcher
+├── intf.h             # Shared BPF/user-space structs
+├── cosmos-event-bridge/  # TCP → BPF metadata injection (NDJSON)
+├── shim/              # LD_PRELOAD library (libcosmos_meta.so)
+├── benchmarks/
+│   ├── scripts/          # Python harness (burst_benchmark.py, compare.py)
+│   ├── workloads/runner/ # Rust workload binary (7 synthetic workloads)
+│   └── profiler/         # Deep-trace profiling harness
+├── scheds/include/    # Vendored sched-ext BPF headers
+└── test_ssh.ignore.md # Testbed setup & operations guide
+```
 
-## Next Steps
+## Vendored Library Fix
 
-- Add a cgroup or sidecar-fed invocation metadata source so the scheduler can
-  distinguish tenants, functions, and request classes directly.
-- Track request-level latency from the runtime and feed p99/SLO miss signals
-  back into `task_score()`.
-- Add per-function admission controls for noisy-neighbor protection under CPU
-  saturation.
-- Extend the policy beyond CPU into multi-resource co-scheduling for memory,
-  IO, network, and accelerator contention.
+The vendored `scx_rustland_core` (v2.4.11) overwrites `src/bpf.rs` during
+build, removing COSMOS-specific APIs.  Two changes are needed in
+`rust/scx_rustland_core/assets/bpf.rs` (the template):
+
+1. `shutdown` field → `pub shutdown` (line 196)
+2. `fn task_tgid()` → `pub fn task_tgid()` (line 549)
+
+Apply the same fixes to `src/bpf.rs` and update downstream callers in
+`src/adapter/` and `src/policy/` to use the new `refresh_invocation_meta()`
+API (takes `&mut QueuedTask`, returns `Result<bool>`).
+
+## Metadata Injection
+
+Three paths:
+
+| Path | Mechanism | Use case |
+|------|-----------|----------|
+| Event bridge | TCP `127.0.0.1:9731`, NDJSON | OpenWhisk integration |
+| LD_PRELOAD shim | `libcosmos_meta.so` + env vars | Standalone or debugging |
+| Local events | Direct TCP to event bridge | Benchmark harness |
+
+## Testbed
+
+See `test_ssh.ignore.md` for the CloudLab testbed setup (kernel 7.0.9,
+toolchains, Docker, benchmark workflow).
