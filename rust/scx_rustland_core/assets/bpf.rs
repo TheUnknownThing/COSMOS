@@ -30,7 +30,6 @@ use plain::Plain;
 use procfs::process::all_processes;
 
 use libbpf_rs::libbpf_sys::bpf_object_open_opts;
-use libbpf_rs::MapCore;
 use libbpf_rs::OpenObject;
 use libbpf_rs::ProgramInput;
 
@@ -117,8 +116,6 @@ pub struct DispatchedTask {
     pub slice_ns: u64, // time slice in nanoseconds assigned to the task (0 = use default time slice)
     pub vtime: u64, // this value can be used to send the task's vruntime or deadline directly to the underlying BPF dispatcher
     pub enq_cnt: u64,
-    // Phase 1: pool assignment
-    pub pool: u32, // cosmos_pool: 0=none, 1=latency, 2=batch, 3=tail_guard
 }
 
 impl DispatchedTask {
@@ -134,7 +131,6 @@ impl DispatchedTask {
             slice_ns: 0, // use default time slice
             vtime: 0,
             enq_cnt: task.enq_cnt,
-            pool: 0, // POOL_NONE by default
         }
     }
 }
@@ -291,8 +287,6 @@ impl<'cb> BpfScheduler<'cb> {
         // Attach BPF scheduler.
         let mut skel = scx_ops_load!(skel, rustland, uei)?;
 
-        let struct_ops = Some(scx_ops_attach!(skel, rustland)?);
-
         // Build the ring buffer of queued tasks.
         let maps = &skel.maps;
         let queued_ring_buffer = &maps.queued;
@@ -304,21 +298,6 @@ impl<'cb> BpfScheduler<'cb> {
         // Build the user ring buffer of dispatched tasks.
         let dispatched = libbpf_rs::UserRingBuffer::new(&maps.dispatched)
             .expect("failed to create user ringbuf");
-
-        // Lock all the memory to prevent page faults that could trigger potential deadlocks during
-        // scheduling.
-        ALLOCATOR.lock_memory();
-        ALLOCATOR.disable_mmap().expect("Failed to disable mmap");
-
-        // Make sure to use the SCHED_EXT class at least for the scheduler itself.
-        if partial {
-            let err = Self::use_sched_ext();
-            if err < 0 {
-                return Err(anyhow::Error::msg(format!(
-                    "sched_setscheduler error: {err}"
-                )));
-            }
-        }
 
         // Pin BPF maps so the metadata listener and external tools can access them.
         let pin_dir = Path::new("/sys/fs/bpf/cosmos");
@@ -334,13 +313,22 @@ impl<'cb> BpfScheduler<'cb> {
             .pin(&pin_path)
             .context("Failed to pin has_invocation map")?;
 
-        // Phase 2: Pin cpu_pool_map (written by pool manager, read by BPF dispatch)
-        let pool_pin_path = pin_dir.join("cpu_pool_map");
-        let _ = fs::remove_file(&pool_pin_path);
-        skel.maps
-            .cpu_pool_map
-            .pin(&pool_pin_path)
-            .context("Failed to pin cpu_pool_map")?;
+        // Lock all the memory before attaching sched_ext. Post-attach page
+        // faults in the userspace scheduler can trip the kernel watchdog.
+        ALLOCATOR.lock_memory();
+        ALLOCATOR.disable_mmap().expect("Failed to disable mmap");
+
+        let struct_ops = Some(scx_ops_attach!(skel, rustland)?);
+
+        // Make sure to use the SCHED_EXT class at least for the scheduler itself.
+        if partial {
+            let err = Self::use_sched_ext();
+            if err < 0 {
+                return Err(anyhow::Error::msg(format!(
+                    "sched_setscheduler error: {err}"
+                )));
+            }
+        }
 
         Ok(Self {
             skel,
@@ -521,19 +509,6 @@ impl<'cb> BpfScheduler<'cb> {
             .nr_has_invocation_enqueues
     }
 
-    // Update the pool assignment for a specific CPU in the cpu_pool_map.
-    #[allow(dead_code)]
-    pub fn update_cpu_pool(&mut self, cpu: u32, pool: u32) -> Result<()> {
-        let key = cpu.to_ne_bytes();
-        let value = pool.to_ne_bytes();
-        self.skel
-            .maps
-            .cpu_pool_map
-            .update(&key, &value, libbpf_rs::MapFlags::ANY)
-            .context(format!("Failed to update cpu_pool_map for cpu {cpu}"))?;
-        Ok(())
-    }
-
     // Refresh invocation metadata from the map in case user space populated it
     // after the BPF enqueue snapshot was captured.
     fn task_tgid(pid: i32) -> u32 {
@@ -655,10 +630,6 @@ impl<'cb> BpfScheduler<'cb> {
         *vtime = task.vtime;
         *enq_cnt = task.enq_cnt;
 
-        // Phase 1: write pool assignment
-        dispatched_task.pool = task.pool;
-        dispatched_task.pad1 = 0;
-
         // Store the task in the user ring buffer.
         //
         // NOTE: submit() only updates the reserved slot in the user ring buffer, so it is not
@@ -690,7 +661,6 @@ impl Drop for BpfScheduler<'_> {
         }
         // Unpin BPF maps
         let _ = fs::remove_file("/sys/fs/bpf/cosmos/has_invocation");
-        let _ = fs::remove_file("/sys/fs/bpf/cosmos/cpu_pool_map");
         let _ = fs::remove_dir("/sys/fs/bpf/cosmos");
         ALLOCATOR.unlock_memory();
     }

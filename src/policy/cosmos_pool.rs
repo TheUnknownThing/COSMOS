@@ -31,8 +31,13 @@ pub struct PoolMetrics {
     pub batch_queue_depth: u64,
     pub latency_cpu_count: u64,
     pub batch_cpu_count: u64,
-    pub latency_shared_overflow: bool,
-    pub batch_shared_overflow: bool,
+    pub latency_home_depth: u64,
+    pub batch_home_depth: u64,
+    pub latency_borrowed_to_batch: u64,
+    pub batch_borrowed_to_latency: u64,
+    pub latency_empty_samples: u64,
+    pub batch_empty_samples: u64,
+    pub samples: u64,
 }
 
 /// A single CPU pool reassignment: CPU `cpu` moves to pool `pool`.
@@ -53,8 +58,18 @@ pub struct PoolManager {
     enabled: bool,
     latency_pct: u32,
     tail_guard_cpus: u32,
+    initial_latency_cpus: usize,
+    initial_batch_cpus: usize,
+    min_main_pool_cpus: usize,
+    latency_hot_intervals: u32,
+    batch_hot_intervals: u32,
+    balanced_intervals: u32,
     /// Queue depth per assigned CPU above which a pool is considered pressured.
     pressure_per_cpu: u64,
+    /// Number of consecutive housekeeping intervals before a CPU migration.
+    hot_interval_threshold: u32,
+    /// Number of quiet intervals before returning one CPU toward the base split.
+    return_interval_threshold: u32,
     /// Number of pool migrations performed (for stats)
     pub nr_pool_migrations: u64,
 }
@@ -78,7 +93,15 @@ impl PoolManager {
             enabled: true,
             latency_pct,
             tail_guard_cpus,
+            initial_latency_cpus: 0,
+            initial_batch_cpus: 0,
+            min_main_pool_cpus: 1,
+            latency_hot_intervals: 0,
+            batch_hot_intervals: 0,
+            balanced_intervals: 0,
             pressure_per_cpu: 2,
+            hot_interval_threshold: 3,
+            return_interval_threshold: 6,
             nr_pool_migrations: 0,
         };
         mgr.initial_assign();
@@ -92,7 +115,15 @@ impl PoolManager {
             enabled: false,
             latency_pct: 0,
             tail_guard_cpus: 0,
+            initial_latency_cpus: 0,
+            initial_batch_cpus: 0,
+            min_main_pool_cpus: 1,
+            latency_hot_intervals: 0,
+            batch_hot_intervals: 0,
+            balanced_intervals: 0,
             pressure_per_cpu: 2,
+            hot_interval_threshold: 3,
+            return_interval_threshold: 6,
             nr_pool_migrations: 0,
         }
     }
@@ -124,6 +155,9 @@ impl PoolManager {
         for i in latency_count..(nr - tg) {
             self.assignments[i] = TaskPool::Batch;
         }
+        self.initial_latency_cpus = latency_count;
+        self.initial_batch_cpus = remaining - latency_count;
+        self.min_main_pool_cpus = (remaining / 8).max(1);
 
         info!(
             "Pool initial assignment: {} latency, {} batch, {} tail_guard (total {} CPUs)",
@@ -142,12 +176,36 @@ impl PoolManager {
         self.assignments.iter().rposition(|&p| p == pool)
     }
 
-    fn pool_is_pressured(&self, queue_depth: u64, cpu_count: u64, shared_overflow: bool) -> bool {
-        if shared_overflow || cpu_count == 0 {
+    fn pool_is_pressured(&self, queue_depth: u64, cpu_count: u64) -> bool {
+        if cpu_count == 0 {
             return false;
         }
 
         queue_depth > cpu_count.saturating_mul(self.pressure_per_cpu)
+    }
+
+    fn borrow_ratio_high(&self, borrowed: u64, home_depth: u64) -> bool {
+        if borrowed == 0 || home_depth == 0 {
+            return false;
+        }
+        borrowed >= 2 && borrowed.saturating_mul(8) >= home_depth
+    }
+
+    fn pool_often_empty(empty_samples: u64, samples: u64) -> bool {
+        samples > 0 && empty_samples.saturating_mul(2) >= samples
+    }
+
+    fn migrate_one(&mut self, from: TaskPool, to: TaskPool) -> Vec<PoolChange> {
+        let mut changes = Vec::new();
+        if let Some(cpu) = self.find_last_cpu_in_pool(from) {
+            self.assignments[cpu] = to;
+            self.nr_pool_migrations += 1;
+            changes.push(PoolChange {
+                cpu: cpu as u32,
+                pool: to,
+            });
+        }
+        changes
     }
 
     pub fn rebalance(&mut self, metrics: &PoolMetrics) -> Vec<PoolChange> {
@@ -155,61 +213,104 @@ impl PoolManager {
             return Vec::new();
         }
 
-        let mut changes = Vec::new();
-
         let latency_count = self.count_pool(TaskPool::Latency);
         let batch_count = self.count_pool(TaskPool::Batch);
 
-        let latency_pressured = self.pool_is_pressured(
-            metrics.latency_queue_depth,
-            metrics.latency_cpu_count,
-            metrics.latency_shared_overflow,
-        );
-        let batch_pressured = self.pool_is_pressured(
-            metrics.batch_queue_depth,
-            metrics.batch_cpu_count,
-            metrics.batch_shared_overflow,
-        );
+        let latency_pressured = self
+            .pool_is_pressured(metrics.latency_queue_depth, metrics.latency_cpu_count)
+            || self.borrow_ratio_high(
+                metrics.latency_borrowed_to_batch,
+                metrics.latency_home_depth,
+            );
+        let batch_pressured = self
+            .pool_is_pressured(metrics.batch_queue_depth, metrics.batch_cpu_count)
+            || self.borrow_ratio_high(metrics.batch_borrowed_to_latency, metrics.batch_home_depth);
+        let latency_underloaded = !self
+            .pool_is_pressured(metrics.latency_queue_depth, metrics.latency_cpu_count)
+            || Self::pool_often_empty(metrics.latency_empty_samples, metrics.samples);
+        let batch_underloaded = !self
+            .pool_is_pressured(metrics.batch_queue_depth, metrics.batch_cpu_count)
+            || Self::pool_often_empty(metrics.batch_empty_samples, metrics.samples);
 
-        if latency_pressured && batch_count > 1 {
-            if let Some(cpu) = self.find_last_cpu_in_pool(TaskPool::Batch) {
-                self.assignments[cpu] = TaskPool::Latency;
-                self.nr_pool_migrations += 1;
-                changes.push(PoolChange {
-                    cpu: cpu as u32,
-                    pool: TaskPool::Latency,
-                });
+        let latency_hot = latency_pressured && batch_underloaded && !batch_pressured;
+        let batch_hot = batch_pressured && latency_underloaded && !latency_pressured;
+
+        if latency_hot {
+            self.latency_hot_intervals = self.latency_hot_intervals.saturating_add(1);
+            self.batch_hot_intervals = 0;
+            self.balanced_intervals = 0;
+        } else if batch_hot {
+            self.batch_hot_intervals = self.batch_hot_intervals.saturating_add(1);
+            self.latency_hot_intervals = 0;
+            self.balanced_intervals = 0;
+        } else {
+            self.latency_hot_intervals = 0;
+            self.batch_hot_intervals = 0;
+            self.balanced_intervals = self.balanced_intervals.saturating_add(1);
+        }
+
+        if self.latency_hot_intervals >= self.hot_interval_threshold
+            && batch_count > self.min_main_pool_cpus
+        {
+            let changes = self.migrate_one(TaskPool::Batch, TaskPool::Latency);
+            if let Some(change) = changes.first() {
                 info!(
-                    "Pool rebalance: CPU {} batch→latency (lat_depth={}, batch_count={}→{})",
-                    cpu,
+                    "Pool rebalance: CPU {} batch→latency (lat_depth={}, lat_borrow={}, batch_count={}→{})",
+                    change.cpu,
                     metrics.latency_queue_depth,
+                    metrics.latency_borrowed_to_batch,
                     batch_count,
                     batch_count - 1
                 );
-                return changes;
             }
+            self.latency_hot_intervals = 0;
+            return changes;
         }
 
-        if batch_pressured && latency_count > 1 {
-            if let Some(cpu) = self.find_last_cpu_in_pool(TaskPool::Latency) {
-                self.assignments[cpu] = TaskPool::Batch;
-                self.nr_pool_migrations += 1;
-                changes.push(PoolChange {
-                    cpu: cpu as u32,
-                    pool: TaskPool::Batch,
-                });
+        if self.batch_hot_intervals >= self.hot_interval_threshold
+            && latency_count > self.min_main_pool_cpus
+        {
+            let changes = self.migrate_one(TaskPool::Latency, TaskPool::Batch);
+            if let Some(change) = changes.first() {
                 info!(
-                    "Pool rebalance: CPU {} latency→batch (batch_depth={}, latency_count={}→{})",
-                    cpu,
+                    "Pool rebalance: CPU {} latency→batch (batch_depth={}, batch_borrow={}, latency_count={}→{})",
+                    change.cpu,
                     metrics.batch_queue_depth,
+                    metrics.batch_borrowed_to_latency,
                     latency_count,
                     latency_count - 1
                 );
+            }
+            self.batch_hot_intervals = 0;
+            return changes;
+        }
+
+        if self.balanced_intervals >= self.return_interval_threshold {
+            if latency_count > self.initial_latency_cpus && batch_count < self.initial_batch_cpus {
+                let changes = self.migrate_one(TaskPool::Latency, TaskPool::Batch);
+                if let Some(change) = changes.first() {
+                    info!(
+                        "Pool rebalance: CPU {} latency→batch returning toward base split",
+                        change.cpu
+                    );
+                }
+                self.balanced_intervals = 0;
+                return changes;
+            }
+            if batch_count > self.initial_batch_cpus && latency_count < self.initial_latency_cpus {
+                let changes = self.migrate_one(TaskPool::Batch, TaskPool::Latency);
+                if let Some(change) = changes.first() {
+                    info!(
+                        "Pool rebalance: CPU {} batch→latency returning toward base split",
+                        change.cpu
+                    );
+                }
+                self.balanced_intervals = 0;
                 return changes;
             }
         }
 
-        changes
+        Vec::new()
     }
 
     pub fn iter_assignments(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
@@ -228,6 +329,21 @@ impl PoolManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn metrics(lat_depth: u64, batch_depth: u64, lat_cpus: u64, batch_cpus: u64) -> PoolMetrics {
+        PoolMetrics {
+            latency_queue_depth: lat_depth,
+            batch_queue_depth: batch_depth,
+            latency_cpu_count: lat_cpus,
+            batch_cpu_count: batch_cpus,
+            latency_home_depth: lat_depth,
+            batch_home_depth: batch_depth,
+            latency_empty_samples: if lat_depth == 0 { 1 } else { 0 },
+            batch_empty_samples: if batch_depth == 0 { 1 } else { 0 },
+            samples: 1,
+            ..PoolMetrics::default()
+        }
+    }
 
     #[test]
     fn initial_assign_4_cpus_50_pct_1_tg() {
@@ -289,14 +405,9 @@ mod tests {
         assert_eq!(lat_before, 2);
         assert_eq!(bat_before, 2);
 
-        let metrics = PoolMetrics {
-            latency_queue_depth: 10,
-            batch_queue_depth: 0,
-            latency_cpu_count: 2,
-            batch_cpu_count: 2,
-            latency_shared_overflow: false,
-            batch_shared_overflow: false,
-        };
+        let metrics = metrics(10, 0, 2, 2);
+        assert!(mgr.rebalance(&metrics).is_empty());
+        assert!(mgr.rebalance(&metrics).is_empty());
         let changes = mgr.rebalance(&metrics);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].pool, TaskPool::Latency);
@@ -311,14 +422,9 @@ mod tests {
     fn rebalance_steals_from_latency_when_batch_pressured() {
         let mut mgr = PoolManager::new(4, 50, 0);
 
-        let metrics = PoolMetrics {
-            latency_queue_depth: 0,
-            batch_queue_depth: 10,
-            latency_cpu_count: 2,
-            batch_cpu_count: 2,
-            latency_shared_overflow: false,
-            batch_shared_overflow: false,
-        };
+        let metrics = metrics(0, 10, 2, 2);
+        assert!(mgr.rebalance(&metrics).is_empty());
+        assert!(mgr.rebalance(&metrics).is_empty());
         let changes = mgr.rebalance(&metrics);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].pool, TaskPool::Batch);
@@ -334,14 +440,7 @@ mod tests {
         let mut mgr = PoolManager::new(4, 50, 0);
 
         for _ in 0..5 {
-            let metrics = PoolMetrics {
-                latency_queue_depth: 10,
-                batch_queue_depth: 0,
-                latency_cpu_count: 2,
-                batch_cpu_count: 2,
-                latency_shared_overflow: false,
-                batch_shared_overflow: false,
-            };
+            let metrics = metrics(10, 0, 2, 2);
             mgr.rebalance(&metrics);
         }
 
@@ -353,46 +452,40 @@ mod tests {
     fn rebalance_rate_limits_to_one_migration() {
         let mut mgr = PoolManager::new(8, 50, 0);
 
-        let metrics = PoolMetrics {
-            latency_queue_depth: 9,
-            batch_queue_depth: 0,
-            latency_cpu_count: 4,
-            batch_cpu_count: 4,
-            latency_shared_overflow: false,
-            batch_shared_overflow: false,
-        };
+        let metrics = metrics(9, 0, 4, 4);
+        assert!(mgr.rebalance(&metrics).is_empty());
+        assert!(mgr.rebalance(&metrics).is_empty());
         let changes = mgr.rebalance(&metrics);
         assert_eq!(changes.len(), 1);
     }
 
     #[test]
-    fn rebalance_ignores_shared_spillover_pressure() {
+    fn rebalance_uses_persistent_borrow_pressure() {
         let mut mgr = PoolManager::new(8, 50, 0);
 
         let metrics = PoolMetrics {
-            latency_queue_depth: 100,
+            latency_queue_depth: 4,
             batch_queue_depth: 0,
             latency_cpu_count: 4,
             batch_cpu_count: 4,
-            latency_shared_overflow: true,
-            batch_shared_overflow: false,
+            latency_home_depth: 16,
+            latency_borrowed_to_batch: 4,
+            batch_empty_samples: 1,
+            samples: 1,
+            ..PoolMetrics::default()
         };
+        assert!(mgr.rebalance(&metrics).is_empty());
+        assert!(mgr.rebalance(&metrics).is_empty());
         let changes = mgr.rebalance(&metrics);
-        assert!(changes.is_empty());
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].pool, TaskPool::Latency);
     }
 
     #[test]
     fn rebalance_no_change_when_balanced() {
         let mut mgr = PoolManager::new(4, 50, 0);
 
-        let metrics = PoolMetrics {
-            latency_queue_depth: 0,
-            batch_queue_depth: 0,
-            latency_cpu_count: 2,
-            batch_cpu_count: 2,
-            latency_shared_overflow: false,
-            batch_shared_overflow: false,
-        };
+        let metrics = metrics(0, 0, 2, 2);
         let changes = mgr.rebalance(&metrics);
         assert!(changes.is_empty());
     }
@@ -403,14 +496,7 @@ mod tests {
         let tg_before = mgr.count_pool(TaskPool::TailGuard);
 
         for _ in 0..10 {
-            let metrics = PoolMetrics {
-                latency_queue_depth: 100,
-                batch_queue_depth: 100,
-                latency_cpu_count: 2,
-                batch_cpu_count: 2,
-                latency_shared_overflow: false,
-                batch_shared_overflow: false,
-            };
+            let metrics = metrics(100, 100, 2, 2);
             mgr.rebalance(&metrics);
         }
 

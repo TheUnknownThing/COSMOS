@@ -52,6 +52,20 @@ pub struct Metrics {
     pub nr_metadata_refreshed: u64,
     #[stat(desc = "Number of task enqueues where BPF observed invocation metadata hint")]
     pub nr_has_invocation_enqueues: u64,
+    #[stat(desc = "Number of tasks assigned to the latency pool")]
+    pub nr_pool_latency: u64,
+    #[stat(desc = "Number of tasks assigned to the batch pool")]
+    pub nr_pool_batch: u64,
+    #[stat(desc = "Number of tasks dispatched through the tail guard pool")]
+    pub nr_tail_guard_dispatches: u64,
+    #[stat(desc = "Number of metadata deadline misses observed by the policy")]
+    pub nr_slo_violations: u64,
+    #[stat(desc = "Number of CPU migrations between scheduler pools")]
+    pub nr_pool_migrations: u64,
+    #[stat(desc = "Number of latency-pool tasks borrowed onto batch-pool CPUs")]
+    pub nr_latency_pool_borrows: u64,
+    #[stat(desc = "Number of batch-pool tasks borrowed onto latency-pool CPUs")]
+    pub nr_batch_pool_borrows: u64,
 }
 
 impl Metrics {
@@ -91,6 +105,25 @@ impl Metrics {
                 self.nr_has_invocation_enqueues,
             )?;
         }
+        if self.nr_pool_latency > 0
+            || self.nr_pool_batch > 0
+            || self.nr_tail_guard_dispatches > 0
+            || self.nr_pool_migrations > 0
+            || self.nr_latency_pool_borrows > 0
+            || self.nr_batch_pool_borrows > 0
+        {
+            writeln!(
+                w,
+                "  [pools] lat: {:<5} batch: {:<5} tg: {:<5} mig: {:<5} borrow_l2b: {:<5} borrow_b2l: {:<5} slo_miss: {:<5}",
+                self.nr_pool_latency,
+                self.nr_pool_batch,
+                self.nr_tail_guard_dispatches,
+                self.nr_pool_migrations,
+                self.nr_latency_pool_borrows,
+                self.nr_batch_pool_borrows,
+                self.nr_slo_violations,
+            )?;
+        }
         Ok(())
     }
 
@@ -111,6 +144,13 @@ impl Metrics {
             nr_metadata_refreshed: self.nr_metadata_refreshed - rhs.nr_metadata_refreshed,
             nr_has_invocation_enqueues: self.nr_has_invocation_enqueues
                 - rhs.nr_has_invocation_enqueues,
+            nr_pool_latency: self.nr_pool_latency - rhs.nr_pool_latency,
+            nr_pool_batch: self.nr_pool_batch - rhs.nr_pool_batch,
+            nr_tail_guard_dispatches: self.nr_tail_guard_dispatches - rhs.nr_tail_guard_dispatches,
+            nr_slo_violations: self.nr_slo_violations - rhs.nr_slo_violations,
+            nr_pool_migrations: self.nr_pool_migrations - rhs.nr_pool_migrations,
+            nr_latency_pool_borrows: self.nr_latency_pool_borrows - rhs.nr_latency_pool_borrows,
+            nr_batch_pool_borrows: self.nr_batch_pool_borrows - rhs.nr_batch_pool_borrows,
             ..self.clone()
         }
     }

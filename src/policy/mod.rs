@@ -20,6 +20,13 @@ pub struct PolicyCounters {
     pub max_pending: u64,
     pub nr_metadata_classified: u64,
     pub nr_heuristic_classified: u64,
+    pub nr_pool_latency: u64,
+    pub nr_pool_batch: u64,
+    pub nr_tail_guard_dispatches: u64,
+    pub nr_slo_violations: u64,
+    pub nr_pool_migrations: u64,
+    pub nr_latency_pool_borrows: u64,
+    pub nr_batch_pool_borrows: u64,
 }
 
 /// A single scheduling decision: dispatch this task with these parameters.

@@ -5,7 +5,7 @@
 //!
 //! Accepts JSON metadata events from the cosmos-event-bridge, writes
 //! them to the InvocationRegistry, and sets the 1-bit has_invocation
-//! BPF hint so the kernel knows to route tasks to userspace.
+//! BPF hint only when metadata changes scheduling behavior.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -127,6 +127,10 @@ fn delete_has_invocation(map_fd: i32, tgid: u32) {
     }
 }
 
+fn should_force_userspace(slo_class: SloClass) -> bool {
+    matches!(slo_class, SloClass::LatencyCritical | SloClass::Batch)
+}
+
 /// Spawn a metadata ingestion thread that listens on a TCP port.
 pub fn spawn_metadata_listener(registry: RegistryHandle, port: u16) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -207,7 +211,11 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle, map_f
                     reg.upsert(meta);
                 }
 
-                write_has_invocation(map_fd, cmd.tgid, 1);
+                if should_force_userspace(slo_class) {
+                    write_has_invocation(map_fd, cmd.tgid, 1);
+                } else {
+                    delete_has_invocation(map_fd, cmd.tgid);
+                }
 
                 let _ = stream.write_all(b"ok\n");
             }

@@ -117,6 +117,13 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             nr_heuristic_classified: policy.nr_heuristic_classified,
             nr_metadata_refreshed: 0,
             nr_has_invocation_enqueues: bpf.nr_has_invocation_enqueues,
+            nr_pool_latency: policy.nr_pool_latency,
+            nr_pool_batch: policy.nr_pool_batch,
+            nr_tail_guard_dispatches: policy.nr_tail_guard_dispatches,
+            nr_slo_violations: policy.nr_slo_violations,
+            nr_pool_migrations: policy.nr_pool_migrations,
+            nr_latency_pool_borrows: policy.nr_latency_pool_borrows,
+            nr_batch_pool_borrows: policy.nr_batch_pool_borrows,
         }
     }
 
