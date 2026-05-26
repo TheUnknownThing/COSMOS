@@ -221,17 +221,6 @@ struct {
 } has_invocation SEC(".maps");
 
 /*
- * Per-CPU pool assignment map: maps CPU ID to a pool ID (cosmos_pool).
- * Written by userspace pool manager, read by BPF dispatch path.
- */
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, MAX_CPUS);
-	__type(key, u32);
-	__type(value, u32);
-} cpu_pool_map SEC(".maps");
-
-/*
  * Return a local task context from a generic task or NULL if the context
  * doesn't exist.
  */
@@ -564,30 +553,6 @@ static void dispatch_task(const struct dispatched_task_ctx *task)
 	 * didn't select any specific target CPU.
 	 */
 	if (task->cpu == RL_CPU_ANY) {
-		/*
-		 * Phase 1: pool-aware dispatch for tasks with pool assignment.
-		 * Route to pool-specific DSQ instead of SHARED_DSQ.
-		 */
-		if (task->pool == POOL_LATENCY) {
-			scx_bpf_dsq_insert_vtime(p, LATENCY_POOL_DSQ,
-						 task->slice_ns, task->vtime, task->flags);
-			kick_task_cpu(p, prev_cpu);
-			goto out_release;
-		}
-		if (task->pool == POOL_BATCH) {
-			scx_bpf_dsq_insert_vtime(p, BATCH_POOL_DSQ,
-						 task->slice_ns, task->vtime, task->flags);
-			kick_task_cpu(p, prev_cpu);
-			goto out_release;
-		}
-		if (task->pool == POOL_TAIL_GUARD) {
-			scx_bpf_dsq_insert_vtime(p, TAIL_GUARD_DSQ,
-						 task->slice_ns, task->vtime, task->flags);
-			kick_task_cpu(p, prev_cpu);
-			goto out_release;
-		}
-
-		/* POOL_NONE: use existing shared DSQ logic */
 		scx_bpf_dsq_insert_vtime(p, SHARED_DSQ,
 					 task->slice_ns, task->vtime, task->flags);
 		kick_task_cpu(p, prev_cpu);
@@ -998,32 +963,6 @@ void BPF_STRUCT_OPS(rustland_dispatch, s32 cpu, struct task_struct *prev)
 		return;
 
 	/*
-	 * Phase 1: Pool-aware consumption.
-	 * Each CPU pulls from its assigned pool DSQ first, then falls
-	 * through to per-CPU and shared DSQs.
-	 */
-	{
-		u32 *pool_ptr;
-		u32 pool_id;
-		u32 cpu_key = (u32)cpu;
-		pool_ptr = bpf_map_lookup_elem(&cpu_pool_map, &cpu_key);
-		pool_id = pool_ptr ? *pool_ptr : POOL_NONE;
-
-		if (pool_id == POOL_TAIL_GUARD) {
-			if (scx_bpf_dsq_move_to_local(TAIL_GUARD_DSQ, 0))
-				return;
-			if (scx_bpf_dsq_move_to_local(LATENCY_POOL_DSQ, 0))
-				return;
-		} else if (pool_id == POOL_LATENCY) {
-			if (scx_bpf_dsq_move_to_local(LATENCY_POOL_DSQ, 0))
-				return;
-		} else if (pool_id == POOL_BATCH) {
-			if (scx_bpf_dsq_move_to_local(BATCH_POOL_DSQ, 0))
-				return;
-		}
-	}
-
-	/*
 	 * Consume a task from the per-CPU DSQ.
 	 */
 	if (scx_bpf_dsq_move_to_local(cpu_to_dsq(cpu), 0))
@@ -1236,23 +1175,6 @@ static int dsq_init(void)
 	err = scx_bpf_create_dsq(SCHED_DSQ, -1);
 	if (err) {
 		scx_bpf_error("failed to create scheduler DSQ: %d", err);
-		return err;
-	}
-
-	/* Phase 1: Create pool DSQs */
-	err = scx_bpf_create_dsq(LATENCY_POOL_DSQ, -1);
-	if (err) {
-		scx_bpf_error("failed to create latency pool DSQ: %d", err);
-		return err;
-	}
-	err = scx_bpf_create_dsq(BATCH_POOL_DSQ, -1);
-	if (err) {
-		scx_bpf_error("failed to create batch pool DSQ: %d", err);
-		return err;
-	}
-	err = scx_bpf_create_dsq(TAIL_GUARD_DSQ, -1);
-	if (err) {
-		scx_bpf_error("failed to create tail guard DSQ: %d", err);
 		return err;
 	}
 

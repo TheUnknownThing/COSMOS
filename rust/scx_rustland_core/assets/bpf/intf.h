@@ -52,19 +52,6 @@ typedef int pid_t;
 /* Sentinel: no invocation metadata found for this task */
 #define SLO_CLASS_NONE 0xFF
 
-/* Pool DSQ IDs (after per-CPU DSQs + SHARED_DSQ + SCHED_DSQ) */
-#define LATENCY_POOL_DSQ  (MAX_CPUS + 2)
-#define BATCH_POOL_DSQ    (MAX_CPUS + 3)
-#define TAIL_GUARD_DSQ    (MAX_CPUS + 4)
-
-/* CPU pool assignment for dispatched tasks */
-enum cosmos_pool {
-	POOL_NONE       = 0,
-	POOL_LATENCY    = 1,
-	POOL_BATCH      = 2,
-	POOL_TAIL_GUARD = 3,
-};
-
 /* Special dispatch flags */
 enum {
 	/*
@@ -133,9 +120,6 @@ struct dispatched_task_ctx {
 	u64 slice_ns; /* time slice assigned to the task (0=default) */
 	u64 vtime; /* task deadline / vruntime */
 	u64 enq_cnt;
-	/* Phase 1: pool assignment (appended for compatibility) */
-	u32 pool;  /* cosmos_pool: 0=none, 1=latency, 2=batch, 3=tail_guard */
-	u32 pad1;  /* alignment padding */
 };
 
 #endif /* __INTF_H */

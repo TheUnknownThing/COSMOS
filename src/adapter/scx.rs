@@ -50,7 +50,6 @@ impl CpuAdapter for ScxAdapter<'_> {
         cpu: i32,
         slice_ns: u64,
         vtime: u64,
-        pool: u32,
         _enq_flags: u64,
         enq_cnt: u64,
     ) -> bool {
@@ -61,7 +60,6 @@ impl CpuAdapter for ScxAdapter<'_> {
             slice_ns,
             vtime,
             enq_cnt,
-            pool,
         };
         self.bpf.dispatch_task(&d).is_ok()
     }
@@ -73,12 +71,6 @@ impl CpuAdapter for ScxAdapter<'_> {
     fn exited(&self) -> bool {
         self.bpf.shutdown.load(std::sync::atomic::Ordering::Relaxed)
             || scx_utils::uei_exited!(&self.bpf.skel, uei)
-    }
-
-    fn set_cpu_pool(&mut self, cpu: u32, pool: u32) {
-        if let Err(e) = self.bpf.update_cpu_pool(cpu, pool) {
-            log::warn!("Failed to set CPU {} pool {}: {}", cpu, pool, e);
-        }
     }
 
     fn notify_complete(&mut self, pending: u64) {

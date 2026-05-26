@@ -30,7 +30,6 @@ use scx_utils::build_id;
 use scx_utils::libbpf_clap_opts::LibbpfOpts;
 
 use adapter::scx::ScxAdapter;
-use adapter::CpuAdapter;
 use metadata::spawn_metadata_listener;
 use policy::cosmos::CosmosPolicy;
 use policy::sfs::SfsPolicy;
@@ -264,14 +263,14 @@ impl SchedulingPolicy for RuntimePolicy {
         }
     }
 
-    fn tick(&mut self, registry: &InvocationRegistry, now_ns: u64) -> Vec<(u32, u32)> {
+    fn tick(&mut self, registry: &InvocationRegistry, now_ns: u64) {
         match self {
             Self::Cosmos(policy) => policy.tick(registry, now_ns),
             Self::Sfs(policy) => policy.tick(registry, now_ns),
         }
     }
 
-    fn init(&mut self, nr_cpus: usize, tail_guard_cpus: u32) -> Vec<(u32, u32)> {
+    fn init(&mut self, nr_cpus: usize, tail_guard_cpus: u32) {
         match self {
             Self::Cosmos(policy) => policy.init(nr_cpus, tail_guard_cpus),
             Self::Sfs(policy) => policy.init(nr_cpus, tail_guard_cpus),
@@ -280,7 +279,7 @@ impl SchedulingPolicy for RuntimePolicy {
 
     fn stats(&self) -> Self::Stats {
         match self {
-            Self::Cosmos(policy) => policy.stats(),
+            Self::Cosmos(policy) => policy::PolicyCounters::from(policy.stats()),
             Self::Sfs(policy) => policy.stats(),
         }
     }
@@ -382,13 +381,9 @@ fn main() -> Result<()> {
             PolicyKind::Sfs => RuntimePolicy::Sfs(SfsPolicy::new(&sfs_opts)),
         };
 
-        let init_assignments = policy.init(nr_cpus, opts.tail_guard_cpus);
+        policy.init(nr_cpus, opts.tail_guard_cpus);
 
-        let mut adapter = ScxAdapter::new(bpf)?;
-
-        for (cpu, pool) in init_assignments {
-            adapter.set_cpu_pool(cpu, pool);
-        }
+        let adapter = ScxAdapter::new(bpf)?;
 
         let mut sched = Scheduler::new(registry.clone(), adapter, policy, stats_server);
 

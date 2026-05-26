@@ -29,6 +29,10 @@ pub enum TaskPool {
 pub struct PoolMetrics {
     pub latency_queue_depth: u64,
     pub batch_queue_depth: u64,
+    pub latency_cpu_count: u64,
+    pub batch_cpu_count: u64,
+    pub latency_shared_overflow: bool,
+    pub batch_shared_overflow: bool,
 }
 
 /// A single CPU pool reassignment: CPU `cpu` moves to pool `pool`.
@@ -45,12 +49,12 @@ pub struct PoolChange {
 /// rebalance cycle, and the tail guard pool is never touched.
 pub struct PoolManager {
     nr_cpus: usize,
-    assignments: Vec<TaskPool>,
+    pub(crate) assignments: Vec<TaskPool>,
     enabled: bool,
     latency_pct: u32,
     tail_guard_cpus: u32,
-    /// Queue depth threshold above which a pool is considered "pressured"
-    pressure_threshold: u64,
+    /// Queue depth per assigned CPU above which a pool is considered pressured.
+    pressure_per_cpu: u64,
     /// Number of pool migrations performed (for stats)
     pub nr_pool_migrations: u64,
 }
@@ -74,7 +78,7 @@ impl PoolManager {
             enabled: true,
             latency_pct,
             tail_guard_cpus,
-            pressure_threshold: 4,
+            pressure_per_cpu: 2,
             nr_pool_migrations: 0,
         };
         mgr.initial_assign();
@@ -88,7 +92,7 @@ impl PoolManager {
             enabled: false,
             latency_pct: 0,
             tail_guard_cpus: 0,
-            pressure_threshold: 4,
+            pressure_per_cpu: 2,
             nr_pool_migrations: 0,
         }
     }
@@ -138,6 +142,14 @@ impl PoolManager {
         self.assignments.iter().rposition(|&p| p == pool)
     }
 
+    fn pool_is_pressured(&self, queue_depth: u64, cpu_count: u64, shared_overflow: bool) -> bool {
+        if shared_overflow || cpu_count == 0 {
+            return false;
+        }
+
+        queue_depth > cpu_count.saturating_mul(self.pressure_per_cpu)
+    }
+
     pub fn rebalance(&mut self, metrics: &PoolMetrics) -> Vec<PoolChange> {
         if !self.enabled {
             return Vec::new();
@@ -148,7 +160,18 @@ impl PoolManager {
         let latency_count = self.count_pool(TaskPool::Latency);
         let batch_count = self.count_pool(TaskPool::Batch);
 
-        if metrics.latency_queue_depth > self.pressure_threshold && batch_count > 1 {
+        let latency_pressured = self.pool_is_pressured(
+            metrics.latency_queue_depth,
+            metrics.latency_cpu_count,
+            metrics.latency_shared_overflow,
+        );
+        let batch_pressured = self.pool_is_pressured(
+            metrics.batch_queue_depth,
+            metrics.batch_cpu_count,
+            metrics.batch_shared_overflow,
+        );
+
+        if latency_pressured && batch_count > 1 {
             if let Some(cpu) = self.find_last_cpu_in_pool(TaskPool::Batch) {
                 self.assignments[cpu] = TaskPool::Latency;
                 self.nr_pool_migrations += 1;
@@ -167,7 +190,7 @@ impl PoolManager {
             }
         }
 
-        if metrics.batch_queue_depth > self.pressure_threshold && latency_count > 1 {
+        if batch_pressured && latency_count > 1 {
             if let Some(cpu) = self.find_last_cpu_in_pool(TaskPool::Latency) {
                 self.assignments[cpu] = TaskPool::Batch;
                 self.nr_pool_migrations += 1;
@@ -269,6 +292,10 @@ mod tests {
         let metrics = PoolMetrics {
             latency_queue_depth: 10,
             batch_queue_depth: 0,
+            latency_cpu_count: 2,
+            batch_cpu_count: 2,
+            latency_shared_overflow: false,
+            batch_shared_overflow: false,
         };
         let changes = mgr.rebalance(&metrics);
         assert_eq!(changes.len(), 1);
@@ -287,6 +314,10 @@ mod tests {
         let metrics = PoolMetrics {
             latency_queue_depth: 0,
             batch_queue_depth: 10,
+            latency_cpu_count: 2,
+            batch_cpu_count: 2,
+            latency_shared_overflow: false,
+            batch_shared_overflow: false,
         };
         let changes = mgr.rebalance(&metrics);
         assert_eq!(changes.len(), 1);
@@ -306,6 +337,10 @@ mod tests {
             let metrics = PoolMetrics {
                 latency_queue_depth: 10,
                 batch_queue_depth: 0,
+                latency_cpu_count: 2,
+                batch_cpu_count: 2,
+                latency_shared_overflow: false,
+                batch_shared_overflow: false,
             };
             mgr.rebalance(&metrics);
         }
@@ -319,11 +354,31 @@ mod tests {
         let mut mgr = PoolManager::new(8, 50, 0);
 
         let metrics = PoolMetrics {
-            latency_queue_depth: 100,
+            latency_queue_depth: 9,
             batch_queue_depth: 0,
+            latency_cpu_count: 4,
+            batch_cpu_count: 4,
+            latency_shared_overflow: false,
+            batch_shared_overflow: false,
         };
         let changes = mgr.rebalance(&metrics);
         assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn rebalance_ignores_shared_spillover_pressure() {
+        let mut mgr = PoolManager::new(8, 50, 0);
+
+        let metrics = PoolMetrics {
+            latency_queue_depth: 100,
+            batch_queue_depth: 0,
+            latency_cpu_count: 4,
+            batch_cpu_count: 4,
+            latency_shared_overflow: true,
+            batch_shared_overflow: false,
+        };
+        let changes = mgr.rebalance(&metrics);
+        assert!(changes.is_empty());
     }
 
     #[test]
@@ -333,6 +388,10 @@ mod tests {
         let metrics = PoolMetrics {
             latency_queue_depth: 0,
             batch_queue_depth: 0,
+            latency_cpu_count: 2,
+            batch_cpu_count: 2,
+            latency_shared_overflow: false,
+            batch_shared_overflow: false,
         };
         let changes = mgr.rebalance(&metrics);
         assert!(changes.is_empty());
@@ -347,6 +406,10 @@ mod tests {
             let metrics = PoolMetrics {
                 latency_queue_depth: 100,
                 batch_queue_depth: 100,
+                latency_cpu_count: 2,
+                batch_cpu_count: 2,
+                latency_shared_overflow: false,
+                batch_shared_overflow: false,
             };
             mgr.rebalance(&metrics);
         }

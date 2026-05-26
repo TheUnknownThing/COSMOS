@@ -36,7 +36,6 @@ pub trait CpuAdapter {
         cpu: i32,
         slice_ns: u64,
         vtime: u64,
-        pool: u32,
         enq_flags: u64,
         enq_cnt: u64,
     ) -> bool;
@@ -46,9 +45,6 @@ pub trait CpuAdapter {
 
     /// Whether the scheduler should exit.
     fn exited(&self) -> bool;
-
-    /// Write a CPU to pool assignment (for pool-aware policies).
-    fn set_cpu_pool(&mut self, cpu: u32, pool: u32);
 
     /// Notify kernel that scheduling cycle is complete.
     fn notify_complete(&mut self, pending: u64);

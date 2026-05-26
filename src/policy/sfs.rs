@@ -285,7 +285,6 @@ impl SfsPolicy {
                     cpu: RL_CPU_ANY,
                     slice_ns,
                     vtime: score,
-                    pool: 0,
                     enq_flags,
                     enq_cnt,
                 },
@@ -307,9 +306,8 @@ impl SchedulingPolicy for SfsPolicy {
         self.schedule_internal(reg, raw, now, topo.all_cpus.len())
     }
 
-    fn tick(&mut self, _registry: &InvocationRegistry, now_ns: u64) -> Vec<(u32, u32)> {
+    fn tick(&mut self, _registry: &InvocationRegistry, now_ns: u64) {
         self.prune_task_state(now_ns);
-        Vec::new()
     }
 
     fn stats(&self) -> PolicyCounters {

@@ -59,7 +59,6 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
                     dec.cpu,
                     dec.slice_ns,
                     dec.vtime,
-                    dec.pool,
                     dec.enq_flags,
                     dec.enq_cnt,
                 );
@@ -67,10 +66,7 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
 
             {
                 let reg = self.registry.read().unwrap();
-                let changes = self.policy.tick(&reg, now);
-                for (cpu, pool) in changes {
-                    self.adapter.set_cpu_pool(cpu, pool);
-                }
+                self.policy.tick(&reg, now);
             }
 
             self.prune_counter += 1;
@@ -121,11 +117,6 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             nr_heuristic_classified: policy.nr_heuristic_classified,
             nr_metadata_refreshed: 0,
             nr_has_invocation_enqueues: bpf.nr_has_invocation_enqueues,
-            nr_pool_latency: policy.nr_pool_latency,
-            nr_pool_batch: policy.nr_pool_batch,
-            nr_pool_migrations: policy.nr_pool_migrations,
-            nr_tail_guard_dispatches: policy.nr_tail_guard_dispatches,
-            nr_slo_violations: policy.nr_slo_violations,
         }
     }
 

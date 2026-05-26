@@ -6,14 +6,13 @@ use std::collections::HashMap;
 
 use scx_utils::Topology;
 
-use crate::bpf::{QueuedTask, RL_CPU_ANY};
+use crate::bpf::{QueuedTask};
 use crate::policy::cosmos_pool::{effective_tail_guard_cpus, PoolManager, PoolMetrics, TaskPool};
-use crate::policy::{DispatchDecision, SchedulingPolicy};
+use crate::policy::{DispatchDecision, PolicyCounters, SchedulingPolicy};
 use crate::registry::{InvocationMeta, InvocationRegistry};
 
 const NSEC_PER_USEC: u64 = 1_000;
 const TASK_STATE_TTL_NS: u64 = 60_000_000_000;
-const POOL_OVERFLOW_THRESHOLD: u64 = 4;
 
 // ─── Public types ────────────────────────────────────────────────
 
@@ -54,6 +53,22 @@ pub struct CosmosCounters {
     pub nr_tail_guard_dispatches: u64,
     pub nr_slo_violations: u64,
     pub nr_pool_migrations: u64,
+    pub nr_latency_shared_fallbacks: u64,
+    pub nr_batch_shared_fallbacks: u64,
+}
+
+impl From<CosmosCounters> for PolicyCounters {
+    fn from(c: CosmosCounters) -> Self {
+        PolicyCounters {
+            nr_cold_start_tasks: c.nr_cold_start_tasks,
+            nr_hot_invocation_tasks: c.nr_hot_invocation_tasks,
+            nr_background_tasks: c.nr_background_tasks,
+            nr_slo_boosted: c.nr_slo_boosted,
+            max_pending: c.max_pending,
+            nr_metadata_classified: c.nr_metadata_classified,
+            nr_heuristic_classified: c.nr_heuristic_classified,
+        }
+    }
 }
 
 pub struct CosmosPolicy {
@@ -70,8 +85,15 @@ pub struct CosmosPolicy {
     pub deadline_scoring_enabled: bool,
     pool_mgr: Option<PoolManager>,
     latency_pool_pct: u32,
+    pool_rebalance_interval_ns: u64,
+    next_pool_rebalance_at_ns: u64,
     last_latency_depth: u64,
     last_batch_depth: u64,
+    last_latency_shared_overflow: bool,
+    last_batch_shared_overflow: bool,
+    latency_sel_idx: usize,
+    batch_sel_idx: usize,
+    tail_guard_sel_idx: usize,
     nr_cold_start_tasks: u64,
     nr_hot_invocation_tasks: u64,
     nr_background_tasks: u64,
@@ -83,6 +105,8 @@ pub struct CosmosPolicy {
     nr_pool_batch: u64,
     nr_tail_guard_dispatches: u64,
     nr_slo_violations: u64,
+    nr_latency_shared_fallbacks: u64,
+    nr_batch_shared_fallbacks: u64,
 }
 
 // ─── CosmosPolicy implementation ─────────────────────────────────
@@ -108,8 +132,15 @@ impl CosmosPolicy {
             deadline_scoring_enabled: !opts.disable_deadline_scoring,
             pool_mgr: None,
             latency_pool_pct: opts.latency_pool_pct,
+            pool_rebalance_interval_ns: opts.pool_rebalance_ms * 1_000_000,
+            next_pool_rebalance_at_ns: 0,
             last_latency_depth: 0,
             last_batch_depth: 0,
+            last_latency_shared_overflow: false,
+            last_batch_shared_overflow: false,
+            latency_sel_idx: 0,
+            batch_sel_idx: 0,
+            tail_guard_sel_idx: 0,
             nr_cold_start_tasks: 0,
             nr_hot_invocation_tasks: 0,
             nr_background_tasks: 0,
@@ -121,6 +152,8 @@ impl CosmosPolicy {
             nr_pool_batch: 0,
             nr_tail_guard_dispatches: 0,
             nr_slo_violations: 0,
+            nr_latency_shared_fallbacks: 0,
+            nr_batch_shared_fallbacks: 0,
         }
     }
 
@@ -355,6 +388,44 @@ impl CosmosPolicy {
         Self::scale_by_weight(task, base.max(self.slice_ns_min)).max(self.slice_ns_min)
     }
 
+    fn select_cpu_for_pool(&mut self, pool: TaskPool) -> i32 {
+        let mgr = match self.pool_mgr.as_ref() {
+            Some(m) => m,
+            None => return 0,
+        };
+        let cpus: Vec<usize> = mgr
+            .assignments
+            .iter()
+            .enumerate()
+            .filter(|(_, &p)| p == pool)
+            .map(|(i, _)| i)
+            .collect();
+        if cpus.is_empty() {
+            return 0;
+        }
+        let idx = match pool {
+            TaskPool::Latency => {
+                let i = self.latency_sel_idx % cpus.len();
+                self.latency_sel_idx = self.latency_sel_idx.wrapping_add(1);
+                i
+            }
+            TaskPool::Batch => {
+                let i = self.batch_sel_idx % cpus.len();
+                self.batch_sel_idx = self.batch_sel_idx.wrapping_add(1);
+                i
+            }
+            TaskPool::TailGuard => {
+                let i = self.tail_guard_sel_idx % cpus.len();
+                self.tail_guard_sel_idx = self.tail_guard_sel_idx.wrapping_add(1);
+                i
+            }
+            TaskPool::None => {
+                return 0;
+            }
+        };
+        cpus[idx] as i32
+    }
+
     // ── test api ────────────────────────────────────────────
 
     #[cfg(test)]
@@ -456,7 +527,7 @@ impl SchedulingPolicy for CosmosPolicy {
         _topo: &Topology,
         now: u64,
     ) -> Vec<DispatchDecision> {
-        let mut decisions: Vec<(u64, u8, bool, u64, i32, i32, u64, u32, u64, u64)> =
+        let mut decisions: Vec<(u64, u8, bool, u64, i32, i32, u64, u64, u64)> =
             Vec::with_capacity(raw.len());
         let mut lat = 0u64;
         let mut bat = 0u64;
@@ -501,15 +572,21 @@ impl SchedulingPolicy for CosmosPolicy {
             }
             match pool {
                 TaskPool::Latency => {
-                    self.nr_pool_latency = self.nr_pool_latency.saturating_add(1);
                     lat += 1;
+                    self.nr_pool_latency = self.nr_pool_latency.saturating_add(1);
                 }
                 TaskPool::Batch => {
-                    self.nr_pool_batch = self.nr_pool_batch.saturating_add(1);
                     bat += 1;
+                    self.nr_pool_batch = self.nr_pool_batch.saturating_add(1);
                 }
                 _ => {}
             }
+
+            let cpu = if self.percpu_local {
+                task.cpu
+            } else {
+                self.select_cpu_for_pool(pool)
+            };
 
             decisions.push((
                 score,
@@ -517,13 +594,8 @@ impl SchedulingPolicy for CosmosPolicy {
                 has_meta,
                 now,
                 task.pid,
-                if self.percpu_local {
-                    task.cpu
-                } else {
-                    RL_CPU_ANY
-                },
+                cpu,
                 slice,
-                pool as u32,
                 task.flags,
                 task.enq_cnt,
             ));
@@ -541,38 +613,25 @@ impl SchedulingPolicy for CosmosPolicy {
 
         let pending = decisions.len() as u64;
         self.max_pending = self.max_pending.max(pending);
-
         self.last_latency_depth = lat;
         self.last_batch_depth = bat;
-        let latency_overflow = lat > POOL_OVERFLOW_THRESHOLD;
-        let batch_overflow = bat > POOL_OVERFLOW_THRESHOLD;
+        self.last_latency_shared_overflow = false;
+        self.last_batch_shared_overflow = false;
 
         decisions
             .into_iter()
-            .map(
-                |(score, _, _, _, pid, cpu, slice, pool, enq_flags, enq_cnt)| {
-                    let pool = match pool {
-                        p if p == TaskPool::Latency as u32 && latency_overflow => {
-                            TaskPool::None as u32
-                        }
-                        p if p == TaskPool::Batch as u32 && batch_overflow => TaskPool::None as u32,
-                        p => p,
-                    };
-                    DispatchDecision {
-                        pid,
-                        cpu,
-                        slice_ns: slice,
-                        vtime: score,
-                        pool,
-                        enq_flags,
-                        enq_cnt,
-                    }
-                },
-            )
+            .map(|(score, _, _, _, pid, cpu, slice, enq_flags, enq_cnt)| DispatchDecision {
+                pid,
+                cpu,
+                slice_ns: slice,
+                vtime: score,
+                enq_flags,
+                enq_cnt,
+            })
             .collect()
     }
 
-    fn init(&mut self, nr_cpus: usize, tail_guard_cpus: u32) -> Vec<(u32, u32)> {
+    fn init(&mut self, nr_cpus: usize, tail_guard_cpus: u32) {
         if self.pools_enabled {
             let tg = effective_tail_guard_cpus(nr_cpus, tail_guard_cpus);
             if tg == 0 {
@@ -582,21 +641,33 @@ impl SchedulingPolicy for CosmosPolicy {
         } else {
             self.pool_mgr = Some(PoolManager::disabled(nr_cpus));
         }
-        self.pool_mgr.as_ref().map_or_else(Vec::new, |m| m.init())
     }
 
-    fn tick(&mut self, _registry: &InvocationRegistry, now_ns: u64) -> Vec<(u32, u32)> {
+    fn tick(&mut self, _registry: &InvocationRegistry, now_ns: u64) {
         self.prune_task_state(now_ns);
+        if self.pool_rebalance_interval_ns > 0 && now_ns < self.next_pool_rebalance_at_ns {
+            return;
+        }
         let metrics = PoolMetrics {
             latency_queue_depth: self.last_latency_depth,
             batch_queue_depth: self.last_batch_depth,
+            latency_cpu_count: self
+                .pool_mgr
+                .as_ref()
+                .map_or(0, |m| m.count_pool(TaskPool::Latency) as u64),
+            batch_cpu_count: self
+                .pool_mgr
+                .as_ref()
+                .map_or(0, |m| m.count_pool(TaskPool::Batch) as u64),
+            latency_shared_overflow: self.last_latency_shared_overflow,
+            batch_shared_overflow: self.last_batch_shared_overflow,
         };
-        self.pool_mgr.as_mut().map_or_else(Vec::new, |m| {
-            m.rebalance(&metrics)
-                .into_iter()
-                .map(|c| (c.cpu, c.pool as u32))
-                .collect()
-        })
+        if let Some(mgr) = self.pool_mgr.as_mut() {
+            mgr.rebalance(&metrics);
+        }
+        if self.pool_rebalance_interval_ns > 0 {
+            self.next_pool_rebalance_at_ns = now_ns.saturating_add(self.pool_rebalance_interval_ns);
+        }
     }
 
     fn stats(&self) -> CosmosCounters {
@@ -613,11 +684,21 @@ impl SchedulingPolicy for CosmosPolicy {
             nr_tail_guard_dispatches: self.nr_tail_guard_dispatches,
             nr_slo_violations: self.nr_slo_violations,
             nr_pool_migrations: self.pool_mgr.as_ref().map_or(0, |m| m.nr_pool_migrations),
+            nr_latency_shared_fallbacks: self.nr_latency_shared_fallbacks,
+            nr_batch_shared_fallbacks: self.nr_batch_shared_fallbacks,
         }
     }
 
-    fn counters(&self) -> CosmosCounters {
-        self.stats()
+    fn counters(&self) -> PolicyCounters {
+        PolicyCounters {
+            nr_cold_start_tasks: self.nr_cold_start_tasks,
+            nr_hot_invocation_tasks: self.nr_hot_invocation_tasks,
+            nr_background_tasks: self.nr_background_tasks,
+            nr_slo_boosted: self.nr_slo_boosted,
+            max_pending: self.max_pending,
+            nr_metadata_classified: self.nr_metadata_classified,
+            nr_heuristic_classified: self.nr_heuristic_classified,
+        }
     }
 }
 
@@ -969,5 +1050,29 @@ mod tests {
         p.enqueue_test(&mut qt(2001, 999, "w", 5 * MS, 100), &r, 100 * MS);
         assert_eq!(p.nr_heuristic_classified, 1);
         assert_eq!(p.nr_metadata_classified, 0);
+    }
+
+    #[test]
+    fn tick_rebalance_happens() {
+        let o = opts();
+        let mut p = pl(&o);
+        p.init(4, 0);
+        p.last_latency_depth = 5;
+        p.last_batch_depth = 0;
+
+        p.tick(&InvocationRegistry::new(), 0);
+        // Verify that rebalance actually migrated a CPU to latency pool
+        assert!(p.pool_mgr.as_ref().unwrap().nr_pool_migrations > 0);
+    }
+
+    #[test]
+    fn tick_no_rebalance_when_balanced() {
+        let o = opts();
+        let mut p = pl(&o);
+        p.init(4, 0);
+        let mig_before = p.pool_mgr.as_ref().unwrap().nr_pool_migrations;
+
+        p.tick(&InvocationRegistry::new(), 0);
+        assert_eq!(p.pool_mgr.as_ref().unwrap().nr_pool_migrations, mig_before);
     }
 }
