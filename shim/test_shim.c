@@ -43,7 +43,7 @@ int main(void)
     if (ret < 0) {
         fprintf(stderr, "FAIL: cosmos_invocation_start returned %d\n", ret);
         fprintf(stderr, "  Is the COSMOS scheduler running?\n");
-        fprintf(stderr, "  Does /sys/fs/bpf/cosmos/invocation_meta exist?\n");
+        fprintf(stderr, "  Does /sys/fs/bpf/cosmos/invocation_events exist?\n");
         return 1;
     }
     printf("PASS: cosmos_invocation_start (deadline=%lu, slo=0, cold=1, id=42)\n",

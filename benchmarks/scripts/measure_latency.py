@@ -37,7 +37,7 @@ SCHEDULER_TOTAL_FIELDS = (
     "nr_kernel_dispatches",
     "nr_metadata_classified",
     "nr_metadata_refreshed",
-    "nr_invocation_meta_enqueues",
+    "nr_has_invocation_enqueues",
     "nr_pool_batch",
     "nr_pool_latency",
     "nr_pool_migrations",

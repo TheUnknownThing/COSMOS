@@ -1,7 +1,6 @@
-mod bpf_writer;
+mod metadata_writer;
 
 use anyhow::{Context, Result};
-use bpf_writer::InvocationMeta;
 use clap::Parser;
 use serde::Deserialize;
 use std::collections::hash_map::Entry;
@@ -9,9 +8,7 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::net::SocketAddr;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -20,11 +17,14 @@ use tokio::net::{TcpListener, TcpStream};
 #[derive(Parser)]
 #[command(name = "cosmos-event-bridge")]
 #[command(
-    about = "COSMOS event bridge — consumes OpenWhisk invocation events, writes BPF metadata"
+    about = "COSMOS event bridge — consumes OpenWhisk invocation events, writes metadata to scheduler"
 )]
 struct Args {
     #[arg(short, long, default_value = "9731")]
     port: u16,
+
+    #[arg(long, default_value = "9732")]
+    metadata_port: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,16 +186,10 @@ impl BridgeState {
         let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
         let invocation_id = hash_activation_id(&ev.activation_id);
 
-        let meta = InvocationMeta {
-            deadline_ns,
-            slo_class,
-            is_cold_start: if ev.cold_start { 1 } else { 0 },
-            invocation_id,
-        };
-
         for tgid in &tgids {
-            bpf_writer::write_meta(*tgid, &meta)
-                .with_context(|| format!("failed to write BPF map for tgid={}", tgid))?;
+            metadata_writer::write_meta(*tgid, deadline_ns, slo_class,
+                                        if ev.cold_start { 1 } else { 0 }, invocation_id)
+                .with_context(|| format!("failed to write metadata for tgid={}", tgid))?;
         }
 
         match self.containers.entry(ev.container_id.clone()) {
@@ -252,8 +246,8 @@ impl BridgeState {
 
         if let Some(tgids) = should_delete {
             for tgid in &tgids {
-                bpf_writer::delete_meta(*tgid)
-                    .with_context(|| format!("failed to delete BPF map for tgid={}", tgid))?;
+                metadata_writer::delete_meta(*tgid)
+                    .with_context(|| format!("failed to delete metadata for tgid={}", tgid))?;
             }
             self.containers.remove(&ev.container_id);
             eprintln!(
@@ -270,15 +264,9 @@ fn handle_local_start(ev: &LocalStartEvent) -> Result<()> {
     let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
     let invocation_id = hash_activation_id(&ev.activation_id);
 
-    let meta = InvocationMeta {
-        deadline_ns,
-        slo_class,
-        is_cold_start: if ev.cold_start { 1 } else { 0 },
-        invocation_id,
-    };
-
-    bpf_writer::write_meta(ev.tgid, &meta)
-        .with_context(|| format!("failed to write BPF map for local tgid={}", ev.tgid))?;
+    metadata_writer::write_meta(ev.tgid, deadline_ns, slo_class,
+                                if ev.cold_start { 1 } else { 0 }, invocation_id)
+        .with_context(|| format!("failed to write metadata for local tgid={}", ev.tgid))?;
 
     eprintln!(
         "COSMOS local_start: activation={} tgid={} action={} kind={} timeout_ms={} slo={} cold={} deadline_ns={}",
@@ -289,8 +277,8 @@ fn handle_local_start(ev: &LocalStartEvent) -> Result<()> {
 }
 
 fn handle_local_end(ev: &LocalEndEvent) -> Result<()> {
-    bpf_writer::delete_meta(ev.tgid)
-        .with_context(|| format!("failed to delete BPF map for local tgid={}", ev.tgid))?;
+    metadata_writer::delete_meta(ev.tgid)
+        .with_context(|| format!("failed to delete metadata for local tgid={}", ev.tgid))?;
     eprintln!(
         "COSMOS local_end: activation={} tgid={} (deleted)",
         ev.activation_id, ev.tgid
@@ -298,7 +286,7 @@ fn handle_local_end(ev: &LocalEndEvent) -> Result<()> {
     Ok(())
 }
 
-async fn handle_connection(stream: TcpStream, peer: SocketAddr, state: Arc<Mutex<BridgeState>>) {
+async fn handle_connection(stream: TcpStream, peer: std::net::SocketAddr, state: std::sync::Arc<std::sync::Mutex<BridgeState>>) {
     eprintln!("connection from {}", peer);
 
     let (reader, mut writer) = stream.into_split();
@@ -367,13 +355,16 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let addr = format!("127.0.0.1:{}", args.port);
 
+    // Set the metadata port for the writer
+    metadata_writer::set_metadata_port(args.metadata_port);
+
     let listener = TcpListener::bind(&addr)
         .await
         .with_context(|| format!("failed to bind to {}", addr))?;
 
     eprintln!("COSMOS event bridge listening on {}", addr);
 
-    let state = Arc::new(Mutex::new(BridgeState::new()));
+    let state = std::sync::Arc::new(std::sync::Mutex::new(BridgeState::new()));
 
     loop {
         let (stream, peer) = listener
@@ -381,7 +372,7 @@ async fn main() -> Result<()> {
             .await
             .context("failed to accept connection")?;
 
-        let state = Arc::clone(&state);
+        let state = std::sync::Arc::clone(&state);
         tokio::spawn(async move {
             handle_connection(stream, peer, state).await;
         });

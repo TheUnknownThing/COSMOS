@@ -83,6 +83,7 @@ pub const RL_CPU_ANY: i32 = bpf_intf::RL_CPU_ANY as i32;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
 pub struct QueuedTask {
     pub pid: i32,             // pid that uniquely identifies a task
+    pub tgid: u32,            // thread-group ID for registry lookup
     pub cpu: i32,             // CPU previously used by the task
     pub nr_cpus_allowed: u64, // Number of CPUs that the task can use
     pub flags: u64,           // task's enqueue flags
@@ -93,12 +94,6 @@ pub struct QueuedTask {
     pub vtime: u64,           // Current task vruntime / deadline (set by the scheduler)
     pub enq_cnt: u64,
     pub comm: [c_char; TASK_COMM_LEN], // Task's executable name
-    // Phase 1: invocation metadata fields
-    pub deadline_ns: u64,         // absolute deadline from invocation_meta
-    pub slo_class: u32,           // SLO class (0=latency, 1=standard, 2=batch, 0xFF=none)
-    pub has_invocation_meta: u32, // 1 if metadata was found for this task
-    pub is_cold_start: u32,       // 1 if cold start invocation
-    pub invocation_id: u64,       // opaque correlation ID
 }
 
 impl QueuedTask {
@@ -181,19 +176,14 @@ impl EnqueuedMessage {
             vtime: self.inner.vtime,
             enq_cnt: self.inner.enq_cnt,
             comm: self.inner.comm,
-            // Phase 1: map invocation metadata fields
-            deadline_ns: self.inner.deadline_ns,
-            slo_class: self.inner.slo_class,
-            has_invocation_meta: self.inner.has_invocation_meta,
-            is_cold_start: self.inner.is_cold_start,
-            invocation_id: self.inner.invocation_id,
+            tgid: 0, // resolved later by adapter
         }
     }
 }
 
 pub struct BpfScheduler<'cb> {
     pub skel: BpfSkel<'cb>,                // Low-level BPF connector
-    shutdown: Arc<AtomicBool>,             // Determine scheduler shutdown
+    pub shutdown: Arc<AtomicBool>,             // Determine scheduler shutdown
     queued: libbpf_rs::RingBuffer<'cb>,    // Ring buffer of queued tasks
     dispatched: libbpf_rs::UserRingBuffer, // User Ring buffer of dispatched tasks
     struct_ops: Option<libbpf_rs::Link>,   // Low-level BPF methods
@@ -563,33 +553,9 @@ impl<'cb> BpfScheduler<'cb> {
         pid as u32
     }
 
-    pub fn refresh_invocation_meta(&mut self, task: &mut QueuedTask) -> Result<bool> {
-        let key = Self::task_tgid(task.pid).to_ne_bytes();
-        let mut value = vec![0u8; std::mem::size_of::<bpf_intf::invocation_meta_val>()];
-        let found = self
-            .skel
-            .maps
-            .invocation_meta
-            .lookup_into(&key, &mut value, libbpf_rs::MapFlags::empty())
-            .context(format!(
-                "Failed to refresh invocation_meta for pid {}",
-                task.pid
-            ))?;
-
-        if !found {
-            return Ok(false);
-        }
-
-        let meta = unsafe {
-            std::ptr::read_unaligned(value.as_ptr() as *const bpf_intf::invocation_meta_val)
-        };
-
-        task.deadline_ns = meta.deadline_ns;
-        task.slo_class = meta.slo_class;
-        task.is_cold_start = meta.is_cold_start;
-        task.invocation_id = meta.invocation_id;
-        task.has_invocation_meta = 1;
-        Ok(true)
+    /// Static version for use without a BpfScheduler reference.
+    pub fn task_tgid_static(pid: i32) -> u32 {
+        Self::task_tgid(pid)
     }
 
     // Set scheduling class for the scheduler itself to SCHED_EXT

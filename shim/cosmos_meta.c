@@ -2,7 +2,11 @@
  * COSMOS Invocation Metadata Shim — Implementation
  *
  * Writes/deletes entries in the pinned BPF hash map at
- * /sys/fs/bpf/cosmos/invocation_meta using raw bpf() syscalls.
+ * /sys/fs/bpf/cosmos/invocation_events using raw bpf() syscalls.
+ *
+ * This is the drain-queue: the scheduler reads and deletes entries,
+ * populates the Registry, and sets the 1-bit has_invocation hint
+ * that BPF reads to route tasks to userspace.
  *
  * No dependency on libbpf — this is a lightweight shim that can be
  * LD_PRELOAD'd into any process with minimal overhead (~1us).
@@ -41,7 +45,7 @@ static int open_pinned_map(void)
 {
     union bpf_attr attr;
     memset(&attr, 0, sizeof(attr));
-    attr.pathname = (uint64_t)(unsigned long)"/sys/fs/bpf/cosmos/invocation_meta";
+    attr.pathname = (uint64_t)(unsigned long)"/sys/fs/bpf/cosmos/invocation_events";
     attr.bpf_fd = 0;
     attr.file_flags = 0;
 

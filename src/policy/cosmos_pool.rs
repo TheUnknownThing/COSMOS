@@ -29,7 +29,6 @@ pub enum TaskPool {
 pub struct PoolMetrics {
     pub latency_queue_depth: u64,
     pub batch_queue_depth: u64,
-    pub tail_guard_queue_depth: u64,
 }
 
 /// A single CPU pool reassignment: CPU `cpu` moves to pool `pool`.
@@ -37,6 +36,12 @@ pub struct PoolMetrics {
 pub struct PoolChange {
     pub cpu: u32,
     pub pool: TaskPool,
+}
+
+/// Snapshot of pool manager state for metrics composition.
+#[derive(Debug, Clone, Default)]
+pub struct PoolSnapshot {
+    pub nr_migrations: u64,
 }
 
 /// Dynamic CPU Pool Manager.
@@ -67,12 +72,6 @@ pub fn effective_tail_guard_cpus(nr_cpus: usize, requested: u32) -> u32 {
 }
 
 impl PoolManager {
-    /// Create a new PoolManager.
-    ///
-    /// # Arguments
-    /// * `nr_cpus` — total number of online CPUs
-    /// * `latency_pct` — target percentage of CPUs in the latency pool
-    /// * `tail_guard_cpus` — fixed number of CPUs reserved for tail guard (0 = disabled)
     pub fn new(nr_cpus: usize, latency_pct: u32, tail_guard_cpus: u32) -> Self {
         let tail_guard_cpus = effective_tail_guard_cpus(nr_cpus, tail_guard_cpus);
         let mut mgr = PoolManager {
@@ -88,7 +87,6 @@ impl PoolManager {
         mgr
     }
 
-    /// Create a pool manager that keeps all CPUs on the legacy shared path.
     pub fn disabled(nr_cpus: usize) -> Self {
         PoolManager {
             nr_cpus,
@@ -101,18 +99,6 @@ impl PoolManager {
         }
     }
 
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Perform initial CPU pool assignment.
-    ///
-    /// Layout strategy:
-    /// - Last N CPUs → TailGuard (fixed)
-    /// - First M CPUs → Latency (based on latency_pct of remaining)
-    /// - Remaining CPUs → Batch
-    ///
-    /// Ensures each active pool has at least 1 CPU.
     fn initial_assign(&mut self) {
         let nr = self.nr_cpus;
         if nr == 0 {
@@ -121,7 +107,6 @@ impl PoolManager {
 
         let tg = self.tail_guard_cpus as usize;
 
-        // Assign tail guard CPUs at the end
         for i in (nr - tg)..nr {
             self.assignments[i] = TaskPool::TailGuard;
         }
@@ -131,16 +116,13 @@ impl PoolManager {
             return;
         }
 
-        // Calculate latency pool size from percentage of non-tail-guard CPUs
         let latency_count = ((remaining as u64 * self.latency_pct as u64) / 100).max(1) as usize;
-        let latency_count = latency_count.min(remaining.saturating_sub(1)); // leave at least 1 for batch
+        let latency_count = latency_count.min(remaining.saturating_sub(1));
 
-        // Assign latency CPUs at the start
         for i in 0..latency_count {
             self.assignments[i] = TaskPool::Latency;
         }
 
-        // Assign remaining as batch
         for i in latency_count..(nr - tg) {
             self.assignments[i] = TaskPool::Batch;
         }
@@ -154,25 +136,14 @@ impl PoolManager {
         );
     }
 
-    /// Count CPUs in a given pool.
     pub fn count_pool(&self, pool: TaskPool) -> usize {
         self.assignments.iter().filter(|&&p| p == pool).count()
     }
 
-    /// Find the last CPU assigned to a given pool (for stealing).
     fn find_last_cpu_in_pool(&self, pool: TaskPool) -> Option<usize> {
         self.assignments.iter().rposition(|&p| p == pool)
     }
 
-    /// Rebalance CPU pool assignments based on queue pressure signals.
-    ///
-    /// Heuristic:
-    /// - If latency queue depth > threshold and batch pool has >1 CPU: steal one from batch → latency
-    /// - If batch queue depth > threshold and latency pool has >1 CPU: steal one from latency → batch
-    /// - Tail guard pool is never modified
-    /// - At most 1 CPU migration per call (rate limiting)
-    ///
-    /// Returns a list of changes made (empty if no rebalancing needed).
     pub fn rebalance(&mut self, metrics: &PoolMetrics) -> Vec<PoolChange> {
         if !self.enabled {
             return Vec::new();
@@ -183,9 +154,7 @@ impl PoolManager {
         let latency_count = self.count_pool(TaskPool::Latency);
         let batch_count = self.count_pool(TaskPool::Batch);
 
-        // Case 1: Latency pool is pressured, steal from batch
         if metrics.latency_queue_depth > self.pressure_threshold && batch_count > 1 {
-            // Steal the last batch CPU → move to latency
             if let Some(cpu) = self.find_last_cpu_in_pool(TaskPool::Batch) {
                 self.assignments[cpu] = TaskPool::Latency;
                 self.nr_pool_migrations += 1;
@@ -200,13 +169,11 @@ impl PoolManager {
                     batch_count,
                     batch_count - 1
                 );
-                return changes; // rate limit: 1 migration per cycle
+                return changes;
             }
         }
 
-        // Case 2: Batch pool is pressured, steal from latency
         if metrics.batch_queue_depth > self.pressure_threshold && latency_count > 1 {
-            // Steal the first latency CPU (from the end) → move to batch
             if let Some(cpu) = self.find_last_cpu_in_pool(TaskPool::Latency) {
                 self.assignments[cpu] = TaskPool::Batch;
                 self.nr_pool_migrations += 1;
@@ -225,30 +192,22 @@ impl PoolManager {
             }
         }
 
-        // Case 3: Both pools are balanced or there's nothing to steal
         changes
     }
 
-    /// Apply all current pool assignments to the BPF cpu_pool_map.
-    ///
-    /// This writes every CPU's pool assignment. Call this after `initial_assign()`
-    /// or after `rebalance()` returns changes.
-    pub fn apply_all<F>(&self, mut update_fn: F)
-    where
-        F: FnMut(u32, u32),
-    {
-        for (cpu, &pool) in self.assignments.iter().enumerate() {
-            update_fn(cpu as u32, pool as u32);
-        }
+    pub fn iter_assignments(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.assignments.iter().enumerate().map(|(cpu, pool)| (cpu as u32, *pool as u32))
     }
 
-    /// Apply only the changed assignments to the BPF cpu_pool_map.
-    pub fn apply_changes<F>(changes: &[PoolChange], mut update_fn: F)
-    where
-        F: FnMut(u32, u32),
-    {
-        for change in changes {
-            update_fn(change.cpu, change.pool as u32);
+    /// Return initial pool assignments for the scheduler to apply.
+    pub fn init(&self) -> Vec<(u32, u32)> {
+        self.iter_assignments().collect()
+    }
+
+    /// Snapshot for metrics composition.
+    pub fn snapshot(&self) -> PoolSnapshot {
+        PoolSnapshot {
+            nr_migrations: self.nr_pool_migrations,
         }
     }
 }
@@ -271,8 +230,6 @@ mod tests {
     #[test]
     fn initial_assign_8_cpus_50_pct_1_tg() {
         let mgr = PoolManager::new(8, 50, 1);
-        // 8 CPUs, 1 tail guard → 7 remaining
-        // 50% of 7 = 3.5 → 3 latency, 4 batch
         let lat = mgr.count_pool(TaskPool::Latency);
         let bat = mgr.count_pool(TaskPool::Batch);
         let tg = mgr.count_pool(TaskPool::TailGuard);
@@ -291,8 +248,6 @@ mod tests {
     #[test]
     fn initial_assign_2_cpus_no_tg() {
         let mgr = PoolManager::new(2, 50, 0);
-        // 2 CPUs, 0 tail guard → 2 remaining
-        // 50% of 2 = 1 latency, 1 batch
         assert_eq!(mgr.assignments[0], TaskPool::Latency);
         assert_eq!(mgr.assignments[1], TaskPool::Batch);
     }
@@ -300,13 +255,12 @@ mod tests {
     #[test]
     fn disabled_manager_leaves_all_cpus_on_shared_path() {
         let mgr = PoolManager::disabled(4);
-        assert!(!mgr.is_enabled());
+        assert!(!mgr.enabled);
         assert!(mgr.assignments.iter().all(|pool| *pool == TaskPool::None));
     }
 
     #[test]
     fn initial_assign_ensures_minimum_pools() {
-        // With 100% latency, batch should still get 1 CPU
         let mgr = PoolManager::new(4, 100, 0);
         let lat = mgr.count_pool(TaskPool::Latency);
         let bat = mgr.count_pool(TaskPool::Batch);
@@ -317,17 +271,14 @@ mod tests {
     #[test]
     fn rebalance_steals_from_batch_when_latency_pressured() {
         let mut mgr = PoolManager::new(4, 50, 0);
-        // Initial: 2 latency, 2 batch
         let lat_before = mgr.count_pool(TaskPool::Latency);
         let bat_before = mgr.count_pool(TaskPool::Batch);
         assert_eq!(lat_before, 2);
         assert_eq!(bat_before, 2);
 
-        // Pressure on latency
         let metrics = PoolMetrics {
             latency_queue_depth: 10,
             batch_queue_depth: 0,
-            tail_guard_queue_depth: 0,
         };
         let changes = mgr.rebalance(&metrics);
         assert_eq!(changes.len(), 1);
@@ -342,13 +293,10 @@ mod tests {
     #[test]
     fn rebalance_steals_from_latency_when_batch_pressured() {
         let mut mgr = PoolManager::new(4, 50, 0);
-        // Initial: 2 latency, 2 batch
 
-        // Pressure on batch
         let metrics = PoolMetrics {
             latency_queue_depth: 0,
             batch_queue_depth: 10,
-            tail_guard_queue_depth: 0,
         };
         let changes = mgr.rebalance(&metrics);
         assert_eq!(changes.len(), 1);
@@ -364,17 +312,14 @@ mod tests {
     fn rebalance_wont_steal_last_cpu() {
         let mut mgr = PoolManager::new(4, 50, 0);
 
-        // Drain batch down to 1 CPU by pressuring latency repeatedly
         for _ in 0..5 {
             let metrics = PoolMetrics {
                 latency_queue_depth: 10,
                 batch_queue_depth: 0,
-                tail_guard_queue_depth: 0,
             };
             mgr.rebalance(&metrics);
         }
 
-        // Batch should never go below 1
         let bat = mgr.count_pool(TaskPool::Batch);
         assert!(bat >= 1, "batch pool should retain at least 1 CPU");
     }
@@ -386,10 +331,8 @@ mod tests {
         let metrics = PoolMetrics {
             latency_queue_depth: 100,
             batch_queue_depth: 0,
-            tail_guard_queue_depth: 0,
         };
         let changes = mgr.rebalance(&metrics);
-        // Even with extreme pressure, only 1 CPU migrates per cycle
         assert_eq!(changes.len(), 1);
     }
 
@@ -400,7 +343,6 @@ mod tests {
         let metrics = PoolMetrics {
             latency_queue_depth: 0,
             batch_queue_depth: 0,
-            tail_guard_queue_depth: 0,
         };
         let changes = mgr.rebalance(&metrics);
         assert!(changes.is_empty());
@@ -411,12 +353,10 @@ mod tests {
         let mut mgr = PoolManager::new(4, 50, 1);
         let tg_before = mgr.count_pool(TaskPool::TailGuard);
 
-        // Apply extreme pressure on both pools
         for _ in 0..10 {
             let metrics = PoolMetrics {
                 latency_queue_depth: 100,
                 batch_queue_depth: 100,
-                tail_guard_queue_depth: 0,
             };
             mgr.rebalance(&metrics);
         }
@@ -428,13 +368,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn apply_all_writes_every_cpu() {
-        let mgr = PoolManager::new(4, 50, 1);
-        let mut written = Vec::new();
-        mgr.apply_all(|cpu, pool| {
-            written.push((cpu, pool));
-        });
-        assert_eq!(written.len(), 4);
-    }
 }

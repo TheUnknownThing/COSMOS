@@ -483,6 +483,7 @@ dependencies = [
  "scx_stats_derive",
  "scx_utils",
  "serde",
+ "serde_json",
  "simplelog",
 ]
 

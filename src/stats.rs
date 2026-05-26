@@ -50,8 +50,8 @@ pub struct Metrics {
     pub nr_heuristic_classified: u64,
     #[stat(desc = "Number of queued tasks refreshed from invocation metadata after enqueue")]
     pub nr_metadata_refreshed: u64,
-    #[stat(desc = "Number of task enqueues where BPF observed invocation metadata")]
-    pub nr_invocation_meta_enqueues: u64,
+    #[stat(desc = "Number of task enqueues where BPF observed invocation metadata hint")]
+    pub nr_has_invocation_enqueues: u64,
     #[stat(desc = "Number of tasks dispatched to latency pool")]
     pub nr_pool_latency: u64,
     #[stat(desc = "Number of tasks dispatched to batch pool")]
@@ -87,11 +87,10 @@ impl Metrics {
             self.nr_failed_dispatches,
             self.nr_sched_congested,
         )?;
-        // Phase 1+2+3: print metadata, pool, migration, and tail guard stats on a separate line when non-zero
         if self.nr_metadata_classified > 0
             || self.nr_heuristic_classified > 0
             || self.nr_metadata_refreshed > 0
-            || self.nr_invocation_meta_enqueues > 0
+            || self.nr_has_invocation_enqueues > 0
             || self.nr_pool_latency > 0
             || self.nr_pool_batch > 0
             || self.nr_pool_migrations > 0
@@ -104,7 +103,7 @@ impl Metrics {
                 self.nr_metadata_classified,
                 self.nr_heuristic_classified,
                 self.nr_metadata_refreshed,
-                self.nr_invocation_meta_enqueues,
+                self.nr_has_invocation_enqueues,
                 self.nr_pool_latency,
                 self.nr_pool_batch,
                 self.nr_tail_guard_dispatches,
@@ -130,8 +129,8 @@ impl Metrics {
             nr_metadata_classified: self.nr_metadata_classified - rhs.nr_metadata_classified,
             nr_heuristic_classified: self.nr_heuristic_classified - rhs.nr_heuristic_classified,
             nr_metadata_refreshed: self.nr_metadata_refreshed - rhs.nr_metadata_refreshed,
-            nr_invocation_meta_enqueues: self.nr_invocation_meta_enqueues
-                - rhs.nr_invocation_meta_enqueues,
+            nr_has_invocation_enqueues: self.nr_has_invocation_enqueues
+                - rhs.nr_has_invocation_enqueues,
             nr_pool_latency: self.nr_pool_latency - rhs.nr_pool_latency,
             nr_pool_batch: self.nr_pool_batch - rhs.nr_pool_batch,
             nr_pool_migrations: self.nr_pool_migrations - rhs.nr_pool_migrations,

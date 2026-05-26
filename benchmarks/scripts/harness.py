@@ -34,7 +34,8 @@ TIME_BIN = Path("/usr/bin/time")
 BPFTOOL_BIN = Path("/usr/sbin/bpftool")
 if not BPFTOOL_BIN.exists():
     BPFTOOL_BIN = Path("/usr/bin/bpftool")
-BPF_INVOCATION_META_PATH = Path("/sys/fs/bpf/cosmos/invocation_meta")
+BPF_INVOCATION_EVENTS_PATH = Path("/sys/fs/bpf/cosmos/invocation_events")
+BPF_HAS_INVOCATION_PATH = Path("/sys/fs/bpf/cosmos/has_invocation")
 BENCHMARK_WORKLOAD_BIN = REPO_ROOT / "target" / "release" / "cosmos-benchmark-workload"
 DEBUG_BPF_MAP = os.environ.get("COSMOS_BENCH_DEBUG_BPF_MAP") == "1"
 GATE_SCRIPT = 'IFS= read -r _ <&"$COSMOS_START_FD"; exec "$@"'
@@ -319,17 +320,11 @@ def wait_for_metadata_process(
     raise TimeoutError(f"timed out waiting for workload child of pid {pid}")
 
 
-def dump_invocation_meta_map(output_path: Path) -> None:
-    if not BPFTOOL_BIN.exists():
-        return
-    completed = subprocess.run(
-        [
-            str(BPFTOOL_BIN),
-            "-j",
-            "map",
-            "dump",
-            "pinned",
-            str(BPF_INVOCATION_META_PATH),
+def dump_invocation_events_map(output_path: Path) -> None:
+
+    ...
+
+            str(BPF_INVOCATION_EVENTS_PATH),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -349,7 +344,7 @@ def invocation_meta_key_visible(tgid: int) -> bool:
             "map",
             "dump",
             "pinned",
-            str(BPF_INVOCATION_META_PATH),
+            str(BPF_HAS_INVOCATION_PATH),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
