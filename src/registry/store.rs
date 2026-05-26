@@ -92,7 +92,13 @@ mod tests {
     use super::*;
     use crate::registry::types::SloClass;
 
-    fn test_meta(id: u64, tgid: u32, deadline_ns: u64, slo: SloClass, cold: bool) -> InvocationMeta {
+    fn test_meta(
+        id: u64,
+        tgid: u32,
+        deadline_ns: u64,
+        slo: SloClass,
+        cold: bool,
+    ) -> InvocationMeta {
         InvocationMeta {
             id,
             tgid,
@@ -152,13 +158,19 @@ mod tests {
     fn prune_removes_stale_entries() {
         let mut reg = InvocationRegistry::new();
         reg.upsert(InvocationMeta {
-            id: 1, tgid: 100, deadline_ns: 5000,
-            slo_class: SloClass::LatencyCritical, is_cold_start: false,
+            id: 1,
+            tgid: 100,
+            deadline_ns: 5000,
+            slo_class: SloClass::LatencyCritical,
+            is_cold_start: false,
             created_at_ns: 1000,
         });
         reg.upsert(InvocationMeta {
-            id: 2, tgid: 200, deadline_ns: 6000,
-            slo_class: SloClass::Batch, is_cold_start: false,
+            id: 2,
+            tgid: 200,
+            deadline_ns: 6000,
+            slo_class: SloClass::Batch,
+            is_cold_start: false,
             created_at_ns: 5000,
         });
         // Prune with now=6000, TTL=2000: entries older than 4000 are removed

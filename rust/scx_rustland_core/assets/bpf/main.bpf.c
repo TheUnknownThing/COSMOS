@@ -102,8 +102,8 @@ volatile u64 nr_user_dispatches, nr_kernel_dispatches,
 /* Failure statistics */
 volatile u64 nr_failed_dispatches, nr_sched_congested;
 
-/* Invocation metadata observed by BPF at enqueue time. */
-volatile u64 nr_invocation_meta_enqueues;
+/* Invocation hints observed by BPF at enqueue time. */
+volatile u64 nr_has_invocation_enqueues;
 
 /* Report additional debugging information */
 const volatile bool debug;
@@ -206,16 +206,19 @@ struct {
 } task_ctx_stor SEC(".maps");
 
 /*
- * Invocation metadata map: written by userspace shim (libcosmos_meta.so),
- * read by BPF enqueue path to enrich queued tasks with deadline/SLO info.
+ * Per-task invocation hint map.
+ *
+ * Written by the scheduler metadata endpoint after it updates the registry.
+ * BPF only uses this as a 1-bit hint to force metadata-bearing tasks through
+ * userspace.
  * Key: tgid (process group ID)
  */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
 	__type(key, u32);
-	__type(value, struct invocation_meta_val);
-} invocation_meta SEC(".maps");
+	__type(value, u8);
+} has_invocation SEC(".maps");
 
 /*
  * Per-CPU pool assignment map: maps CPU ID to a pool ID (cosmos_pool).
@@ -748,23 +751,23 @@ static void get_task_info(struct queued_task_ctx *task,
 
 	bpf_core_read_str(&task->comm, sizeof(task->comm), &p->comm);
 
-	/* Phase 1: look up invocation metadata by tgid */
+	/*
+	 * Invocation metadata now lives in the userspace registry. Keep these
+	 * payload fields zeroed as compatibility padding and surface only the
+	 * has-metadata hint to userspace.
+	 */
 	{
-		struct invocation_meta_val *meta;
+		u8 *has_meta;
 		u32 tgid = p->tgid;
-		meta = bpf_map_lookup_elem(&invocation_meta, &tgid);
-		if (meta) {
-			task->deadline_ns = meta->deadline_ns;
-			task->slo_class = meta->slo_class;
-			task->is_cold_start = meta->is_cold_start;
-			task->invocation_id = meta->invocation_id;
+		has_meta = bpf_map_lookup_elem(&has_invocation, &tgid);
+		task->deadline_ns = 0;
+		task->slo_class = SLO_CLASS_NONE;
+		task->is_cold_start = 0;
+		task->invocation_id = 0;
+		if (has_meta && *has_meta) {
 			task->has_invocation_meta = 1;
-			__sync_fetch_and_add(&nr_invocation_meta_enqueues, 1);
+			__sync_fetch_and_add(&nr_has_invocation_enqueues, 1);
 		} else {
-			task->deadline_ns = 0;
-			task->slo_class = SLO_CLASS_NONE;
-			task->is_cold_start = 0;
-			task->invocation_id = 0;
 			task->has_invocation_meta = 0;
 		}
 		task->pad0 = 0;
@@ -773,34 +776,14 @@ static void get_task_info(struct queued_task_ctx *task,
 
 static bool task_needs_metadata_userspace(const struct task_struct *p)
 {
-	struct invocation_meta_val *meta;
+	u8 *has_meta;
 	u32 tgid = p->tgid;
-	u64 now;
 
-	meta = bpf_map_lookup_elem(&invocation_meta, &tgid);
-	if (!meta)
+	has_meta = bpf_map_lookup_elem(&has_invocation, &tgid);
+	if (!has_meta)
 		return false;
 
-	if (meta->is_cold_start)
-		return true;
-
-	/*
-	 * Only latency-critical metadata should force the userspace path near
-	 * the deadline. Standard and batch metadata can still inform scoring and
-	 * accounting when they do reach userspace, but they should otherwise
-	 * preserve the cheaper heuristic / builtin-idle fast path.
-	 */
-	if (meta->slo_class != 0)
-		return false;
-
-	if (!meta->deadline_ns)
-		return false;
-
-	now = bpf_ktime_get_ns();
-	if (meta->deadline_ns <= now)
-		return true;
-
-	return meta->deadline_ns - now <= metadata_queue_threshold_ns;
+	return *has_meta;
 }
 
 /*

@@ -38,12 +38,6 @@ pub struct PoolChange {
     pub pool: TaskPool,
 }
 
-/// Snapshot of pool manager state for metrics composition.
-#[derive(Debug, Clone, Default)]
-pub struct PoolSnapshot {
-    pub nr_migrations: u64,
-}
-
 /// Dynamic CPU Pool Manager.
 ///
 /// Tracks per-CPU pool assignments and rebalances them based on queue pressure.
@@ -196,19 +190,15 @@ impl PoolManager {
     }
 
     pub fn iter_assignments(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.assignments.iter().enumerate().map(|(cpu, pool)| (cpu as u32, *pool as u32))
+        self.assignments
+            .iter()
+            .enumerate()
+            .map(|(cpu, pool)| (cpu as u32, *pool as u32))
     }
 
     /// Return initial pool assignments for the scheduler to apply.
     pub fn init(&self) -> Vec<(u32, u32)> {
         self.iter_assignments().collect()
-    }
-
-    /// Snapshot for metrics composition.
-    pub fn snapshot(&self) -> PoolSnapshot {
-        PoolSnapshot {
-            nr_migrations: self.nr_pool_migrations,
-        }
     }
 }
 
@@ -367,5 +357,4 @@ mod tests {
             "tail guard pool should never be modified"
         );
     }
-
 }

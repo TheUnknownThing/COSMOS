@@ -12,9 +12,9 @@ classes, cold-start flags) with heuristic fallback.
 | Version | Branch / Ref | Status |
 |---------|-------------|--------|
 | **V1** | commit `484e993` (`main`) | **stable** — runs on kernel 7.0.9, passes benchmarks |
-| **V2** | uncommitted (workspace) | WIP — 3-layer architecture (registry / adapter / policy); stalls under watchdog due to scheduler self-starvation |
+| **V2** | uncommitted (workspace) | WIP — 3-layer architecture (registry / adapter / policy); builds and survives CloudLab smoke tests on kernel 7.0.9 |
 
-Work continues on V2; all benchmarks below are from V1.
+Work continues on V2 policy tuning; headline benchmarks below are from V1.
 
 ## Quick Start
 
@@ -50,6 +50,7 @@ latency-aware behavior.
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--policy <cosmos|sfs>` | `cosmos` | Select COSMOS or SFS-inspired policy |
 | `-s, --slice-us` | 20000 | Scheduling slice (us) |
 | `-S, --slice-us-min` | 500 | Minimum slice (us) |
 | `--slo-target-us` | 10000 | Target invocation SLO (us) |
@@ -60,7 +61,15 @@ latency-aware behavior.
 | `--disable-deadline-scoring` | false | Use vtime scoring only |
 | `--tail-guard-threshold-us` | — | Slack threshold for tail guard promotion |
 | `--latency-pool-pct` | 50 | % of CPUs in latency pool |
+| `--sfs-threshold-window` | 100 | Arrival samples per SFS threshold update |
+| `--sfs-min-credit-us` | 6000 | Minimum SFS short-job credit (us) |
+| `--sfs-queue-delay-factor` | 3 | SFS demotion factor relative to threshold |
 | `--stats <N>` | off | Print stats every N seconds |
+
+`--policy sfs` keeps COSMOS's current scheduler intact and adds an alternate
+comparison mode. This port preserves the SFS control idea inside `sched_ext`
+(adaptive short-job credit, wakeup credit carryover, one-way demotion) but does
+not literally flip Linux tasks between `FIFO` and `CFS` with `schedtool`.
 
 ## Benchmarks
 
@@ -68,8 +77,8 @@ Seven synthetic workloads via `cosmos-benchmark-workload`:
 `cpu_burst`, `sleep_short`, `io_mixed`, `memory_heavy`, `network_heavy`,
 `compression_mixed`, `graph_bfs`.
 
-Five configs: `cfs-default`, `cosmos-heuristic`, `cosmos-metadata`,
-`cosmos-pooled`, `cosmos-full`.
+Six configs: `cfs-default`, `cosmos-heuristic`, `cosmos-metadata`,
+`cosmos-pooled`, `cosmos-full`, `sfs`.
 
 ```sh
 # Build everything
@@ -112,8 +121,7 @@ COSMOS eliminated two-thirds of SLO violations while cutting mean latency 14%.
 │   └── scx_cargo/           # BPF binding / skeleton generation
 ├── main.bpf.c         # BPF kernel-side dispatcher
 ├── intf.h             # Shared BPF/user-space structs
-├── cosmos-event-bridge/  # TCP → BPF metadata injection (NDJSON)
-├── shim/              # LD_PRELOAD library (libcosmos_meta.so)
+├── cosmos-event-bridge/  # OpenWhisk/local events → scheduler metadata TCP
 ├── benchmarks/
 │   ├── scripts/          # Python harness (burst_benchmark.py, compare.py)
 │   ├── workloads/runner/ # Rust workload binary (7 synthetic workloads)
@@ -131,18 +139,16 @@ build, removing COSMOS-specific APIs.  Two changes are needed in
 1. `shutdown` field → `pub shutdown` (line 196)
 2. `fn task_tgid()` → `pub fn task_tgid()` (line 549)
 
-Apply the same fixes to `src/bpf.rs` and update downstream callers in
-`src/adapter/` and `src/policy/` to use the new `refresh_invocation_meta()`
-API (takes `&mut QueuedTask`, returns `Result<bool>`).
+Apply the same fixes to `src/bpf.rs` so the generated wrapper preserves the
+COSMOS-specific pinned maps and helpers.
 
 ## Metadata Injection
 
-Three paths:
+Two paths:
 
 | Path | Mechanism | Use case |
 |------|-----------|----------|
 | Event bridge | TCP `127.0.0.1:9731`, NDJSON | OpenWhisk integration |
-| LD_PRELOAD shim | `libcosmos_meta.so` + env vars | Standalone or debugging |
 | Local events | Direct TCP to event bridge | Benchmark harness |
 
 ## Testbed

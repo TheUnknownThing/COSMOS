@@ -30,11 +30,11 @@ DEFAULT_EVENT_BRIDGE_PORT = 9731
 DEFAULT_SLO_MIN_SLACK_US = 5_000
 DEFAULT_WORKLOAD_DURATION_MS = 250
 SCHEDULER_STATS_READY_TIMEOUT_S = 30.0
+EVENT_BRIDGE_EVENT_TIMEOUT_S = 10.0
 TIME_BIN = Path("/usr/bin/time")
 BPFTOOL_BIN = Path("/usr/sbin/bpftool")
 if not BPFTOOL_BIN.exists():
     BPFTOOL_BIN = Path("/usr/bin/bpftool")
-BPF_INVOCATION_EVENTS_PATH = Path("/sys/fs/bpf/cosmos/invocation_events")
 BPF_HAS_INVOCATION_PATH = Path("/sys/fs/bpf/cosmos/has_invocation")
 BENCHMARK_WORKLOAD_BIN = REPO_ROOT / "target" / "release" / "cosmos-benchmark-workload"
 DEBUG_BPF_MAP = os.environ.get("COSMOS_BENCH_DEBUG_BPF_MAP") == "1"
@@ -220,21 +220,11 @@ def stopped_workload_command(command: list[str]) -> list[str]:
     return ["bash", "-c", STOP_SCRIPT, "cosmos-workload", *command]
 
 
-def workload_env_with_metadata(deadline_us: int, invocation_id: int) -> dict[str, str]:
-    env = os.environ.copy()
-    shim = REPO_ROOT / "shim" / "libcosmos_meta.so"
-    existing_preload = env.get("LD_PRELOAD", "")
-    env["LD_PRELOAD"] = f"{shim}:{existing_preload}" if existing_preload else str(shim)
-    env["COSMOS_DEADLINE_NS"] = str(time.monotonic_ns() + deadline_us * 1_000)
-    env["COSMOS_SLO_CLASS"] = "0"
-    env["COSMOS_COLD_START"] = "0"
-    env["COSMOS_INVOCATION_ID"] = str(invocation_id)
-    return env
-
-
 def send_event_bridge_event(port: int, event: dict) -> None:
     payload = json.dumps(event).encode("utf-8") + b"\n"
-    with socket.create_connection(("127.0.0.1", port), timeout=2.0) as conn:
+    with socket.create_connection(
+        ("127.0.0.1", port), timeout=EVENT_BRIDGE_EVENT_TIMEOUT_S
+    ) as conn:
         conn.sendall(payload)
         raw = b""
         while not raw.endswith(b"\n"):
@@ -320,11 +310,18 @@ def wait_for_metadata_process(
     raise TimeoutError(f"timed out waiting for workload child of pid {pid}")
 
 
-def dump_invocation_events_map(output_path: Path) -> None:
-
-    ...
-
-            str(BPF_INVOCATION_EVENTS_PATH),
+def dump_has_invocation_map(output_path: Path) -> None:
+    if not BPFTOOL_BIN.exists():
+        output_path.write_text("bpftool not installed\n", encoding="utf-8")
+        return
+    completed = subprocess.run(
+        [
+            str(BPFTOOL_BIN),
+            "-j",
+            "map",
+            "dump",
+            "pinned",
+            str(BPF_HAS_INVOCATION_PATH),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -378,7 +375,10 @@ def ensure_release_build() -> None:
     sources = [
         REPO_ROOT / "src" / "main.rs",
         REPO_ROOT / "src" / "bpf.rs",
-        REPO_ROOT / "src" / "pool.rs",
+        REPO_ROOT / "src" / "policy" / "cosmos_pool.rs",
+        REPO_ROOT / "src" / "policy" / "cosmos.rs",
+        REPO_ROOT / "src" / "policy" / "sfs.rs",
+        REPO_ROOT / "src" / "policy" / "mod.rs",
         REPO_ROOT / "src" / "stats.rs",
         REPO_ROOT / "rust" / "scx_rustland_core" / "assets" / "bpf.rs",
         REPO_ROOT / "rust" / "scx_rustland_core" / "assets" / "bpf" / "main.bpf.c",
@@ -402,25 +402,11 @@ def ensure_release_build() -> None:
     )
 
 
-def ensure_shim_build() -> None:
-    shim = REPO_ROOT / "shim" / "libcosmos_meta.so"
-    sources = [
-        REPO_ROOT / "shim" / "cosmos_meta.c",
-        REPO_ROOT / "shim" / "cosmos_preload.c",
-        REPO_ROOT / "shim" / "cosmos_meta.h",
-    ]
-    if shim.exists() and shim.stat().st_mtime >= max(
-        path.stat().st_mtime for path in sources
-    ):
-        return
-    subprocess.run(["make"], check=True, cwd=REPO_ROOT / "shim")
-
-
 def ensure_event_bridge_build() -> None:
     bridge = REPO_ROOT / "target" / "release" / "cosmos-event-bridge"
     sources = [
         REPO_ROOT / "cosmos-event-bridge" / "src" / "main.rs",
-        REPO_ROOT / "cosmos-event-bridge" / "src" / "bpf_writer.rs",
+        REPO_ROOT / "cosmos-event-bridge" / "src" / "metadata_writer.rs",
         REPO_ROOT / "cosmos-event-bridge" / "Cargo.toml",
     ]
     if bridge.exists() and bridge.stat().st_mtime >= max(
@@ -473,12 +459,10 @@ def run_workload_invocation(
     metadata_key_visible = None
 
     if use_metadata:
-        if metadata_bridge_port is not None:
-            env = os.environ.copy()
-            command = stopped_workload_command(command)
-        else:
-            ensure_shim_build()
-            env = workload_env_with_metadata(deadline_us, invocation_id)
+        if metadata_bridge_port is None:
+            raise RuntimeError("metadata invocations require a running event bridge")
+        env = os.environ.copy()
+        command = stopped_workload_command(command)
 
     with stderr_path.open("w", encoding="utf-8") as stderr_file:
         if metadata_bridge_port is None:
@@ -515,7 +499,7 @@ def run_workload_invocation(
                 )
             if DEBUG_BPF_MAP:
                 metadata_key_visible = wait_for_invocation_meta_key(metadata_tgid)
-                dump_invocation_meta_map(output_json.with_suffix(".bpfmap.json"))
+                dump_has_invocation_map(output_json.with_suffix(".bpfmap.json"))
             metadata_ready_ns = time.monotonic_ns()
             start_ns = metadata_ready_ns
             os.kill(metadata_tgid, signal.SIGCONT)
@@ -598,7 +582,7 @@ def stage_metadata_bridge_invocation(
         metadata_key_visible = None
         if DEBUG_BPF_MAP:
             metadata_key_visible = wait_for_invocation_meta_key(metadata_tgid)
-            dump_invocation_meta_map(output_json.with_suffix(".bpfmap.json"))
+            dump_has_invocation_map(output_json.with_suffix(".bpfmap.json"))
         metadata_ready_ns = time.monotonic_ns()
         return StagedInvocation(
             output_json=output_json,
@@ -913,6 +897,8 @@ def run_invocations(
 ) -> int:
     run_dir.joinpath("invocations").mkdir(parents=True, exist_ok=True)
     ensure_benchmark_workload_build()
+    if use_metadata and metadata_bridge_port is None:
+        raise RuntimeError("metadata invocations require a running event bridge")
 
     # Heterogeneous: workload string contains commas → mixed workload types
     if "," in workload:

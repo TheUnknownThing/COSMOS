@@ -7,8 +7,8 @@ use log::warn;
 use scx_utils::Topology;
 use scx_utils::UserExitInfo;
 
-use super::CpuAdapter;
 use super::BpfCounters;
+use super::CpuAdapter;
 
 /// sched_ext implementation of CpuAdapter.
 pub struct ScxAdapter<'cb> {
@@ -44,7 +44,16 @@ impl CpuAdapter for ScxAdapter<'_> {
         tasks
     }
 
-    fn dispatch(&mut self, pid: i32, cpu: i32, slice_ns: u64, vtime: u64, pool: u32, _enq_flags: u64, enq_cnt: u64) -> bool {
+    fn dispatch(
+        &mut self,
+        pid: i32,
+        cpu: i32,
+        slice_ns: u64,
+        vtime: u64,
+        pool: u32,
+        _enq_flags: u64,
+        enq_cnt: u64,
+    ) -> bool {
         let d = DispatchedTask {
             pid,
             cpu,
@@ -88,7 +97,7 @@ impl CpuAdapter for ScxAdapter<'_> {
             nr_bounce_dispatches: *self.bpf.nr_bounce_dispatches_mut(),
             nr_failed_dispatches: *self.bpf.nr_failed_dispatches_mut(),
             nr_sched_congested: *self.bpf.nr_sched_congested_mut(),
-            nr_has_invocation_enqueues: *self.bpf.nr_invocation_meta_enqueues_mut(),
+            nr_has_invocation_enqueues: *self.bpf.nr_has_invocation_enqueues_mut(),
         }
     }
 

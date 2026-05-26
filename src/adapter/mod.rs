@@ -3,8 +3,8 @@
 
 pub mod scx;
 
-use anyhow::Result;
 use crate::bpf::QueuedTask;
+use anyhow::Result;
 use scx_utils::Topology;
 use scx_utils::UserExitInfo;
 
@@ -30,7 +30,16 @@ pub trait CpuAdapter {
     fn drain(&mut self) -> Vec<QueuedTask>;
 
     /// Dispatch a task back to the kernel with the given scheduling info.
-    fn dispatch(&mut self, pid: i32, cpu: i32, slice_ns: u64, vtime: u64, pool: u32, enq_flags: u64, enq_cnt: u64) -> bool;
+    fn dispatch(
+        &mut self,
+        pid: i32,
+        cpu: i32,
+        slice_ns: u64,
+        vtime: u64,
+        pool: u32,
+        enq_flags: u64,
+        enq_cnt: u64,
+    ) -> bool;
 
     /// Host CPU topology.
     fn topology(&self) -> &Topology;

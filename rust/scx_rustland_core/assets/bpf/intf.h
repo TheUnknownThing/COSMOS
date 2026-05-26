@@ -77,17 +77,6 @@ enum {
 };
 
 /*
- * Invocation metadata written by userspace shim, read by BPF enqueue path.
- * Key: tgid (u32)
- */
-struct invocation_meta_val {
-	u64 deadline_ns;     /* absolute CLOCK_MONOTONIC deadline */
-	u32 slo_class;       /* 0=latency-critical, 1=standard, 2=batch */
-	u32 is_cold_start;   /* 1=cold start invocation */
-	u64 invocation_id;   /* opaque correlation ID */
-};
-
-/*
  * Specify a target CPU for a specific PID.
  */
 struct task_cpu_arg {
@@ -122,13 +111,13 @@ struct queued_task_ctx {
 	u64 vtime; /* Current task's vruntime */
 	u64 enq_cnt;
 	char comm[TASK_COMM_LEN]; /* Task's executable name */
-	/* Phase 1: invocation metadata fields (appended for compatibility) */
-	u64 deadline_ns;       /* absolute deadline from invocation_meta */
-	u32 slo_class;         /* SLO class (0=latency, 1=standard, 2=batch, 0xFF=none) */
-	u32 has_invocation_meta; /* 1 if metadata was found for this task */
-	u32 is_cold_start;     /* 1 if cold start invocation */
+	/* Deprecated metadata payload fields kept for layout compatibility. */
+	u64 deadline_ns;
+	u32 slo_class;
+	u32 has_invocation_meta; /* 1 if the userspace registry has metadata for this task */
+	u32 is_cold_start;
 	u32 pad0;              /* alignment padding */
-	u64 invocation_id;     /* opaque correlation ID */
+	u64 invocation_id;
 };
 
 /*

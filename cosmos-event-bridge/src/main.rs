@@ -187,9 +187,14 @@ impl BridgeState {
         let invocation_id = hash_activation_id(&ev.activation_id);
 
         for tgid in &tgids {
-            metadata_writer::write_meta(*tgid, deadline_ns, slo_class,
-                                        if ev.cold_start { 1 } else { 0 }, invocation_id)
-                .with_context(|| format!("failed to write metadata for tgid={}", tgid))?;
+            metadata_writer::write_meta(
+                *tgid,
+                deadline_ns,
+                slo_class,
+                if ev.cold_start { 1 } else { 0 },
+                invocation_id,
+            )
+            .with_context(|| format!("failed to write metadata for tgid={}", tgid))?;
         }
 
         match self.containers.entry(ev.container_id.clone()) {
@@ -264,9 +269,14 @@ fn handle_local_start(ev: &LocalStartEvent) -> Result<()> {
     let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
     let invocation_id = hash_activation_id(&ev.activation_id);
 
-    metadata_writer::write_meta(ev.tgid, deadline_ns, slo_class,
-                                if ev.cold_start { 1 } else { 0 }, invocation_id)
-        .with_context(|| format!("failed to write metadata for local tgid={}", ev.tgid))?;
+    metadata_writer::write_meta(
+        ev.tgid,
+        deadline_ns,
+        slo_class,
+        if ev.cold_start { 1 } else { 0 },
+        invocation_id,
+    )
+    .with_context(|| format!("failed to write metadata for local tgid={}", ev.tgid))?;
 
     eprintln!(
         "COSMOS local_start: activation={} tgid={} action={} kind={} timeout_ms={} slo={} cold={} deadline_ns={}",
@@ -286,7 +296,11 @@ fn handle_local_end(ev: &LocalEndEvent) -> Result<()> {
     Ok(())
 }
 
-async fn handle_connection(stream: TcpStream, peer: std::net::SocketAddr, state: std::sync::Arc<std::sync::Mutex<BridgeState>>) {
+async fn handle_connection(
+    stream: TcpStream,
+    peer: std::net::SocketAddr,
+    state: std::sync::Arc<std::sync::Mutex<BridgeState>>,
+) {
     eprintln!("connection from {}", peer);
 
     let (reader, mut writer) = stream.into_split();

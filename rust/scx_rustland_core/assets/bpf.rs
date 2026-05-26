@@ -320,19 +320,19 @@ impl<'cb> BpfScheduler<'cb> {
             }
         }
 
-        // Pin BPF maps so the shim library and external tools (bpftool) can access them.
+        // Pin BPF maps so the metadata listener and external tools can access them.
         let pin_dir = Path::new("/sys/fs/bpf/cosmos");
         if !pin_dir.exists() {
             fs::create_dir_all(pin_dir).context("Failed to create /sys/fs/bpf/cosmos")?;
         }
 
-        // Phase 1: Pin invocation_meta (written by shim, read by BPF enqueue)
-        let pin_path = pin_dir.join("invocation_meta");
+        // Pin has_invocation (written by metadata listener, read by BPF enqueue).
+        let pin_path = pin_dir.join("has_invocation");
         let _ = fs::remove_file(&pin_path);
         skel.maps
-            .invocation_meta
+            .has_invocation
             .pin(&pin_path)
-            .context("Failed to pin invocation_meta map")?;
+            .context("Failed to pin has_invocation map")?;
 
         // Phase 2: Pin cpu_pool_map (written by pool manager, read by BPF dispatch)
         let pool_pin_path = pin_dir.join("cpu_pool_map");
@@ -509,16 +509,16 @@ impl<'cb> BpfScheduler<'cb> {
         &mut self.skel.maps.bss_data.as_mut().unwrap().nr_sched_congested
     }
 
-    // Counter of tasks whose invocation metadata was observed by BPF at enqueue time.
+    // Counter of tasks whose invocation hint was observed by BPF at enqueue time.
     #[allow(dead_code)]
-    pub fn nr_invocation_meta_enqueues_mut(&mut self) -> &mut u64 {
+    pub fn nr_has_invocation_enqueues_mut(&mut self) -> &mut u64 {
         &mut self
             .skel
             .maps
             .bss_data
             .as_mut()
             .unwrap()
-            .nr_invocation_meta_enqueues
+            .nr_has_invocation_enqueues
     }
 
     // Update the pool assignment for a specific CPU in the cpu_pool_map.
@@ -689,7 +689,7 @@ impl Drop for BpfScheduler<'_> {
             drop(struct_ops);
         }
         // Unpin BPF maps
-        let _ = fs::remove_file("/sys/fs/bpf/cosmos/invocation_meta");
+        let _ = fs::remove_file("/sys/fs/bpf/cosmos/has_invocation");
         let _ = fs::remove_file("/sys/fs/bpf/cosmos/cpu_pool_map");
         let _ = fs::remove_dir("/sys/fs/bpf/cosmos");
         ALLOCATOR.unlock_memory();

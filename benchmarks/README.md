@@ -54,6 +54,7 @@ That path has its own README at `profiler/README.md`.
 | `cosmos-metadata`   | `run_cosmos.py`   | yes      |
 | `cosmos-pooled`     | `run_cosmos.py`   | yes      |
 | `cosmos-full`       | `run_cosmos.py`   | yes      |
+| `sfs`               | `run_cosmos.py`   | yes      |
 
 ## Workloads
 

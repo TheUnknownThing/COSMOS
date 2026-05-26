@@ -13,6 +13,7 @@ use std::ffi::CString;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::registry::{InvocationMeta, SloClass};
 use crate::RegistryHandle;
@@ -67,6 +68,20 @@ fn open_pinned_map(path: &str) -> Result<i32> {
     Ok(fd as i32)
 }
 
+fn open_pinned_map_with_retry(path: &str, timeout: Duration) -> Result<i32> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match open_pinned_map(path) {
+            Ok(fd) => return Ok(fd),
+            Err(err) if Instant::now() < deadline => {
+                let _ = err;
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 fn write_has_invocation(map_fd: i32, tgid: u32, val: u8) {
     let key: u32 = tgid;
     let value: u8 = val;
@@ -83,7 +98,10 @@ fn write_has_invocation(map_fd: i32, tgid: u32, val: u8) {
     let ret = unsafe { sys_bpf(BPF_MAP_UPDATE_ELEM, attr.as_ptr(), BPF_ATTR_SZ as u32) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
-        eprintln!("BPF_MAP_UPDATE_ELEM failed for has_invocation tgid={}: {}", tgid, err);
+        eprintln!(
+            "BPF_MAP_UPDATE_ELEM failed for has_invocation tgid={}: {}",
+            tgid, err
+        );
     }
 }
 
@@ -101,16 +119,16 @@ fn delete_has_invocation(map_fd: i32, tgid: u32) {
     if ret < 0 {
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(libc::ENOENT) {
-            eprintln!("BPF_MAP_DELETE_ELEM failed for has_invocation tgid={}: {}", tgid, err);
+            eprintln!(
+                "BPF_MAP_DELETE_ELEM failed for has_invocation tgid={}: {}",
+                tgid, err
+            );
         }
     }
 }
 
 /// Spawn a metadata ingestion thread that listens on a TCP port.
-pub fn spawn_metadata_listener(
-    registry: RegistryHandle,
-    port: u16,
-) -> thread::JoinHandle<()> {
+pub fn spawn_metadata_listener(registry: RegistryHandle, port: u16) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         if let Err(e) = run_metadata_listener(registry, port) {
             eprintln!("COSMOS metadata listener error: {:#}", e);
@@ -125,17 +143,19 @@ fn run_metadata_listener(registry: RegistryHandle, port: u16) -> Result<()> {
 
     eprintln!("COSMOS metadata listener on {}", addr);
 
-    let map_fd = open_pinned_map(HAS_INVOCATION_MAP_PATH)
-        .with_context(|| format!("failed to open {}", HAS_INVOCATION_MAP_PATH))?;
-
+    let mut map_fd = None;
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let reg = registry.clone();
-                let fd = map_fd;
-                thread::spawn(move || {
-                    handle_metadata_connection(stream, reg, fd);
-                });
+                if map_fd.is_none() {
+                    map_fd = Some(
+                        open_pinned_map_with_retry(HAS_INVOCATION_MAP_PATH, Duration::from_secs(5))
+                            .with_context(|| {
+                                format!("failed to open {}", HAS_INVOCATION_MAP_PATH)
+                            })?,
+                    );
+                }
+                handle_metadata_connection(stream, registry.clone(), map_fd.unwrap());
             }
             Err(e) => {
                 eprintln!("metadata listener accept error: {}", e);

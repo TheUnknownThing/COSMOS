@@ -9,12 +9,12 @@ pub mod bpf_intf;
 mod bpf;
 use bpf::*;
 
-mod stats;
 mod metadata;
+mod stats;
 
-mod registry;
 mod adapter;
 mod policy;
+mod registry;
 mod scheduler;
 
 use std::io;
@@ -23,22 +23,30 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use log::info;
 use scx_stats::prelude::*;
 use scx_utils::build_id;
 use scx_utils::libbpf_clap_opts::LibbpfOpts;
 
 use adapter::scx::ScxAdapter;
+use adapter::CpuAdapter;
 use metadata::spawn_metadata_listener;
 use policy::cosmos::CosmosPolicy;
-use policy::cosmos_pool::{effective_tail_guard_cpus, PoolManager};
+use policy::sfs::SfsPolicy;
+use policy::SchedulingPolicy;
 use registry::{InvocationRegistry, RegistryHandle};
 use scheduler::Scheduler;
 
 pub const SCHEDULER_NAME: &str = "COSMOS";
 
 const NSEC_PER_USEC: u64 = 1_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum PolicyKind {
+    Cosmos,
+    Sfs,
+}
 
 pub fn monotonic_now_ns() -> u64 {
     let mut ts = libc::timespec {
@@ -79,6 +87,10 @@ struct Opts {
     /// Scheduling minimum slice duration in microseconds.
     #[clap(short = 'S', long, default_value = "500")]
     slice_us_min: u64,
+
+    /// Scheduling policy to run.
+    #[clap(long, value_enum, default_value_t = PolicyKind::Cosmos)]
+    policy: PolicyKind,
 
     /// Target invocation SLO in microseconds.
     #[clap(long, default_value = "10000")]
@@ -123,6 +135,18 @@ struct Opts {
     /// Pool rebalance interval in milliseconds.
     #[clap(long, default_value = "500")]
     pool_rebalance_ms: u64,
+
+    /// Arrival samples per SFS threshold update.
+    #[clap(long, default_value = "100")]
+    sfs_threshold_window: u32,
+
+    /// Minimum SFS short-job credit in microseconds.
+    #[clap(long, default_value = "6000")]
+    sfs_min_credit_us: u64,
+
+    /// SFS queue-delay demotion factor relative to the adaptive threshold.
+    #[clap(long, default_value = "3")]
+    sfs_queue_delay_factor: u64,
 
     /// Keep every task on the legacy shared DSQ path and disable pool rebalancing.
     #[clap(long, action = clap::ArgAction::SetTrue)]
@@ -198,6 +222,74 @@ impl From<&Opts> for CosmosOpts {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SfsOpts {
+    pub slice_us: u64,
+    pub slice_us_min: u64,
+    pub sfs_threshold_window: u32,
+    pub sfs_min_credit_us: u64,
+    pub sfs_queue_delay_factor: u64,
+}
+
+impl From<&Opts> for SfsOpts {
+    fn from(opts: &Opts) -> Self {
+        Self {
+            slice_us: opts.slice_us,
+            slice_us_min: opts.slice_us_min,
+            sfs_threshold_window: opts.sfs_threshold_window,
+            sfs_min_credit_us: opts.sfs_min_credit_us,
+            sfs_queue_delay_factor: opts.sfs_queue_delay_factor,
+        }
+    }
+}
+
+enum RuntimePolicy {
+    Cosmos(CosmosPolicy),
+    Sfs(SfsPolicy),
+}
+
+impl SchedulingPolicy for RuntimePolicy {
+    type Stats = policy::PolicyCounters;
+
+    fn schedule(
+        &mut self,
+        registry: &InvocationRegistry,
+        raw_tasks: &[QueuedTask],
+        topology: &scx_utils::Topology,
+        now_ns: u64,
+    ) -> Vec<policy::DispatchDecision> {
+        match self {
+            Self::Cosmos(policy) => policy.schedule(registry, raw_tasks, topology, now_ns),
+            Self::Sfs(policy) => policy.schedule(registry, raw_tasks, topology, now_ns),
+        }
+    }
+
+    fn tick(&mut self, registry: &InvocationRegistry, now_ns: u64) -> Vec<(u32, u32)> {
+        match self {
+            Self::Cosmos(policy) => policy.tick(registry, now_ns),
+            Self::Sfs(policy) => policy.tick(registry, now_ns),
+        }
+    }
+
+    fn init(&mut self, nr_cpus: usize, tail_guard_cpus: u32) -> Vec<(u32, u32)> {
+        match self {
+            Self::Cosmos(policy) => policy.init(nr_cpus, tail_guard_cpus),
+            Self::Sfs(policy) => policy.init(nr_cpus, tail_guard_cpus),
+        }
+    }
+
+    fn stats(&self) -> Self::Stats {
+        match self {
+            Self::Cosmos(policy) => policy.stats(),
+            Self::Sfs(policy) => policy.stats(),
+        }
+    }
+
+    fn counters(&self) -> policy::PolicyCounters {
+        self.stats()
+    }
+}
+
 fn main() -> Result<()> {
     let opts = Opts::parse();
 
@@ -241,7 +333,9 @@ fn main() -> Result<()> {
 
     let mut open_object = MaybeUninit::uninit();
     let cosmos_opts: CosmosOpts = (&opts).into();
+    let sfs_opts: SfsOpts = (&opts).into();
     let registry: RegistryHandle = Arc::new(RwLock::new(InvocationRegistry::new()));
+    let _metadata_handle = spawn_metadata_listener(registry.clone(), opts.metadata_port);
 
     loop {
         let stats_server = StatsServer::new(stats::server_data()).launch()?;
@@ -260,7 +354,6 @@ fn main() -> Result<()> {
         )?;
 
         let nr_cpus = *bpf.nr_online_cpus_mut() as usize;
-        let effective_tg = effective_tail_guard_cpus(nr_cpus, opts.tail_guard_cpus);
         let auto_disable_small = nr_cpus <= 4;
 
         info!(
@@ -271,36 +364,33 @@ fn main() -> Result<()> {
         );
 
         if auto_disable_small {
-            info!("Auto-disabling pools on {}-CPU host to avoid partitioning limited CPU capacity", nr_cpus);
+            info!(
+                "Auto-disabling pools on {}-CPU host to avoid partitioning limited CPU capacity",
+                nr_cpus
+            );
         }
 
-        let mut policy = CosmosPolicy::new(&cosmos_opts);
-
-        // Override pool/deadline settings for small hosts
-        if auto_disable_small {
-            policy.pools_enabled = false;
-            policy.deadline_scoring_enabled = false;
-        }
-
-        // Create pool manager
-        let pool_mgr = if cosmos_opts.disable_pools || auto_disable_small {
-            PoolManager::disabled(nr_cpus)
-        } else {
-            PoolManager::new(nr_cpus, cosmos_opts.latency_pool_pct, effective_tg)
+        let mut policy = match opts.policy {
+            PolicyKind::Cosmos => {
+                let mut policy = CosmosPolicy::new(&cosmos_opts);
+                if auto_disable_small {
+                    policy.pools_enabled = false;
+                    policy.deadline_scoring_enabled = false;
+                }
+                RuntimePolicy::Cosmos(policy)
+            }
+            PolicyKind::Sfs => RuntimePolicy::Sfs(SfsPolicy::new(&sfs_opts)),
         };
 
-        let adapter = ScxAdapter::new(bpf)?;
+        let init_assignments = policy.init(nr_cpus, opts.tail_guard_cpus);
 
-        // Spawn metadata ingestion listener (receives from event bridge)
-        let _metadata_handle = spawn_metadata_listener(registry.clone(), opts.metadata_port);
+        let mut adapter = ScxAdapter::new(bpf)?;
 
-        let mut sched = Scheduler::new(
-            registry.clone(),
-            adapter,
-            policy,
-            pool_mgr,
-            stats_server,
-        );
+        for (cpu, pool) in init_assignments {
+            adapter.set_cpu_pool(cpu, pool);
+        }
+
+        let mut sched = Scheduler::new(registry.clone(), adapter, policy, stats_server);
 
         if !sched.run()?.should_restart() {
             break;

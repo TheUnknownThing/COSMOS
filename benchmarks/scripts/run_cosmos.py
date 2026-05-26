@@ -62,6 +62,12 @@ def cosmos_config(config: str, deadline_us: int) -> tuple[list[str], str, bool]:
             "metadata-full",
             True,
         )
+    if config == "sfs":
+        return (
+            ["--policy", "sfs"],
+            "metadata-sfs",
+            True,
+        )
     raise KeyError(f"unknown COSMOS config: {config}")
 
 
@@ -70,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default="cosmos-full",
-        choices=["cosmos-heuristic", "cosmos-metadata", "cosmos-pooled", "cosmos-full"],
+        choices=["cosmos-heuristic", "cosmos-metadata", "cosmos-pooled", "cosmos-full", "sfs"],
     )
     parser.add_argument("--workload", required=True)
     parser.add_argument("--concurrency", type=int, default=1)
@@ -122,8 +128,6 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     harness.ensure_release_build()
-    harness.ensure_shim_build()
-
     scheduler_log = run_dir / "scheduler.log"
     event_bridge_log = run_dir / "event_bridge.log"
     stats_capture = None
