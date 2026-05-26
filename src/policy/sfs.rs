@@ -358,6 +358,7 @@ mod tests {
             id,
             tgid,
             deadline_ns: 0,
+            estimated_duration_ns: 0,
             slo_class: SloClass::LatencyCritical,
             is_cold_start: id == 1,
             created_at_ns,

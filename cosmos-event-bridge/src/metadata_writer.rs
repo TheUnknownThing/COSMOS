@@ -23,6 +23,7 @@ fn get_addr() -> String {
 pub fn write_meta(
     tgid: u32,
     deadline_ns: u64,
+    estimated_duration_ns: u64,
     slo_class: u32,
     is_cold_start: u32,
     invocation_id: u64,
@@ -34,6 +35,7 @@ pub fn write_meta(
     let json = serde_json::json!({
         "tgid": tgid,
         "deadline_ns": deadline_ns,
+        "estimated_duration_ns": estimated_duration_ns,
         "slo_class": slo_class,
         "is_cold_start": is_cold_start,
         "invocation_id": invocation_id,

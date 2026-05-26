@@ -20,6 +20,7 @@ pub struct InvocationMeta {
     pub id: InvocationId,
     pub tgid: u32,
     pub deadline_ns: u64,
+    pub estimated_duration_ns: u64,
     pub slo_class: SloClass,
     pub is_cold_start: bool,
     pub created_at_ns: u64,

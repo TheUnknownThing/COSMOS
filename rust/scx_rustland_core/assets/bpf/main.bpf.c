@@ -704,6 +704,7 @@ static void get_task_info(struct queued_task_ctx *task,
 			  struct task_ctx *tctx, u64 enq_flags, s32 prev_cpu)
 {
 	task->pid = p->pid;
+	task->tgid = p->tgid;
 	task->cpu = prev_cpu;
 	task->nr_cpus_allowed = p->nr_cpus_allowed;
 	task->flags = enq_flags;

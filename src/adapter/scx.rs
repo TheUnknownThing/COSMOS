@@ -28,10 +28,7 @@ impl CpuAdapter for ScxAdapter<'_> {
         let mut tasks = Vec::new();
         loop {
             match self.bpf.dequeue_task() {
-                Ok(Some(mut task)) => {
-                    if task.tgid == 0 {
-                        task.tgid = BpfScheduler::task_tgid_static(task.pid);
-                    }
+                Ok(Some(task)) => {
                     tasks.push(task);
                 }
                 Ok(None) => break,

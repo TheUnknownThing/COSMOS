@@ -14,8 +14,6 @@ use crate::registry::{InvocationMeta, InvocationRegistry};
 const NSEC_PER_USEC: u64 = 1_000;
 const TASK_STATE_TTL_NS: u64 = 60_000_000_000;
 
-// ─── Public types ────────────────────────────────────────────────
-
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum TaskClass {
     ColdStart,
@@ -53,8 +51,7 @@ pub struct CosmosCounters {
     pub nr_tail_guard_dispatches: u64,
     pub nr_slo_violations: u64,
     pub nr_pool_migrations: u64,
-    pub nr_latency_pool_borrows: u64,
-    pub nr_batch_pool_borrows: u64,
+    pub nr_pool_overflow: u64,
 }
 
 impl From<CosmosCounters> for PolicyCounters {
@@ -72,25 +69,9 @@ impl From<CosmosCounters> for PolicyCounters {
             nr_tail_guard_dispatches: c.nr_tail_guard_dispatches,
             nr_slo_violations: c.nr_slo_violations,
             nr_pool_migrations: c.nr_pool_migrations,
-            nr_latency_pool_borrows: c.nr_latency_pool_borrows,
-            nr_batch_pool_borrows: c.nr_batch_pool_borrows,
+            nr_pool_overflow: c.nr_pool_overflow,
         }
     }
-}
-
-#[derive(Debug)]
-struct ScheduleCandidate {
-    score: u64,
-    class_rank: u8,
-    has_meta: bool,
-    observed_at_ns: u64,
-    pid: i32,
-    cpu_hint: i32,
-    home_pool: TaskPool,
-    effective_pool: TaskPool,
-    slice_ns: u64,
-    enq_flags: u64,
-    enq_cnt: u64,
 }
 
 pub struct CosmosPolicy {
@@ -111,12 +92,8 @@ pub struct CosmosPolicy {
     next_pool_rebalance_at_ns: u64,
     last_latency_depth: u64,
     last_batch_depth: u64,
-    last_latency_borrowed_to_batch: u64,
-    last_batch_borrowed_to_latency: u64,
     interval_latency_home: u64,
     interval_batch_home: u64,
-    interval_latency_borrowed_to_batch: u64,
-    interval_batch_borrowed_to_latency: u64,
     interval_latency_empty_samples: u64,
     interval_batch_empty_samples: u64,
     interval_samples: u64,
@@ -134,11 +111,8 @@ pub struct CosmosPolicy {
     nr_pool_batch: u64,
     nr_tail_guard_dispatches: u64,
     nr_slo_violations: u64,
-    nr_latency_pool_borrows: u64,
-    nr_batch_pool_borrows: u64,
+    nr_pool_overflow: u64,
 }
-
-// ─── CosmosPolicy implementation ─────────────────────────────────
 
 impl CosmosPolicy {
     pub fn new(opts: &crate::CosmosOpts) -> Self {
@@ -165,12 +139,8 @@ impl CosmosPolicy {
             next_pool_rebalance_at_ns: 0,
             last_latency_depth: 0,
             last_batch_depth: 0,
-            last_latency_borrowed_to_batch: 0,
-            last_batch_borrowed_to_latency: 0,
             interval_latency_home: 0,
             interval_batch_home: 0,
-            interval_latency_borrowed_to_batch: 0,
-            interval_batch_borrowed_to_latency: 0,
             interval_latency_empty_samples: 0,
             interval_batch_empty_samples: 0,
             interval_samples: 0,
@@ -188,12 +158,9 @@ impl CosmosPolicy {
             nr_pool_batch: 0,
             nr_tail_guard_dispatches: 0,
             nr_slo_violations: 0,
-            nr_latency_pool_borrows: 0,
-            nr_batch_pool_borrows: 0,
+            nr_pool_overflow: 0,
         }
     }
-
-    // ── helpers ─────────────────────────────────────────────
 
     pub fn scale_by_weight(task: &QueuedTask, v: u64) -> u64 {
         v.saturating_mul(task.weight) / 100
@@ -217,8 +184,6 @@ impl CosmosPolicy {
     ) -> Option<&'a InvocationMeta> {
         reg.lookup_tgid(task.tgid).and_then(|id| reg.get(id))
     }
-
-    // ── classification ──────────────────────────────────────
 
     fn heuristic_classify(&self, task: &QueuedTask) -> TaskClass {
         let Some(st) = self.task_state.get(&task.tgid) else {
@@ -269,8 +234,6 @@ impl CosmosPolicy {
         }
     }
 
-    // ── state tracking ─────────────────────────────────────
-
     fn update_task_state(&mut self, task: &QueuedTask, meta: Option<&InvocationMeta>, now: u64) {
         let is_new = meta.map_or(false, |m| {
             m.id != 0
@@ -306,8 +269,6 @@ impl CosmosPolicy {
             .retain(|_, s| now.saturating_sub(s.last_seen_ns) < TASK_STATE_TTL_NS);
     }
 
-    // ── pool selection ─────────────────────────────────────
-
     fn choose_pool(
         &mut self,
         task: &QueuedTask,
@@ -328,7 +289,6 @@ impl CosmosPolicy {
             TaskPool::None
         };
 
-        // Tail guard
         if let Some(m) = meta {
             if m.slo_class == crate::registry::SloClass::LatencyCritical && m.deadline_ns > 0 {
                 if now > m.deadline_ns {
@@ -351,8 +311,6 @@ impl CosmosPolicy {
 
         pool
     }
-
-    // ── scoring ────────────────────────────────────────────
 
     fn score_for_vtime(
         &self,
@@ -407,8 +365,6 @@ impl CosmosPolicy {
         fair.saturating_sub(Self::scale_by_weight(task, boost))
     }
 
-    // ── slice ──────────────────────────────────────────────
-
     fn slice_for(&self, task: &QueuedTask, class: TaskClass, pool: TaskPool) -> u64 {
         if pool == TaskPool::TailGuard {
             return self.slo_target_ns.max(self.slice_ns_min);
@@ -462,49 +418,13 @@ impl CosmosPolicy {
         cpus[idx] as i32
     }
 
-    fn borrow_to_equalize(home_depth: u64, peer_depth: u64, home_cpus: u64, peer_cpus: u64) -> u64 {
-        if home_cpus == 0
-            || peer_cpus == 0
-            || home_depth <= home_cpus
-            || home_depth.saturating_mul(peer_cpus) <= peer_depth.saturating_mul(home_cpus)
-        {
-            return 0;
-        }
-
-        let numerator = home_depth
-            .saturating_mul(peer_cpus)
-            .saturating_sub(peer_depth.saturating_mul(home_cpus));
-        let denominator = home_cpus.saturating_add(peer_cpus).max(1);
-        (numerator / denominator).min(home_depth)
-    }
-
-    fn borrow_plan(&self, latency_depth: u64, batch_depth: u64) -> (u64, u64) {
-        if !self.pools_enabled {
-            return (0, 0);
-        }
-        let Some(mgr) = self.pool_mgr.as_ref() else {
-            return (0, 0);
-        };
-        let latency_cpus = mgr.count_pool(TaskPool::Latency) as u64;
-        let batch_cpus = mgr.count_pool(TaskPool::Batch) as u64;
-        let latency_to_batch =
-            Self::borrow_to_equalize(latency_depth, batch_depth, latency_cpus, batch_cpus);
-        let batch_to_latency =
-            Self::borrow_to_equalize(batch_depth, latency_depth, batch_cpus, latency_cpus);
-        (latency_to_batch, batch_to_latency)
-    }
-
     fn reset_pool_interval(&mut self) {
         self.interval_latency_home = 0;
         self.interval_batch_home = 0;
-        self.interval_latency_borrowed_to_batch = 0;
-        self.interval_batch_borrowed_to_latency = 0;
         self.interval_latency_empty_samples = 0;
         self.interval_batch_empty_samples = 0;
         self.interval_samples = 0;
     }
-
-    // ── test api ────────────────────────────────────────────
 
     #[cfg(test)]
     pub(crate) fn classify_test(&self, t: &QueuedTask, r: &InvocationRegistry) -> TaskClass {
@@ -593,8 +513,6 @@ impl CosmosPolicy {
     }
 }
 
-// ─── SchedulingPolicy impl ────────────────────────────────────────
-
 impl SchedulingPolicy for CosmosPolicy {
     type Stats = CosmosCounters;
 
@@ -605,7 +523,8 @@ impl SchedulingPolicy for CosmosPolicy {
         _topo: &Topology,
         now: u64,
     ) -> Vec<DispatchDecision> {
-        let mut decisions: Vec<ScheduleCandidate> = Vec::with_capacity(raw.len());
+        let mut decisions: Vec<(u64, u8, bool, u64, i32, i32, TaskPool, u64, u64, u64)> =
+            Vec::with_capacity(raw.len());
         let mut lat = 0u64;
         let mut bat = 0u64;
 
@@ -659,30 +578,26 @@ impl SchedulingPolicy for CosmosPolicy {
                 _ => {}
             }
 
-            decisions.push(ScheduleCandidate {
+            decisions.push((
                 score,
-                class_rank: class_rank(class),
+                class_rank(class),
                 has_meta,
-                observed_at_ns: now,
-                pid: task.pid,
-                cpu_hint: task.cpu,
-                home_pool: pool,
-                effective_pool: pool,
-                slice_ns: slice,
-                enq_flags: task.flags,
-                enq_cnt: task.enq_cnt,
-            });
+                now,
+                task.pid,
+                task.cpu,
+                pool,
+                slice,
+                task.flags,
+                task.enq_cnt,
+            ));
         }
 
-        // Sort by urgency before assigning borrowed CPUs so spill capacity rescues
-        // the oldest / most delayed work first instead of every new arrival.
         decisions.sort_by(|a, b| {
-            a.score
-                .cmp(&b.score)
-                .then_with(|| a.class_rank.cmp(&b.class_rank))
-                .then_with(|| b.has_meta.cmp(&a.has_meta))
-                .then_with(|| a.observed_at_ns.cmp(&b.observed_at_ns))
-                .then_with(|| a.pid.cmp(&b.pid))
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| a.3.cmp(&b.3))
+                .then_with(|| a.4.cmp(&b.4))
         });
 
         let pending = decisions.len() as u64;
@@ -690,71 +605,58 @@ impl SchedulingPolicy for CosmosPolicy {
             .pool_mgr
             .as_ref()
             .map_or(0, |m| m.count_pool(TaskPool::Latency) as u64);
-        let latency_dominates = self.pools_enabled
-            && bat == 0
-            && lat > latency_cpus
-            && lat.saturating_mul(4) >= pending.saturating_mul(3);
-        let (mut latency_to_batch, mut batch_to_latency) = if latency_dominates {
-            (0, 0)
-        } else {
-            self.borrow_plan(lat, bat)
-        };
-        let mut borrowed_latency = 0u64;
-        let mut borrowed_batch = 0u64;
-        for decision in decisions.iter_mut() {
-            if latency_dominates && decision.home_pool == TaskPool::Latency {
-                decision.effective_pool = TaskPool::None;
-                continue;
-            }
-            match decision.home_pool {
-                TaskPool::Latency if latency_to_batch > 0 => {
-                    decision.effective_pool = TaskPool::Batch;
-                    latency_to_batch -= 1;
-                    borrowed_latency = borrowed_latency.saturating_add(1);
-                }
-                TaskPool::Batch if batch_to_latency > 0 => {
-                    decision.effective_pool = TaskPool::Latency;
-                    batch_to_latency -= 1;
-                    borrowed_batch = borrowed_batch.saturating_add(1);
-                }
-                _ => {}
-            }
-        }
+        let batch_cpus = self
+            .pool_mgr
+            .as_ref()
+            .map_or(0, |m| m.count_pool(TaskPool::Batch) as u64);
+
+        let mut latency_dispatched = 0u64;
+        let mut batch_dispatched = 0u64;
+        let mut overflow = 0u64;
 
         let mut out = Vec::with_capacity(decisions.len());
-        for decision in decisions {
+        for (_score, _cr, _hm, _obs, pid, task_cpu, pool, slice, enq_flags, enq_cnt) in decisions {
             let cpu = if self.percpu_local {
-                decision.cpu_hint
+                task_cpu
             } else {
-                self.select_cpu_for_pool(decision.effective_pool)
+                match pool {
+                    TaskPool::Latency => {
+                        if latency_dispatched < latency_cpus {
+                            latency_dispatched += 1;
+                            self.select_cpu_for_pool(TaskPool::Latency)
+                        } else {
+                            overflow += 1;
+                            RL_CPU_ANY
+                        }
+                    }
+                    TaskPool::Batch => {
+                        if batch_dispatched < batch_cpus {
+                            batch_dispatched += 1;
+                            self.select_cpu_for_pool(TaskPool::Batch)
+                        } else {
+                            overflow += 1;
+                            RL_CPU_ANY
+                        }
+                    }
+                    _ => RL_CPU_ANY,
+                }
             };
             out.push(DispatchDecision {
-                pid: decision.pid,
+                pid,
                 cpu,
-                slice_ns: decision.slice_ns,
-                vtime: decision.score,
-                enq_flags: decision.enq_flags,
-                enq_cnt: decision.enq_cnt,
+                slice_ns: slice,
+                vtime: _score,
+                enq_flags,
+                enq_cnt,
             });
         }
 
         self.max_pending = self.max_pending.max(pending);
         self.last_latency_depth = lat;
         self.last_batch_depth = bat;
-        self.last_latency_borrowed_to_batch = borrowed_latency;
-        self.last_batch_borrowed_to_latency = borrowed_batch;
-        self.nr_latency_pool_borrows = self
-            .nr_latency_pool_borrows
-            .saturating_add(borrowed_latency);
-        self.nr_batch_pool_borrows = self.nr_batch_pool_borrows.saturating_add(borrowed_batch);
+        self.nr_pool_overflow = self.nr_pool_overflow.saturating_add(overflow);
         self.interval_latency_home = self.interval_latency_home.saturating_add(lat);
         self.interval_batch_home = self.interval_batch_home.saturating_add(bat);
-        self.interval_latency_borrowed_to_batch = self
-            .interval_latency_borrowed_to_batch
-            .saturating_add(borrowed_latency);
-        self.interval_batch_borrowed_to_latency = self
-            .interval_batch_borrowed_to_latency
-            .saturating_add(borrowed_batch);
         self.interval_samples = self.interval_samples.saturating_add(1);
         if lat == 0 {
             self.interval_latency_empty_samples =
@@ -797,8 +699,6 @@ impl SchedulingPolicy for CosmosPolicy {
                 .map_or(0, |m| m.count_pool(TaskPool::Batch) as u64),
             latency_home_depth: self.interval_latency_home,
             batch_home_depth: self.interval_batch_home,
-            latency_borrowed_to_batch: self.interval_latency_borrowed_to_batch,
-            batch_borrowed_to_latency: self.interval_batch_borrowed_to_latency,
             latency_empty_samples: self.interval_latency_empty_samples,
             batch_empty_samples: self.interval_batch_empty_samples,
             samples: self.interval_samples,
@@ -826,8 +726,7 @@ impl SchedulingPolicy for CosmosPolicy {
             nr_tail_guard_dispatches: self.nr_tail_guard_dispatches,
             nr_slo_violations: self.nr_slo_violations,
             nr_pool_migrations: self.pool_mgr.as_ref().map_or(0, |m| m.nr_pool_migrations),
-            nr_latency_pool_borrows: self.nr_latency_pool_borrows,
-            nr_batch_pool_borrows: self.nr_batch_pool_borrows,
+            nr_pool_overflow: self.nr_pool_overflow,
         }
     }
 
@@ -845,13 +744,10 @@ impl SchedulingPolicy for CosmosPolicy {
             nr_tail_guard_dispatches: self.nr_tail_guard_dispatches,
             nr_slo_violations: self.nr_slo_violations,
             nr_pool_migrations: self.pool_mgr.as_ref().map_or(0, |m| m.nr_pool_migrations),
-            nr_latency_pool_borrows: self.nr_latency_pool_borrows,
-            nr_batch_pool_borrows: self.nr_batch_pool_borrows,
+            nr_pool_overflow: self.nr_pool_overflow,
         }
     }
 }
-
-// ─── Tests ────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -901,6 +797,7 @@ mod tests {
             id,
             tgid,
             deadline_ns: dl,
+            estimated_duration_ns: 0,
             slo_class: slo,
             is_cold_start: cold,
             created_at_ns: 100_000_000,
@@ -931,6 +828,7 @@ mod tests {
                 id,
                 tgid,
                 deadline_ns: dl,
+                estimated_duration_ns: 0,
                 slo_class: match slo {
                     0 => SloClass::LatencyCritical,
                     1 => SloClass::Standard,
@@ -944,7 +842,6 @@ mod tests {
         r
     }
 
-    // ── classification ──────────────────────────────────────
     #[test]
     fn reg_latency_cold() {
         let o = opts();
@@ -1005,14 +902,13 @@ mod tests {
     fn reg_standard_heuristic() {
         let o = opts();
         let p = pl(&o);
-        let r = build_reg(&[(1, 100, 200 * MS, 1, 0)]); // standard SLO
+        let r = build_reg(&[(1, 100, 200 * MS, 1, 0)]);
         assert_eq!(
             p.classify_test(&qt(1001, 100, "w", 5 * MS, 100), &r),
             TaskClass::ColdStart
-        ); // heuristic: short → ColdStart
+        );
     }
 
-    // ── pool assignment ─────────────────────────────────────
     #[test]
     fn lat_crit_lat_pool() {
         let o = opts();
@@ -1047,7 +943,6 @@ mod tests {
         assert_eq!(pl, TaskPool::None);
     }
 
-    // ── tail guard ──────────────────────────────────────────
     #[test]
     fn tg_promote() {
         let o = opts();
@@ -1127,15 +1022,6 @@ mod tests {
     }
 
     #[test]
-    fn borrow_plan_equalizes_homogeneous_latency_burst() {
-        let o = opts();
-        let mut p = pl(&o);
-        p.init(4, 0);
-        assert_eq!(p.borrow_plan(8, 0), (4, 0));
-    }
-
-    // ── EDF scoring ─────────────────────────────────────────
-    #[test]
     fn edf_earlier_lower() {
         let mut o = opts();
         o.tail_guard_threshold_us = Some(0);
@@ -1208,7 +1094,6 @@ mod tests {
         assert_eq!(sc, expected_heuristic(&p, &t, c));
     }
 
-    // ── stats tracking ──────────────────────────────────────
     #[test]
     fn meta_counter() {
         let o = opts();
@@ -1233,15 +1118,12 @@ mod tests {
         let o = opts();
         let mut p = pl(&o);
         p.init(4, 0);
-        for i in 0..3 {
-            p.last_latency_depth = 5;
-            p.last_batch_depth = 0;
-            p.interval_latency_home = 5;
-            p.interval_batch_empty_samples = 1;
-            p.interval_samples = 1;
-            p.tick(&InvocationRegistry::new(), i * 500 * MS);
-        }
-        // Verify that rebalance actually migrated a CPU to latency pool
+        p.last_latency_depth = 5;
+        p.last_batch_depth = 0;
+        p.interval_latency_home = 5;
+        p.interval_batch_empty_samples = 1;
+        p.interval_samples = 1;
+        p.tick(&InvocationRegistry::new(), 500 * MS);
         assert!(p.pool_mgr.as_ref().unwrap().nr_pool_migrations > 0);
     }
 
@@ -1251,7 +1133,6 @@ mod tests {
         let mut p = pl(&o);
         p.init(4, 0);
         let mig_before = p.pool_mgr.as_ref().unwrap().nr_pool_migrations;
-
         p.tick(&InvocationRegistry::new(), 0);
         assert_eq!(p.pool_mgr.as_ref().unwrap().nr_pool_migrations, mig_before);
     }

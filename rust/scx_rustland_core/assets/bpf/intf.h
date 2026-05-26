@@ -88,6 +88,7 @@ struct domain_arg {
  */
 struct queued_task_ctx {
 	s32 pid;
+	u32 tgid; /* Thread-group ID for registry lookup */
 	s32 cpu; /* CPU where the task is running */
 	u64 nr_cpus_allowed; /* Number of CPUs that the task can use */
 	u64 flags; /* Task enqueue flags */

@@ -32,6 +32,8 @@ struct StartEvent {
     activation_id: String,
     container_id: String,
     timeout_ms: u64,
+    #[serde(default)]
+    estimated_duration_ms: Option<u64>,
     slo_class: Option<u32>,
     action_name: String,
     kind: String,
@@ -49,6 +51,8 @@ struct LocalStartEvent {
     activation_id: String,
     tgid: u32,
     timeout_ms: u64,
+    #[serde(default)]
+    estimated_duration_ms: Option<u64>,
     slo_class: Option<u32>,
     action_name: String,
     kind: String,
@@ -161,6 +165,10 @@ fn resolve_slo_class(timeout_ms: u64, explicit: Option<u32>) -> u32 {
     }
 }
 
+fn compute_estimated_duration_ns(timeout_ms: u64, estimated_duration_ms: Option<u64>) -> u64 {
+    estimated_duration_ms.unwrap_or(timeout_ms) * 1_000_000
+}
+
 fn monotonic_now_ns() -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
@@ -183,6 +191,8 @@ impl BridgeState {
         let tgid = docker_inspect_pid(&ev.container_id)?;
         let tgids = container_tgids(tgid);
         let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
+        let estimated_duration_ns =
+            compute_estimated_duration_ns(ev.timeout_ms, ev.estimated_duration_ms);
         let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
         let invocation_id = hash_activation_id(&ev.activation_id);
 
@@ -190,6 +200,7 @@ impl BridgeState {
             metadata_writer::write_meta(
                 *tgid,
                 deadline_ns,
+                estimated_duration_ns,
                 slo_class,
                 if ev.cold_start { 1 } else { 0 },
                 invocation_id,
@@ -266,12 +277,15 @@ impl BridgeState {
 
 fn handle_local_start(ev: &LocalStartEvent) -> Result<()> {
     let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
+    let estimated_duration_ns =
+        compute_estimated_duration_ns(ev.timeout_ms, ev.estimated_duration_ms);
     let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
     let invocation_id = hash_activation_id(&ev.activation_id);
 
     metadata_writer::write_meta(
         ev.tgid,
         deadline_ns,
+        estimated_duration_ns,
         slo_class,
         if ev.cold_start { 1 } else { 0 },
         invocation_id,

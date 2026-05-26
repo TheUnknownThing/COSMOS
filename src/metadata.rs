@@ -28,6 +28,8 @@ const BPF_ATTR_SZ: usize = 64;
 struct MetadataWrite {
     tgid: u32,
     deadline_ns: u64,
+    #[serde(default)]
+    estimated_duration_ns: u64,
     slo_class: u32,
     is_cold_start: u32,
     invocation_id: u64,
@@ -204,6 +206,7 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle, map_f
                         id: cmd.invocation_id,
                         tgid: cmd.tgid,
                         deadline_ns: cmd.deadline_ns,
+                        estimated_duration_ns: cmd.estimated_duration_ns,
                         slo_class,
                         is_cold_start: cmd.is_cold_start != 0,
                         created_at_ns: now,
