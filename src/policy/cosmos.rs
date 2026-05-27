@@ -518,7 +518,7 @@ impl SchedulingPolicy for CosmosPolicy {
 
     fn schedule(
         &mut self,
-        reg: &InvocationRegistry,
+        resolved_meta: &[Option<InvocationMeta>],
         raw: &[QueuedTask],
         _topo: &Topology,
         now: u64,
@@ -528,8 +528,8 @@ impl SchedulingPolicy for CosmosPolicy {
         let mut lat = 0u64;
         let mut bat = 0u64;
 
-        for task in raw {
-            let meta = self.meta_for(task, reg);
+        for (i, task) in raw.iter().enumerate() {
+            let meta = resolved_meta.get(i).and_then(|m| m.as_ref());
             let has_meta = meta.is_some();
             let class = self.classify(task, meta);
 
@@ -789,18 +789,7 @@ mod tests {
             vtime: 0,
             enq_cnt: 0,
             comm: c,
-        }
-    }
-
-    fn reg_me(tgid: u32, slo: SloClass, dl: u64, cold: bool, id: u64) -> InvocationMeta {
-        InvocationMeta {
-            id,
-            tgid,
-            deadline_ns: dl,
-            estimated_duration_ns: 0,
-            slo_class: slo,
-            is_cold_start: cold,
-            created_at_ns: 100_000_000,
+            has_invocation_meta: 0,
         }
     }
 

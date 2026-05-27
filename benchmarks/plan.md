@@ -16,12 +16,24 @@ Workloads use fixed-cost calibration — each runs a unit of work, measures how
 long it takes, then estimates total iterations to fill the target budget. No
 clock-polling hot loops.
 
-### Profiler path (`profiler/`) — secondary / offline analysis
+### Profiler path (`profiler/`) — deep-trace + SeBS + SLO comparison
 
 `cosmos-bench-profiler` records deep resource traces (perf, cgroup, eBPF,
 qdisc, lifecycle) for offline phase classification and profile DB generation.
-It supports standalone cgroup mode and OpenWhisk activation mode with SeBS
-workloads. See `profiler/README.md`.
+
+**Invocation modes:** burst (concurrent, repeated batches), continuous
+(open-loop controlled-rate arrivals), throughput (max sustained invocations).
+
+**Workload sources:** built-in micro workloads (cpu, memory, io, network),
+arbitrary command, and SeBS benchmarks via language-specific runners
+(Python: `sebs_local_python_runner.py`, Node.js: `sebs_local_node_runner.js`).
+
+**SLO comparison:** `scripts/analyze_trace.py` reads profiler trace data
+(client_latency.csv, cgroup_cpu.csv, scheduler_stats.csv, events.jsonl) and
+produces a `compat_summary.json` compatible with `compare.py`, providing the
+same p50/p95/p99/SLO/fairness metrics as the lightweight path.
+
+See `profiler/README.md`.
 
 ## Configs
 

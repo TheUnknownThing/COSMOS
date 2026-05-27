@@ -7,7 +7,9 @@ use procfs::process::Process;
 use scx_stats::prelude::*;
 use scx_utils::UserExitInfo;
 use crate::adapter::CpuAdapter;
+use crate::metadata::delete_invocation_hint;
 use crate::policy::SchedulingPolicy;
+use crate::registry::InvocationMeta;
 use crate::registry::RegistryHandle;
 use crate::stats::Metrics;
 
@@ -31,7 +33,15 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             let raw = self.adapter.drain();
             let decisions = {
                 let reg = self.registry.read().unwrap();
-                self.policy.schedule(&reg, &raw, self.adapter.topology(), now)
+                let resolved: Vec<Option<InvocationMeta>> = raw
+                    .iter()
+                    .map(|task| {
+                        reg.lookup_tgid(task.tgid)
+                            .and_then(|id| reg.get(id).cloned())
+                    })
+                    .collect();
+                drop(reg);
+                self.policy.schedule(&resolved, &raw, self.adapter.topology(), now)
             };
             for dec in &decisions {
                 self.adapter.dispatch(dec.pid, dec.cpu, dec.slice_ns, dec.vtime, dec.enq_flags, dec.enq_cnt);
@@ -42,8 +52,13 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             }
             self.prune_counter += 1;
             if self.prune_counter % 1000 == 0 {
-                let mut reg = self.registry.write().unwrap();
-                reg.prune(now, 60_000_000_000);
+                let pruned = {
+                    let mut reg = self.registry.write().unwrap();
+                    reg.prune(now, 60_000_000_000)
+                };
+                for tgid in pruned {
+                    delete_invocation_hint(tgid);
+                }
             }
             let pending = raw.len() as u64;
             self.adapter.notify_complete(pending);

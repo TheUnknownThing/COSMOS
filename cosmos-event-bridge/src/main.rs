@@ -138,13 +138,17 @@ fn collect_descendant_tgids(root: u32) -> Vec<u32> {
 
 fn container_tgids(root: u32) -> Vec<u32> {
     let mut tgids = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
 
-    for _ in 0..5 {
+    loop {
         tgids = collect_descendant_tgids(root);
         if tgids.len() > 1 {
             break;
         }
-        thread::sleep(Duration::from_millis(20));
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 
     tgids

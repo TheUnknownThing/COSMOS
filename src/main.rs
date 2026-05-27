@@ -252,14 +252,14 @@ impl SchedulingPolicy for RuntimePolicy {
 
     fn schedule(
         &mut self,
-        registry: &InvocationRegistry,
+        resolved_meta: &[Option<registry::InvocationMeta>],
         raw_tasks: &[QueuedTask],
         topology: &scx_utils::Topology,
         now_ns: u64,
     ) -> Vec<policy::DispatchDecision> {
         match self {
-            Self::Cosmos(policy) => policy.schedule(registry, raw_tasks, topology, now_ns),
-            Self::Sfs(policy) => policy.schedule(registry, raw_tasks, topology, now_ns),
+            Self::Cosmos(policy) => policy.schedule(resolved_meta, raw_tasks, topology, now_ns),
+            Self::Sfs(policy) => policy.schedule(resolved_meta, raw_tasks, topology, now_ns),
         }
     }
 

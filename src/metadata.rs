@@ -12,6 +12,7 @@ use serde::Deserialize;
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,8 @@ const BPF_OBJ_GET: i32 = 7;
 const BPF_MAP_UPDATE_ELEM: i32 = 2;
 const BPF_MAP_DELETE_ELEM: i32 = 3;
 const BPF_ATTR_SZ: usize = 64;
+
+static HAS_INVOCATION_FD: OnceLock<i32> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct MetadataWrite {
@@ -133,6 +136,14 @@ fn should_force_userspace(slo_class: SloClass) -> bool {
     matches!(slo_class, SloClass::LatencyCritical | SloClass::Batch)
 }
 
+/// Delete the 1-bit has_invocation BPF hint for a tgid.
+/// Can be called from any thread once the map is pinned.
+pub fn delete_invocation_hint(tgid: u32) {
+    if let Some(&fd) = HAS_INVOCATION_FD.get() {
+        delete_has_invocation(fd, tgid);
+    }
+}
+
 /// Spawn a metadata ingestion thread that listens on a TCP port.
 pub fn spawn_metadata_listener(registry: RegistryHandle, port: u16) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -149,19 +160,23 @@ fn run_metadata_listener(registry: RegistryHandle, port: u16) -> Result<()> {
 
     eprintln!("COSMOS metadata listener on {}", addr);
 
-    let mut map_fd = None;
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                if map_fd.is_none() {
-                    map_fd = Some(
-                        open_pinned_map_with_retry(HAS_INVOCATION_MAP_PATH, Duration::from_secs(5))
-                            .with_context(|| {
-                                format!("failed to open {}", HAS_INVOCATION_MAP_PATH)
-                            })?,
-                    );
+                if HAS_INVOCATION_FD.get().is_none() {
+                    let fd = open_pinned_map_with_retry(
+                        HAS_INVOCATION_MAP_PATH,
+                        Duration::from_secs(5),
+                    )
+                    .with_context(|| {
+                        format!("failed to open {}", HAS_INVOCATION_MAP_PATH)
+                    })?;
+                    let _ = HAS_INVOCATION_FD.set(fd);
                 }
-                handle_metadata_connection(stream, registry.clone(), map_fd.unwrap());
+                let reg = registry.clone();
+                thread::spawn(move || {
+                    handle_metadata_connection(stream, reg);
+                });
             }
             Err(e) => {
                 eprintln!("metadata listener accept error: {}", e);
@@ -171,7 +186,7 @@ fn run_metadata_listener(registry: RegistryHandle, port: u16) -> Result<()> {
     Ok(())
 }
 
-fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle, map_fd: i32) {
+fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle) {
     let mut stream = stream;
 
     loop {
@@ -183,7 +198,7 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle, map_f
                 Ok(_) => {}
                 Err(_) => break,
             };
-        } // reader dropped here
+        }
 
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -214,10 +229,12 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle, map_f
                     reg.upsert(meta);
                 }
 
-                if should_force_userspace(slo_class) {
-                    write_has_invocation(map_fd, cmd.tgid, 1);
-                } else {
-                    delete_has_invocation(map_fd, cmd.tgid);
+                if let Some(&fd) = HAS_INVOCATION_FD.get() {
+                    if should_force_userspace(slo_class) {
+                        write_has_invocation(fd, cmd.tgid, 1);
+                    } else {
+                        delete_has_invocation(fd, cmd.tgid);
+                    }
                 }
 
                 let _ = stream.write_all(b"ok\n");
@@ -228,7 +245,9 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle, map_f
                     reg.remove_by_tgid(cmd.tgid);
                 }
 
-                delete_has_invocation(map_fd, cmd.tgid);
+                if let Some(&fd) = HAS_INVOCATION_FD.get() {
+                    delete_has_invocation(fd, cmd.tgid);
+                }
 
                 let _ = stream.write_all(b"ok\n");
             }

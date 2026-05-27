@@ -71,10 +71,21 @@ impl InvocationRegistry {
     /// Prune stale entries older than TTL.
     /// Called periodically (not every scheduling iteration) to avoid
     /// holding the write lock excessively.
-    pub fn prune(&mut self, now_ns: u64, ttl_ns: u64) {
+    /// Returns the list of tgids that were pruned so callers can clean
+    /// associated BPF map entries.
+    pub fn prune(&mut self, now_ns: u64, ttl_ns: u64) -> Vec<u32> {
         let cutoff = now_ns.saturating_sub(ttl_ns);
-        self.by_id.retain(|_, meta| meta.created_at_ns >= cutoff);
+        let mut pruned_tgids = Vec::new();
+        self.by_id.retain(|_, meta| {
+            if meta.created_at_ns < cutoff {
+                pruned_tgids.push(meta.tgid);
+                false
+            } else {
+                true
+            }
+        });
         self.by_tgid.retain(|_, id| self.by_id.contains_key(id));
+        pruned_tgids
     }
 }
 

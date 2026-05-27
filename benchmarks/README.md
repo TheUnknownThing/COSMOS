@@ -35,13 +35,26 @@ python3 benchmarks/scripts/compare.py benchmarks/scripts/results/cfs-default/ be
 
 ## Architecture
 
-The lightweight benchmark path (`scripts/` + `workloads/`) is the primary
-evaluation tool for the sched_ext COSMOS product. It measures client-side
-tail latency and SLO hit rate under controlled synthetic workloads.
+### Lightweight path (`scripts/` + `workloads/`) — primary
 
-The older deep-trace profiling stack (`profiler/` + `third_party/`) records
-perf, cgroup, eBPF, qdisc, and lifecycle traces for offline phase analysis.
-That path has its own README at `profiler/README.md`.
+Uses a Rust workload runner (`cosmos-benchmark-workload`) with seven synthetic
+calibrated workloads. A Python harness launches the COSMOS scheduler, runs
+concurrent invocations, captures stats, and produces comparison-ready output.
+This is the fastest path for day-to-day CFS-vs-COSMOS SLO comparison. No
+Docker, OpenWhisk, or SeBS dependencies.
+
+### Profiler path (`profiler/` + `third_party/`) — deep-trace + SeBS
+
+`cosmos-bench-profiler` records deep resource traces (perf, cgroup, eBPF,
+qdisc, lifecycle) for offline phase classification and profile DB generation.
+Supports three invocation modes (burst, continuous, throughput) and runs
+real SeBS benchmarks via language-specific runners (Python, Node.js).
+
+A trace analyzer (`scripts/analyze_trace.py`) bridges profiler output to the
+COSMOS SLO comparison pipeline, producing `compat_summary.json` files usable
+by `compare.py` with the same p50/p95/p99/SLO/fairness metrics.
+
+See `profiler/README.md` for full documentation.
 
 ## Entry point
 

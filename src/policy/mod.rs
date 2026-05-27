@@ -6,7 +6,7 @@ pub mod cosmos_pool;
 pub mod sfs;
 
 use crate::bpf::QueuedTask;
-use crate::registry::InvocationRegistry;
+use crate::registry::{InvocationMeta, InvocationRegistry};
 use scx_utils::Topology;
 
 #[derive(Debug, Default, Clone)]
@@ -38,7 +38,7 @@ pub struct DispatchDecision {
 
 pub trait SchedulingPolicy {
     type Stats: Clone;
-    fn schedule(&mut self, registry: &InvocationRegistry, raw_tasks: &[QueuedTask], topology: &Topology, now_ns: u64) -> Vec<DispatchDecision>;
+    fn schedule(&mut self, resolved_meta: &[Option<InvocationMeta>], raw_tasks: &[QueuedTask], topology: &Topology, now_ns: u64) -> Vec<DispatchDecision>;
     fn tick(&mut self, _registry: &InvocationRegistry, _now_ns: u64) {}
     fn init(&mut self, _nr_cpus: usize, _tail_guard_cpus: u32) {}
     fn stats(&self) -> Self::Stats;

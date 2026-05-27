@@ -2,8 +2,10 @@
 // GNU General Public License version 2.
 
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs::{self, File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -157,6 +159,9 @@ struct StandaloneArgs {
     name: String,
     #[arg(long, value_enum, default_value_t = WorkloadKind::Cpu)]
     workload: WorkloadKind,
+    /// Invocation mode: burst, continuous, or throughput.
+    #[arg(long, value_enum, default_value_t = InvocationMode::Burst)]
+    mode: InvocationMode,
     /// Stable workload label stored in run_meta.json. Defaults to --workload.
     #[arg(long)]
     workload_label: Option<String>,
@@ -168,12 +173,33 @@ struct StandaloneArgs {
     duration_ms: u64,
     #[arg(long, default_value_t = 100)]
     sample_ms: u64,
+    /// Number of parallel invocations per batch (burst mode) or max concurrency (continuous/throughput).
+    #[arg(long, default_value_t = 1)]
+    concurrency: u32,
+    /// Total samples to collect in burst mode.
+    #[arg(long, default_value_t = 1)]
+    repetitions: u32,
+    /// Arrival rate in invocations/second (continuous mode).
+    #[arg(long, default_value_t = 10.0)]
+    rate: f64,
+    /// Total run duration in seconds (continuous/throughput mode).
+    #[arg(long, default_value_t = 30)]
+    duration_s: u64,
     /// Skip perf collection and write a machine-readable skipped marker.
     #[arg(long)]
     skip_perf: bool,
     /// Allow running without a newly-created cgroup. Verification still records the mapping.
     #[arg(long)]
     allow_cgroup_fallback: bool,
+    /// COSMOS scheduler metadata TCP port. 0 disables metadata injection.
+    #[arg(long, default_value_t = 0)]
+    metadata_port: u16,
+    /// Multiplier on --duration-ms to compute absolute deadline.
+    #[arg(long, default_value_t = 2.0)]
+    deadline_factor: f64,
+    /// SLO class: 0=LatencyCritical, 1=Standard, 2=Batch.
+    #[arg(long, default_value_t = 1)]
+    slo_class: u32,
     /// Command to run when --workload command is selected.
     #[arg(last = true)]
     command: Vec<String>,
@@ -228,6 +254,18 @@ struct OpenWhiskArgs {
     /// Maximum time to poll for the activation document after invoke exits.
     #[arg(long, default_value_t = 90000)]
     activation_fetch_timeout_ms: u64,
+    /// COSMOS scheduler metadata TCP port. 0 disables (no event bridge).
+    #[arg(long, default_value_t = 0)]
+    metadata_port: u16,
+    /// SLO class: 0=LatencyCritical, 1=Standard, 2=Batch.
+    #[arg(long, default_value_t = 0)]
+    slo_class: u32,
+    /// Relative deadline from container discovery, in ms. 0 means use action timeout.
+    #[arg(long, default_value_t = 0)]
+    deadline_ms: u64,
+    /// Estimated execution duration in ms. 0 means use deadline.
+    #[arg(long, default_value_t = 0)]
+    estimated_duration_ms: u64,
 }
 
 #[derive(Debug, Args)]
@@ -248,6 +286,17 @@ enum WorkloadKind {
     Command,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+enum InvocationMode {
+    /// Fire all invocations concurrently, wait for all, repeat.
+    Burst,
+    /// Spawn invocations at a controlled rate for a fixed duration.
+    Continuous,
+    /// Spawn invocations as fast as possible for a fixed duration.
+    Throughput,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct RunMeta {
     run_id: String,
@@ -260,6 +309,29 @@ struct RunMeta {
     command: Vec<String>,
     env: BTreeMap<String, Value>,
     config_hash: String,
+    #[serde(default)]
+    metadata_port: u16,
+    #[serde(default)]
+    slo_class: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MetadataConfig {
+    port: u16,
+    deadline_factor: f64,
+    slo_class: u32,
+    duration_ms: u64,
+}
+
+struct BridgeGuard(Option<Child>);
+
+impl Drop for BridgeGuard {
+    fn drop(&mut self) {
+        if let Some(ref mut child) = self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -361,6 +433,8 @@ struct InvokeResult {
     response_end_ns: u128,
     timing_source: String,
     container: Option<ContainerInfo>,
+    /// tgid registered with the event bridge (if metadata was sent).
+    local_start_tgid: Option<u32>,
 }
 
 struct CurlTiming {
@@ -557,6 +631,9 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
     if args.workload == WorkloadKind::Command && args.command.is_empty() {
         bail!("--workload command requires a trailing command after --");
     }
+    if args.mode != InvocationMode::Burst && args.mode != InvocationMode::Continuous && args.mode != InvocationMode::Throughput {
+        bail!("--mode must be burst, continuous, or throughput");
+    }
 
     fs::create_dir_all(&args.out_dir)
         .with_context(|| format!("create {}", args.out_dir.display()))?;
@@ -573,9 +650,14 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
     let config_hash = stable_hash(&json!({
         "workload": args.workload,
         "workload_label": workload_label,
+        "mode": format!("{:?}", args.mode).to_lowercase(),
         "input": args.input,
         "warmth": args.warmth,
         "duration_ms": args.duration_ms,
+        "concurrency": args.concurrency,
+        "repetitions": args.repetitions,
+        "rate": args.rate,
+        "duration_s": args.duration_s,
         "sample_ms": args.sample_ms,
         "command": command,
     }));
@@ -591,29 +673,11 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
         command: command.clone(),
         env: run_environment(),
         config_hash,
+        metadata_port: args.metadata_port,
+        slo_class: args.slo_class,
     };
     write_json(&run_dir.join("run_meta.json"), &meta)?;
     write_placeholder_activation(&run_dir.join("openwhisk_activation.json"), &run_id)?;
-
-    let activation_id = format!("{run_id}-activation-0");
-    append_event(
-        &run_dir,
-        &json!({
-            "event": "invocation_started",
-            "run_id": run_id,
-            "activation_id": activation_id,
-            "timestamp_ns": now_ns(),
-            "workload": meta.workload,
-            "input": args.input,
-            "warmth": args.warmth,
-            "container_id": Value::Null,
-            "host_pid": Value::Null,
-            "cgroup_path": meta.cgroup_path,
-            "cold_warm": args.warmth,
-            "queue_wait_ns": 0,
-            "init_ns": 0,
-        }),
-    )?;
 
     initialize_output_files(&run_dir)?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -624,60 +688,110 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
         stop.clone(),
     );
 
-    let send_ns = now_ns();
-    let start_instant = Instant::now();
-    let mut child = spawn_workload(
-        &command,
-        &run_dir,
-        (!cgroup_fallback).then_some(&cgroup_path),
-    )?;
-    if !cgroup_fallback {
-        assign_pid_to_cgroup(&cgroup_path, child.id()).with_context(|| {
-            format!(
-                "assign pid {} to cgroup {}",
-                child.id(),
-                cgroup_path.display()
-            )
-        })?;
+    match args.mode {
+        InvocationMode::Burst => run_burst_mode(&args, &run_dir, &run_id, &cgroup_path, cgroup_fallback, &command, &meta, stop.clone())?,
+        InvocationMode::Continuous => run_continuous_mode(&args, &run_dir, &run_id, &cgroup_path, cgroup_fallback, &command, &meta, stop.clone())?,
+        InvocationMode::Throughput => run_throughput_mode(&args, &run_dir, &run_id, &cgroup_path, cgroup_fallback, &command, &meta, stop.clone())?,
     }
 
-    let mut perf_child = if args.skip_perf {
-        write_perf_skipped(&run_dir.join("perf_stat.csv"), "disabled by --skip-perf")?;
-        None
-    } else {
-        spawn_perf(
-            child.id(),
-            (!cgroup_fallback).then_some(&cgroup_path),
-            &run_dir.join("perf_stat.csv"),
-            args.duration_ms,
-        )
-        .ok()
-    };
-
-    let status = child.wait().context("wait for workload")?;
-    let end_ns = now_ns();
-    let elapsed_ms = start_instant.elapsed().as_millis() as u64;
     stop.store(true, Ordering::SeqCst);
     sampler
         .join()
         .map_err(|_| anyhow!("sampler thread panicked"))??;
 
-    if let Some(perf) = perf_child.as_mut() {
-        let _ = perf.wait();
-        if fs::metadata(run_dir.join("perf_stat.csv"))
-            .map(|m| m.len())
-            .unwrap_or(0)
-            == 0
-        {
-            write_perf_skipped(
-                &run_dir.join("perf_stat.csv"),
-                "perf exited without writing counters",
-            )?;
+    write_summary(&run_dir)?;
+    if !cgroup_fallback {
+        let _ = fs::remove_dir(&cgroup_path);
+    }
+    verify_run(&run_dir)?;
+    println!("{}", run_dir.display());
+    Ok(())
+}
+
+#[allow(dead_code)]
+struct InvocationRecord {
+    activation_id: String,
+    send_ns: u128,
+    end_ns: u128,
+    host_pid: u32,
+    status: ExitStatus,
+    elapsed_ms: u64,
+}
+
+fn spawn_single_invocation(
+    command: &[String],
+    run_dir: &Path,
+    cgroup_path: &Path,
+    cgroup_fallback: bool,
+    run_id: &str,
+    activation_id: &str,
+    meta: &RunMeta,
+    md_cfg: Option<MetadataConfig>,
+) -> Result<InvocationRecord> {
+    let send_ns = now_ns();
+    let start_instant = Instant::now();
+    append_event(
+        run_dir,
+        &json!({
+            "event": "invocation_started",
+            "run_id": run_id,
+            "activation_id": activation_id,
+            "timestamp_ns": send_ns,
+            "workload": meta.workload,
+            "input": meta.input,
+            "warmth": meta.warmth,
+            "container_id": Value::Null,
+            "host_pid": Value::Null,
+            "cgroup_path": meta.cgroup_path,
+            "cold_warm": meta.warmth,
+            "queue_wait_ns": 0,
+            "init_ns": 0,
+        }),
+    )?;
+
+    let mut child = spawn_workload(command, run_dir, (!cgroup_fallback).then_some(cgroup_path))?;
+    let host_pid = child.id();
+    if !cgroup_fallback {
+        assign_pid_to_cgroup(cgroup_path, host_pid).with_context(|| {
+            format!(
+                "assign pid {} to cgroup {}",
+                host_pid,
+                cgroup_path.display()
+            )
+        })?;
+    }
+
+    if let Some(cfg) = md_cfg {
+        let deadline_ns = monotonic_now_ns()
+            .saturating_add((cfg.deadline_factor * cfg.duration_ms as f64 * 1_000_000.0) as u64);
+        let estimated_duration_ns = cfg.duration_ms.saturating_mul(1_000_000);
+        let is_cold_start = if meta.warmth == "cold" { 1u32 } else { 0u32 };
+        let invocation_id = hash_activation_id(activation_id);
+        if let Err(err) = send_metadata_write(
+            cfg.port,
+            host_pid,
+            deadline_ns,
+            estimated_duration_ns,
+            cfg.slo_class,
+            is_cold_start,
+            invocation_id,
+        ) {
+            eprintln!("metadata write failed (port={}): {err}", cfg.port);
+        }
+    }
+
+    let status = child.wait().context("wait for workload")?;
+    let end_ns = now_ns();
+    let elapsed_ms = start_instant.elapsed().as_millis() as u64;
+
+    if let Some(cfg) = md_cfg {
+        if let Err(err) = send_metadata_delete(cfg.port, host_pid) {
+            eprintln!("metadata delete failed (port={}): {err}", cfg.port);
         }
     }
 
     append_event(
-        &run_dir,
+        run_dir,
         &json!({
             "event": "invocation_finished",
             "run_id": run_id,
@@ -686,7 +800,7 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
             "duration_ns": end_ns.saturating_sub(send_ns),
             "status": exit_status_string(status),
             "container_id": "standalone",
-            "host_pid": child.id(),
+            "host_pid": host_pid,
             "cgroup_path": meta.cgroup_path,
             "reuse_age_ns": 0,
         }),
@@ -695,8 +809,8 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
     write_client_latency(
         &run_dir.join("client_latency.csv"),
         &ClientLatency {
-            run_id: run_id.clone(),
-            activation_id,
+            run_id: run_id.to_string(),
+            activation_id: activation_id.to_string(),
             send_ns,
             first_byte_ns: None,
             response_end_ns: end_ns,
@@ -710,12 +824,412 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
         },
     )?;
 
-    write_summary(&run_dir)?;
-    if !cgroup_fallback {
-        let _ = fs::remove_dir(&cgroup_path);
+    Ok(InvocationRecord {
+        activation_id: activation_id.to_string(),
+        send_ns,
+        end_ns,
+        host_pid,
+        status,
+        elapsed_ms,
+    })
+}
+
+fn run_burst_mode(
+    args: &StandaloneArgs,
+    run_dir: &Path,
+    run_id: &str,
+    cgroup_path: &Path,
+    cgroup_fallback: bool,
+    command: &[String],
+    meta: &RunMeta,
+    stop: Arc<AtomicBool>,
+) -> Result<()> {
+    let concurrency = args.concurrency.max(1);
+    let repetitions = args.repetitions.max(1);
+    let mut collected = 0u32;
+    let md_cfg = if args.metadata_port > 0 {
+        Some(MetadataConfig {
+            port: args.metadata_port,
+            deadline_factor: args.deadline_factor,
+            slo_class: args.slo_class,
+            duration_ms: args.duration_ms,
+        })
+    } else {
+        None
+    };
+
+    while collected < repetitions {
+        let batch_size = concurrency.min(repetitions - collected);
+        let mut handles: Vec<thread::JoinHandle<Result<InvocationRecord>>> = Vec::new();
+
+        for i in 0..batch_size {
+            let activation_id = format!("{run_id}-activation-{}", collected + i);
+            let command = command.to_vec();
+            let run_dir = run_dir.to_path_buf();
+            let cgroup_path = cgroup_path.to_path_buf();
+            let run_id = run_id.to_string();
+            let meta = RunMeta {
+                run_id: meta.run_id.clone(),
+                workload: meta.workload.clone(),
+                input: meta.input.clone(),
+                warmth: meta.warmth.clone(),
+                sample_ms: meta.sample_ms,
+                cgroup_path: meta.cgroup_path.clone(),
+                cgroup_fallback,
+                command: meta.command.clone(),
+                env: meta.env.clone(),
+                config_hash: meta.config_hash.clone(),
+                metadata_port: meta.metadata_port,
+                slo_class: meta.slo_class,
+            };
+
+            handles.push(thread::spawn(move || {
+                spawn_single_invocation(
+                    &command,
+                    &run_dir,
+                    &cgroup_path,
+                    cgroup_fallback,
+                    &run_id,
+                    &activation_id,
+                    &meta,
+                    md_cfg,
+                )
+            }));
+        }
+
+        for handle in handles {
+            let record = handle
+                .join()
+                .map_err(|_| anyhow!("invocation thread panicked"))??;
+            if record.status.success() {
+                collected += 1;
+            }
+        }
     }
-    verify_run(&run_dir)?;
-    println!("{}", run_dir.display());
+
+    let _ = stop;
+    Ok(())
+}
+
+fn run_continuous_mode(
+    args: &StandaloneArgs,
+    run_dir: &Path,
+    run_id: &str,
+    cgroup_path: &Path,
+    cgroup_fallback: bool,
+    command: &[String],
+    meta: &RunMeta,
+    stop: Arc<AtomicBool>,
+) -> Result<()> {
+    let rate = args.rate.max(0.1);
+    let duration = Duration::from_secs(args.duration_s.max(1));
+    let max_concurrency = args.concurrency.max(1);
+    let deadline = Instant::now() + duration;
+    let interval = Duration::from_secs_f64(1.0 / rate);
+    let mut next_arrival = Instant::now();
+    let mut invocation_count: u32 = 0;
+    let md_cfg = if args.metadata_port > 0 {
+        Some(MetadataConfig {
+            port: args.metadata_port,
+            deadline_factor: args.deadline_factor,
+            slo_class: args.slo_class,
+            duration_ms: args.duration_ms,
+        })
+    } else {
+        None
+    };
+
+    let mut children: Vec<(u32, String, u128, Instant, Child, u32)> = Vec::new();
+
+    while Instant::now() < deadline || !children.is_empty() {
+        let now = Instant::now();
+
+        // Reap completed children
+        let mut still_running = Vec::new();
+        for (idx, activation_id, send_ns, start, mut child, host_pid) in children {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let end_ns = now_ns();
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+                    if let Some(cfg) = md_cfg {
+                        if let Err(err) = send_metadata_delete(cfg.port, host_pid) {
+                            eprintln!("metadata delete failed (port={}): {err}", cfg.port);
+                        }
+                    }
+
+                    append_event(
+                        run_dir,
+                        &json!({
+                            "event": "invocation_finished",
+                            "run_id": run_id,
+                            "activation_id": activation_id,
+                            "timestamp_ns": end_ns,
+                            "duration_ns": end_ns.saturating_sub(send_ns),
+                            "status": exit_status_string(status),
+                            "container_id": "standalone",
+                            "host_pid": host_pid,
+                            "cgroup_path": meta.cgroup_path,
+                            "reuse_age_ns": 0,
+                        }),
+                    ).ok();
+
+                    write_client_latency(
+                        &run_dir.join("client_latency.csv"),
+                        &ClientLatency {
+                            run_id: run_id.to_string(),
+                            activation_id: activation_id.clone(),
+                            send_ns,
+                            first_byte_ns: None,
+                            response_end_ns: end_ns,
+                            status: exit_status_string(status),
+                            timing_source: "process_wait".to_string(),
+                            error: if status.success() {
+                                String::new()
+                            } else {
+                                format!("workload exited after {elapsed_ms}ms")
+                            },
+                        },
+                    ).ok();
+                }
+                Ok(None) | Err(_) => {
+                    still_running.push((idx, activation_id, send_ns, start, child, host_pid));
+                }
+            }
+        }
+        children = still_running;
+
+        // Spawn new invocations on schedule
+        while now >= next_arrival && children.len() < max_concurrency as usize && Instant::now() < deadline {
+            let activation_id = format!("{run_id}-activation-{invocation_count}");
+            let send_ns = now_ns();
+            append_event(
+                run_dir,
+                &json!({
+                    "event": "invocation_started",
+                    "run_id": run_id,
+                    "activation_id": activation_id,
+                    "timestamp_ns": send_ns,
+                    "workload": meta.workload,
+                    "input": args.input,
+                    "warmth": args.warmth,
+                    "container_id": Value::Null,
+                    "host_pid": Value::Null,
+                    "cgroup_path": meta.cgroup_path,
+                    "cold_warm": args.warmth,
+                    "queue_wait_ns": 0,
+                    "init_ns": 0,
+                }),
+            )?;
+
+            match spawn_workload(command, run_dir, (!cgroup_fallback).then_some(cgroup_path)) {
+                Ok(child) => {
+                    let host_pid = child.id();
+                    if !cgroup_fallback {
+                        let _ = assign_pid_to_cgroup(cgroup_path, host_pid);
+                    }
+                    if let Some(cfg) = md_cfg {
+                        let deadline_ns = monotonic_now_ns()
+                            .saturating_add((cfg.deadline_factor * cfg.duration_ms as f64 * 1_000_000.0) as u64);
+                        let estimated_duration_ns = cfg.duration_ms.saturating_mul(1_000_000);
+                        let is_cold_start = if args.warmth == "cold" { 1u32 } else { 0u32 };
+                        let invocation_id = hash_activation_id(&activation_id);
+                        if let Err(err) = send_metadata_write(
+                            cfg.port,
+                            host_pid,
+                            deadline_ns,
+                            estimated_duration_ns,
+                            cfg.slo_class,
+                            is_cold_start,
+                            invocation_id,
+                        ) {
+                            eprintln!("metadata write failed (port={}): {err}", cfg.port);
+                        }
+                    }
+                    children.push((invocation_count, activation_id, send_ns, Instant::now(), child, host_pid));
+                    invocation_count += 1;
+                }
+                Err(err) => {
+                    eprintln!("spawn failed: {err}");
+                }
+            }
+
+            next_arrival += interval;
+            if next_arrival <= Instant::now() {
+                next_arrival = Instant::now() + interval;
+            }
+        }
+
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    let _ = stop;
+    Ok(())
+}
+
+fn run_throughput_mode(
+    args: &StandaloneArgs,
+    run_dir: &Path,
+    run_id: &str,
+    cgroup_path: &Path,
+    cgroup_fallback: bool,
+    command: &[String],
+    meta: &RunMeta,
+    stop: Arc<AtomicBool>,
+) -> Result<()> {
+    let duration = Duration::from_secs(args.duration_s.max(1));
+    let deadline = Instant::now() + duration;
+    let max_concurrency = args.concurrency.max(1);
+    let mut invocation_count: u32 = 0;
+    let md_cfg = if args.metadata_port > 0 {
+        Some(MetadataConfig {
+            port: args.metadata_port,
+            deadline_factor: args.deadline_factor,
+            slo_class: args.slo_class,
+            duration_ms: args.duration_ms,
+        })
+    } else {
+        None
+    };
+
+    let mut children: Vec<(u32, String, u128, Instant, Child, u32)> = Vec::new();
+    let completed = Arc::new(std::sync::Mutex::new(Vec::<InvocationRecord>::new()));
+
+    while Instant::now() < deadline || !children.is_empty() {
+        // Reap completed children
+        let mut still_running = Vec::new();
+        for (idx, activation_id, send_ns, start, mut child, host_pid) in children {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let end_ns = now_ns();
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+                    if let Some(cfg) = md_cfg {
+                        if let Err(err) = send_metadata_delete(cfg.port, host_pid) {
+                            eprintln!("metadata delete failed (port={}): {err}", cfg.port);
+                        }
+                    }
+
+                    append_event(
+                        run_dir,
+                        &json!({
+                            "event": "invocation_finished",
+                            "run_id": run_id,
+                            "activation_id": activation_id,
+                            "timestamp_ns": end_ns,
+                            "duration_ns": end_ns.saturating_sub(send_ns),
+                            "status": exit_status_string(status),
+                            "container_id": "standalone",
+                            "host_pid": host_pid,
+                            "cgroup_path": meta.cgroup_path,
+                            "reuse_age_ns": 0,
+                        }),
+                    ).ok();
+
+                    write_client_latency(
+                        &run_dir.join("client_latency.csv"),
+                        &ClientLatency {
+                            run_id: run_id.to_string(),
+                            activation_id: activation_id.clone(),
+                            send_ns,
+                            first_byte_ns: None,
+                            response_end_ns: end_ns,
+                            status: exit_status_string(status),
+                            timing_source: "process_wait".to_string(),
+                            error: if status.success() {
+                                String::new()
+                            } else {
+                                format!("workload exited after {elapsed_ms}ms")
+                            },
+                        },
+                    ).ok();
+
+                    let mut completed_list = completed.lock().unwrap();
+                    completed_list.push(InvocationRecord {
+                        activation_id,
+                        send_ns,
+                        end_ns,
+                        host_pid,
+                        status,
+                        elapsed_ms,
+                    });
+                }
+                Ok(None) | Err(_) => {
+                    still_running.push((idx, activation_id, send_ns, start, child, host_pid));
+                }
+            }
+        }
+        children = still_running;
+
+        // Spawn new invocations
+        while children.len() < max_concurrency as usize && Instant::now() < deadline {
+            let activation_id = format!("{run_id}-activation-{invocation_count}");
+            let send_ns = now_ns();
+            append_event(
+                run_dir,
+                &json!({
+                    "event": "invocation_started",
+                    "run_id": run_id,
+                    "activation_id": activation_id,
+                    "timestamp_ns": send_ns,
+                    "workload": meta.workload,
+                    "input": args.input,
+                    "warmth": args.warmth,
+                    "container_id": Value::Null,
+                    "host_pid": Value::Null,
+                    "cgroup_path": meta.cgroup_path,
+                    "cold_warm": args.warmth,
+                    "queue_wait_ns": 0,
+                    "init_ns": 0,
+                }),
+            )?;
+
+            match spawn_workload(command, run_dir, (!cgroup_fallback).then_some(cgroup_path)) {
+                Ok(child) => {
+                    let host_pid = child.id();
+                    if !cgroup_fallback {
+                        let _ = assign_pid_to_cgroup(cgroup_path, host_pid);
+                    }
+                    if let Some(cfg) = md_cfg {
+                        let deadline_ns = monotonic_now_ns()
+                            .saturating_add((cfg.deadline_factor * cfg.duration_ms as f64 * 1_000_000.0) as u64);
+                        let estimated_duration_ns = cfg.duration_ms.saturating_mul(1_000_000);
+                        let is_cold_start = if args.warmth == "cold" { 1u32 } else { 0u32 };
+                        let invocation_id = hash_activation_id(&activation_id);
+                        if let Err(err) = send_metadata_write(
+                            cfg.port,
+                            host_pid,
+                            deadline_ns,
+                            estimated_duration_ns,
+                            cfg.slo_class,
+                            is_cold_start,
+                            invocation_id,
+                        ) {
+                            eprintln!("metadata write failed (port={}): {err}", cfg.port);
+                        }
+                    }
+                    children.push((invocation_count, activation_id, send_ns, Instant::now(), child, host_pid));
+                    invocation_count += 1;
+                }
+                Err(err) => {
+                    eprintln!("spawn failed: {err}");
+                }
+            }
+        }
+
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    let completed_list = completed.lock().unwrap();
+    let successes = completed_list.iter().filter(|r| r.status.success()).count();
+    eprintln!(
+        "throughput: {} invocations in {}s, {} succeeded",
+        completed_list.len(),
+        args.duration_s,
+        successes
+    );
+
+    let _ = stop;
     Ok(())
 }
 
@@ -753,10 +1267,46 @@ fn openwhisk(args: OpenWhiskArgs) -> Result<()> {
             "input": args.input,
             "warmth": args.warmth,
             "activation_fetch_timeout_ms": args.activation_fetch_timeout_ms,
+            "metadata_port": args.metadata_port,
+            "slo_class": args.slo_class,
+            "deadline_ms": args.deadline_ms,
+            "estimated_duration_ms": args.estimated_duration_ms,
         })),
+        metadata_port: args.metadata_port,
+        slo_class: args.slo_class,
     };
     write_json(&run_dir.join("run_meta.json"), &meta)?;
     write_placeholder_activation(&run_dir.join("openwhisk_activation.json"), &run_id)?;
+
+    let _bridge = if args.metadata_port > 0 {
+        let bridge_port: u16 = BRIDGE_PORT;
+        let bridge = Command::new("cosmos-event-bridge")
+            .arg("--port")
+            .arg(bridge_port.to_string())
+            .arg("--metadata-port")
+            .arg(args.metadata_port.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("start cosmos-event-bridge")?;
+        thread::sleep(Duration::from_millis(500));
+        let addr = format!("127.0.0.1:{bridge_port}");
+        for attempt in 0..10 {
+            if let Ok(stream) = TcpStream::connect(&addr) {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                break;
+            }
+            if attempt == 9 {
+                let pid = bridge.id();
+                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                bail!("event bridge did not start listening on {addr} after 10 attempts");
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        Some(BridgeGuard(Some(bridge)))
+    } else {
+        None
+    };
 
     if !args.skip_update {
         let file = args.file.as_ref().expect("checked above");
@@ -795,6 +1345,12 @@ fn openwhisk(args: OpenWhiskArgs) -> Result<()> {
     let end_ns = invoke_result.response_end_ns;
     let activation_id =
         parse_activation_id(&invoke_result.stdout).unwrap_or_else(|| format!("{run_id}-unknown"));
+
+    if let Some(tgid) = invoke_result.local_start_tgid {
+        if let Err(err) = send_bridge_local_end(&activation_id, tgid) {
+            eprintln!("bridge local_end failed: {err}");
+        }
+    }
     let activation = fetch_activation(&args, &activation_id).unwrap_or_else(|err| {
         json!({
             "mode": "openwhisk",
@@ -1194,6 +1750,12 @@ fn run_invoke_with_sampling(
     let mut last_sample = Instant::now()
         .checked_sub(Duration::from_millis(args.sample_ms))
         .unwrap_or_else(Instant::now);
+    let mut local_start_tgid: Option<u32> = None;
+    let cold_start = args.warmth == "cold";
+    let bridge_active = args.metadata_port > 0;
+    let slo_class = args.slo_class;
+    let deadline_ms = if args.deadline_ms > 0 { args.deadline_ms } else { 1000 };
+    let estimated_duration_ms = if args.estimated_duration_ms > 0 { args.estimated_duration_ms } else { deadline_ms };
     let status = match (|| -> Result<ExitStatus> {
         let status = loop {
             if discovered.is_none() {
@@ -1212,6 +1774,23 @@ fn run_invoke_with_sampling(
                         10_000,
                     )
                     .ok();
+                    if bridge_active && local_start_tgid.is_none() {
+                        let activation_id = format!("ow-{}-{}", args.action, info.host_pid);
+                        if let Err(err) = send_bridge_local_start(
+                            &activation_id,
+                            info.host_pid,
+                            deadline_ms,
+                            estimated_duration_ms,
+                            slo_class,
+                            cold_start,
+                            &args.action,
+                            &args.kind,
+                        ) {
+                            eprintln!("bridge local_start failed: {err}");
+                        } else {
+                            local_start_tgid = Some(info.host_pid);
+                        }
+                    }
                     discovered = Some(info);
                 }
             }
@@ -1255,6 +1834,23 @@ fn run_invoke_with_sampling(
                 info.net.as_ref(),
                 &mut scheduler,
             )?;
+            if bridge_active && local_start_tgid.is_none() {
+                let activation_id = format!("ow-{}-{}", args.action, info.host_pid);
+                if let Err(err) = send_bridge_local_start(
+                    &activation_id,
+                    info.host_pid,
+                    deadline_ms,
+                    estimated_duration_ms,
+                    slo_class,
+                    cold_start,
+                    &args.action,
+                    &args.kind,
+                ) {
+                    eprintln!("bridge local_start failed: {err}");
+                } else {
+                    local_start_tgid = Some(info.host_pid);
+                }
+            }
             discovered = Some(info);
             break;
         }
@@ -1317,6 +1913,7 @@ fn run_invoke_with_sampling(
         response_end_ns,
         timing_source,
         container: discovered,
+        local_start_tgid,
     })
 }
 
@@ -3474,6 +4071,122 @@ fn first_governor() -> String {
         .to_string()
 }
 
+fn monotonic_now_ns() -> u64 {
+    unsafe {
+        let mut ts: libc::timespec = std::mem::zeroed();
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+        (ts.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(ts.tv_nsec as u64)
+    }
+}
+
+fn hash_activation_id(s: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
+fn send_metadata_write(port: u16, tgid: u32, deadline_ns: u64, estimated_duration_ns: u64, slo_class: u32, is_cold_start: u32, invocation_id: u64) -> Result<()> {
+    let addr = format!("127.0.0.1:{port}");
+    let mut stream = TcpStream::connect(&addr)
+        .with_context(|| format!("metadata write: connect to {addr}"))?;
+    let json = serde_json::json!({
+        "tgid": tgid,
+        "deadline_ns": deadline_ns,
+        "estimated_duration_ns": estimated_duration_ns,
+        "slo_class": slo_class,
+        "is_cold_start": is_cold_start,
+        "invocation_id": invocation_id,
+    });
+    stream.write_all(json.to_string().as_bytes()).context("metadata write: send")?;
+    stream.write_all(b"\n").context("metadata write: newline")?;
+    let mut response = String::new();
+    BufReader::new(&stream).read_line(&mut response).context("metadata write: response")?;
+    if response.trim() != "ok" {
+        eprintln!("metadata write: unexpected response: {response}");
+    }
+    Ok(())
+}
+
+fn send_metadata_delete(port: u16, tgid: u32) -> Result<()> {
+    let addr = format!("127.0.0.1:{port}");
+    let mut stream = TcpStream::connect(&addr)
+        .with_context(|| format!("metadata delete: connect to {addr}"))?;
+    let json = serde_json::json!({"tgid": tgid});
+    stream.write_all(json.to_string().as_bytes()).context("metadata delete: send")?;
+    stream.write_all(b"\n").context("metadata delete: newline")?;
+    let mut response = String::new();
+    BufReader::new(&stream).read_line(&mut response).context("metadata delete: response")?;
+    if response.trim() != "ok" {
+        eprintln!("metadata delete: unexpected response: {response}");
+    }
+    Ok(())
+}
+
+const BRIDGE_PORT: u16 = 9731;
+
+fn send_bridge_local_start(
+    activation_id: &str,
+    tgid: u32,
+    deadline_ms: u64,
+    estimated_duration_ms: u64,
+    slo_class: u32,
+    cold_start: bool,
+    action_name: &str,
+    kind: &str,
+) -> Result<()> {
+    let addr = format!("127.0.0.1:{BRIDGE_PORT}");
+    let mut stream =
+        TcpStream::connect(&addr).with_context(|| format!("bridge local_start: connect to {addr}"))?;
+    let mut event = serde_json::json!({
+        "type": "local_start",
+        "activation_id": activation_id,
+        "tgid": tgid,
+        "timeout_ms": deadline_ms,
+        "slo_class": slo_class,
+        "action_name": action_name,
+        "kind": kind,
+        "cold_start": cold_start,
+    });
+    if estimated_duration_ms > 0 {
+        event["estimated_duration_ms"] = json!(estimated_duration_ms);
+    }
+    stream
+        .write_all(event.to_string().as_bytes())
+        .context("bridge local_start: send")?;
+    stream.write_all(b"\n").context("bridge local_start: newline")?;
+    let mut response = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut response)
+        .context("bridge local_start: response")?;
+    if response.trim() != "ok" {
+        eprintln!("bridge local_start: unexpected response: {response}");
+    }
+    Ok(())
+}
+
+fn send_bridge_local_end(activation_id: &str, tgid: u32) -> Result<()> {
+    let addr = format!("127.0.0.1:{BRIDGE_PORT}");
+    let mut stream =
+        TcpStream::connect(&addr).with_context(|| format!("bridge local_end: connect to {addr}"))?;
+    let event = serde_json::json!({
+        "type": "local_end",
+        "activation_id": activation_id,
+        "tgid": tgid,
+    });
+    stream
+        .write_all(event.to_string().as_bytes())
+        .context("bridge local_end: send")?;
+    stream.write_all(b"\n").context("bridge local_end: newline")?;
+    let mut response = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut response)
+        .context("bridge local_end: response")?;
+    if response.trim() != "ok" {
+        eprintln!("bridge local_end: unexpected response: {response}");
+    }
+    Ok(())
+}
+
 fn stable_hash(value: &Value) -> String {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in serde_json::to_string(value).unwrap_or_default().bytes() {
@@ -3574,6 +4287,8 @@ mod tests {
                 command: vec!["true".to_string()],
                 env: BTreeMap::new(),
                 config_hash: "h".to_string(),
+                metadata_port: 0,
+                slo_class: 0,
             },
         )
         .unwrap();
@@ -3626,6 +4341,8 @@ mod tests {
                 command: vec!["true".to_string()],
                 env: BTreeMap::new(),
                 config_hash: "h".to_string(),
+                metadata_port: 0,
+                slo_class: 0,
             },
         )
         .unwrap();
