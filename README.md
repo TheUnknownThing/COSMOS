@@ -71,6 +71,16 @@ comparison mode. This port preserves the SFS control idea inside `sched_ext`
 (adaptive short-job credit, wakeup credit carryover, one-way demotion) but does
 not literally flip Linux tasks between `FIFO` and `CFS` with `schedtool`.
 
+## Runtime Actuators
+
+The co-scheduling actuator loop is enabled in the scheduler and reads desired
+resource allocations from the invocation registry.
+
+| Environment variable | Default | Description |
+|----------------------|---------|-------------|
+| `COSMOS_CGROUP_POLICY_ROOT` | `/sys/fs/cgroup/cosmos-policy` | Safety boundary for cgroup writes. The cgroup actuator only writes controls for invocation cgroups under this root. |
+| `COSMOS_NET_TC_IFACE` | unset | Network interface for the Aya tc actuator. When set, COSMOS loads and attaches the embedded `cosmos_net_tc` classifier on egress and updates its `flow_policies` map from registry allocations. |
+
 ## Benchmarks
 
 Seven synthetic workloads via `cosmos-benchmark-workload`:
