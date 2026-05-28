@@ -2,7 +2,7 @@
 // GNU General Public License version 2.
 
 use crate::adapter::CpuAdapter;
-use crate::coordinator::PhaseCoordinator;
+use crate::coordinator::CoordinationEngine;
 use crate::metadata::delete_invocation_hint;
 use crate::policy::SchedulingPolicy;
 use crate::registry::InvocationMeta;
@@ -22,7 +22,7 @@ pub struct Scheduler<P: SchedulingPolicy, A: CpuAdapter> {
     stats_server: StatsServer<(), Metrics>,
     prune_counter: u64,
     init_page_faults: u64,
-    phase_coordinator: PhaseCoordinator,
+    coordinator: CoordinationEngine,
 }
 
 impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
@@ -39,39 +39,27 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             stats_server,
             prune_counter: 0,
             init_page_faults: 0,
-            phase_coordinator: PhaseCoordinator::new(Duration::from_millis(100)),
+            coordinator: CoordinationEngine::new(Duration::from_millis(100)),
         }
     }
     pub fn run(&mut self) -> Result<UserExitInfo> {
         let (res_ch, req_ch) = self.stats_server.channels();
         while !self.adapter.exited() {
             let now = crate::monotonic_now_ns();
-            if self.phase_coordinator.should_sample(now) {
-                let states = {
-                    let reg = self.registry.read().unwrap();
-                    reg.active_state_snapshot()
-                };
-                let updates = self.phase_coordinator.sample(&states, now);
-                if !updates.is_empty() {
-                    let mut reg = self.registry.write().unwrap();
-                    for update in updates {
-                        reg.update_phase_ctx(update.tgid, update.invocation_id, update.phase_ctx);
-                        if let (Some(path), Some(cgroup_id)) =
-                            (update.cgroup_path, update.cgroup_id)
-                        {
-                            reg.update_cgroup(update.tgid, update.invocation_id, path, cgroup_id);
-                        }
-                    }
+            if self.coordinator.should_tick(now) {
+                if let Ok(mut reg) = self.registry.try_write() {
+                    self.coordinator.tick(&mut reg, now);
                 }
             }
             let raw = self.adapter.drain();
             let decisions = {
-                let reg = self.registry.read().unwrap();
-                let resolved: Vec<Option<InvocationMeta>> = raw
-                    .iter()
-                    .map(|task| reg.lookup_tgid_meta(task.tgid).cloned())
-                    .collect();
-                drop(reg);
+                let resolved: Vec<Option<InvocationMeta>> = match self.registry.try_read() {
+                    Ok(reg) => raw
+                        .iter()
+                        .map(|task| reg.lookup_tgid_meta(task.tgid).cloned())
+                        .collect(),
+                    Err(_) => vec![None; raw.len()],
+                };
                 self.policy
                     .schedule(&resolved, &raw, self.adapter.topology(), now)
             };
@@ -86,18 +74,18 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
                 );
             }
             {
-                let reg = self.registry.read().unwrap();
-                self.policy.tick(&reg, now);
+                if let Ok(reg) = self.registry.try_read() {
+                    self.policy.tick(&reg, now);
+                }
             }
             self.prune_counter += 1;
             if self.prune_counter % 1000 == 0 {
-                let pruned = {
-                    let mut reg = self.registry.write().unwrap();
-                    reg.prune(now, 60_000_000_000)
-                };
-                for tgid in pruned {
-                    delete_invocation_hint(tgid);
-                    self.phase_coordinator.remove_tgid(tgid);
+                if let Ok(mut reg) = self.registry.try_write() {
+                    let pruned = reg.prune(now, 60_000_000_000);
+                    for tgid in pruned {
+                        delete_invocation_hint(tgid);
+                        self.coordinator.remove_tgid(tgid);
+                    }
                 }
             }
             let pending = raw.len() as u64;

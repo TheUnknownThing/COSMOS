@@ -29,6 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--duration-ms", type=int)
     parser.add_argument("--deadline-us", type=int)
+    parser.add_argument(
+        "--slo-class",
+        type=int,
+        choices=[0, 1, 2],
+        help="Override synthetic metadata SLO class for COSMOS configs",
+    )
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--scheduler-bin", type=Path)
     parser.add_argument("--stats-socket", type=Path)
@@ -70,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
         command.extend(["--stats-socket", str(args.stats_socket)])
     if args.event_bridge_port is not None:
         command.extend(["--event-bridge-port", str(args.event_bridge_port)])
+    if args.slo_class is not None and args.config != "cfs-default":
+        command.extend(["--slo-class", str(args.slo_class)])
     for flag in args.scheduler_flag:
         command.extend(["--scheduler-flag", flag])
 

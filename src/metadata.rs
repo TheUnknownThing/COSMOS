@@ -271,7 +271,7 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle) {
             Ok(MetadataCommand::Delete(cmd)) => {
                 {
                     let mut reg = registry.write().unwrap();
-                    reg.remove_by_tgid(cmd.tgid);
+                    reg.mark_completed_by_tgid(cmd.tgid, crate::monotonic_now_ns());
                 }
 
                 if let Some(&fd) = HAS_INVOCATION_FD.get() {

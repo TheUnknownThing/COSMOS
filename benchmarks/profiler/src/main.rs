@@ -1,8 +1,8 @@
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
 
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -631,7 +631,10 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
     if args.workload == WorkloadKind::Command && args.command.is_empty() {
         bail!("--workload command requires a trailing command after --");
     }
-    if args.mode != InvocationMode::Burst && args.mode != InvocationMode::Continuous && args.mode != InvocationMode::Throughput {
+    if args.mode != InvocationMode::Burst
+        && args.mode != InvocationMode::Continuous
+        && args.mode != InvocationMode::Throughput
+    {
         bail!("--mode must be burst, continuous, or throughput");
     }
 
@@ -689,9 +692,36 @@ fn standalone(args: StandaloneArgs) -> Result<()> {
     );
 
     match args.mode {
-        InvocationMode::Burst => run_burst_mode(&args, &run_dir, &run_id, &cgroup_path, cgroup_fallback, &command, &meta, stop.clone())?,
-        InvocationMode::Continuous => run_continuous_mode(&args, &run_dir, &run_id, &cgroup_path, cgroup_fallback, &command, &meta, stop.clone())?,
-        InvocationMode::Throughput => run_throughput_mode(&args, &run_dir, &run_id, &cgroup_path, cgroup_fallback, &command, &meta, stop.clone())?,
+        InvocationMode::Burst => run_burst_mode(
+            &args,
+            &run_dir,
+            &run_id,
+            &cgroup_path,
+            cgroup_fallback,
+            &command,
+            &meta,
+            stop.clone(),
+        )?,
+        InvocationMode::Continuous => run_continuous_mode(
+            &args,
+            &run_dir,
+            &run_id,
+            &cgroup_path,
+            cgroup_fallback,
+            &command,
+            &meta,
+            stop.clone(),
+        )?,
+        InvocationMode::Throughput => run_throughput_mode(
+            &args,
+            &run_dir,
+            &run_id,
+            &cgroup_path,
+            cgroup_fallback,
+            &command,
+            &meta,
+            stop.clone(),
+        )?,
     }
 
     stop.store(true, Ordering::SeqCst);
@@ -972,7 +1002,8 @@ fn run_continuous_mode(
                             "cgroup_path": meta.cgroup_path,
                             "reuse_age_ns": 0,
                         }),
-                    ).ok();
+                    )
+                    .ok();
 
                     write_client_latency(
                         &run_dir.join("client_latency.csv"),
@@ -990,7 +1021,8 @@ fn run_continuous_mode(
                                 format!("workload exited after {elapsed_ms}ms")
                             },
                         },
-                    ).ok();
+                    )
+                    .ok();
                 }
                 Ok(None) | Err(_) => {
                     still_running.push((idx, activation_id, send_ns, start, child, host_pid));
@@ -1000,7 +1032,10 @@ fn run_continuous_mode(
         children = still_running;
 
         // Spawn new invocations on schedule
-        while now >= next_arrival && children.len() < max_concurrency as usize && Instant::now() < deadline {
+        while now >= next_arrival
+            && children.len() < max_concurrency as usize
+            && Instant::now() < deadline
+        {
             let activation_id = format!("{run_id}-activation-{invocation_count}");
             let send_ns = now_ns();
             append_event(
@@ -1029,8 +1064,9 @@ fn run_continuous_mode(
                         let _ = assign_pid_to_cgroup(cgroup_path, host_pid);
                     }
                     if let Some(cfg) = md_cfg {
-                        let deadline_ns = monotonic_now_ns()
-                            .saturating_add((cfg.deadline_factor * cfg.duration_ms as f64 * 1_000_000.0) as u64);
+                        let deadline_ns = monotonic_now_ns().saturating_add(
+                            (cfg.deadline_factor * cfg.duration_ms as f64 * 1_000_000.0) as u64,
+                        );
                         let estimated_duration_ns = cfg.duration_ms.saturating_mul(1_000_000);
                         let is_cold_start = if args.warmth == "cold" { 1u32 } else { 0u32 };
                         let invocation_id = hash_activation_id(&activation_id);
@@ -1046,7 +1082,14 @@ fn run_continuous_mode(
                             eprintln!("metadata write failed (port={}): {err}", cfg.port);
                         }
                     }
-                    children.push((invocation_count, activation_id, send_ns, Instant::now(), child, host_pid));
+                    children.push((
+                        invocation_count,
+                        activation_id,
+                        send_ns,
+                        Instant::now(),
+                        child,
+                        host_pid,
+                    ));
                     invocation_count += 1;
                 }
                 Err(err) => {
@@ -1124,7 +1167,8 @@ fn run_throughput_mode(
                             "cgroup_path": meta.cgroup_path,
                             "reuse_age_ns": 0,
                         }),
-                    ).ok();
+                    )
+                    .ok();
 
                     write_client_latency(
                         &run_dir.join("client_latency.csv"),
@@ -1142,7 +1186,8 @@ fn run_throughput_mode(
                                 format!("workload exited after {elapsed_ms}ms")
                             },
                         },
-                    ).ok();
+                    )
+                    .ok();
 
                     let mut completed_list = completed.lock().unwrap();
                     completed_list.push(InvocationRecord {
@@ -1191,8 +1236,9 @@ fn run_throughput_mode(
                         let _ = assign_pid_to_cgroup(cgroup_path, host_pid);
                     }
                     if let Some(cfg) = md_cfg {
-                        let deadline_ns = monotonic_now_ns()
-                            .saturating_add((cfg.deadline_factor * cfg.duration_ms as f64 * 1_000_000.0) as u64);
+                        let deadline_ns = monotonic_now_ns().saturating_add(
+                            (cfg.deadline_factor * cfg.duration_ms as f64 * 1_000_000.0) as u64,
+                        );
                         let estimated_duration_ns = cfg.duration_ms.saturating_mul(1_000_000);
                         let is_cold_start = if args.warmth == "cold" { 1u32 } else { 0u32 };
                         let invocation_id = hash_activation_id(&activation_id);
@@ -1208,7 +1254,14 @@ fn run_throughput_mode(
                             eprintln!("metadata write failed (port={}): {err}", cfg.port);
                         }
                     }
-                    children.push((invocation_count, activation_id, send_ns, Instant::now(), child, host_pid));
+                    children.push((
+                        invocation_count,
+                        activation_id,
+                        send_ns,
+                        Instant::now(),
+                        child,
+                        host_pid,
+                    ));
                     invocation_count += 1;
                 }
                 Err(err) => {
@@ -1352,18 +1405,21 @@ fn openwhisk(args: OpenWhiskArgs) -> Result<()> {
         }
     }
     let activation = fetch_activation(&args, &activation_id).unwrap_or_else(|err| {
-        json!({
-            "mode": "openwhisk",
-            "error": err.to_string(),
-            "activations": []
-        })
+        fallback_openwhisk_activation(
+            &args.action,
+            &activation_id,
+            send_ns,
+            end_ns,
+            &exit_status_string(status),
+            &err.to_string(),
+        )
     });
     write_json(&run_dir.join("openwhisk_activation.json"), &activation)?;
 
     let container = invoke_result
         .container
         .clone()
-            .or_else(|| find_openwhisk_container(&args.action, &args.kind).ok());
+        .or_else(|| find_openwhisk_container(&args.action, &args.kind).ok());
     if let Some(info) = &container {
         meta.cgroup_path = info.cgroup_path.display().to_string();
         write_json(&run_dir.join("run_meta.json"), &meta)?;
@@ -1754,8 +1810,16 @@ fn run_invoke_with_sampling(
     let cold_start = args.warmth == "cold";
     let bridge_active = args.metadata_port > 0;
     let slo_class = args.slo_class;
-    let deadline_ms = if args.deadline_ms > 0 { args.deadline_ms } else { 1000 };
-    let estimated_duration_ms = if args.estimated_duration_ms > 0 { args.estimated_duration_ms } else { deadline_ms };
+    let deadline_ms = if args.deadline_ms > 0 {
+        args.deadline_ms
+    } else {
+        1000
+    };
+    let estimated_duration_ms = if args.estimated_duration_ms > 0 {
+        args.estimated_duration_ms
+    } else {
+        deadline_ms
+    };
     let status = match (|| -> Result<ExitStatus> {
         let status = loop {
             if discovered.is_none() {
@@ -2008,6 +2072,52 @@ fn fetch_activation_once(args: &OpenWhiskArgs, activation_id: &str) -> Result<Va
     let value: Value = serde_json::from_str(&stdout[json_start..])
         .with_context(|| format!("parse activation {activation_id}"))?;
     Ok(normalize_openwhisk_activations(&value))
+}
+
+fn fallback_openwhisk_activation(
+    action: &str,
+    activation_id: &str,
+    send_ns: u128,
+    end_ns: u128,
+    status: &str,
+    fetch_error: &str,
+) -> Value {
+    let duration_ms = end_ns.saturating_sub(send_ns) / 1_000_000;
+    let status_code = if status == "exit:0" { 0 } else { 1 };
+    json!({
+        "mode": "openwhisk",
+        "source": "invoke_fallback",
+        "activation_fetch_error": fetch_error,
+        "activations": [{
+            "activation_id": activation_id,
+            "action": action,
+            "namespace": Value::Null,
+            "start": send_ns / 1_000_000,
+            "end": end_ns / 1_000_000,
+            "duration": duration_ms,
+            "status": if status_code == 0 { "success" } else { "failure" },
+            "status_code": status_code,
+            "wait_time": Value::Null,
+            "init_time": Value::Null,
+            "limits": Value::Null,
+            "container_id": Value::Null,
+            "host_pid": Value::Null,
+            "cgroup_path": Value::Null,
+            "raw": {
+                "activationId": activation_id,
+                "name": action,
+                "start": send_ns / 1_000_000,
+                "end": end_ns / 1_000_000,
+                "duration": duration_ms,
+                "response": {
+                    "status": if status_code == 0 { "success" } else { "failure" },
+                    "statusCode": status_code,
+                },
+                "invoke_status": status,
+                "activation_fetch_error": fetch_error,
+            }
+        }]
+    })
 }
 
 fn parse_activation_id(stdout: &str) -> Option<String> {
@@ -4099,7 +4209,9 @@ fn monotonic_now_ns() -> u64 {
     unsafe {
         let mut ts: libc::timespec = std::mem::zeroed();
         libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
-        (ts.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(ts.tv_nsec as u64)
+        (ts.tv_sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(ts.tv_nsec as u64)
     }
 }
 
@@ -4109,10 +4221,18 @@ fn hash_activation_id(s: &str) -> u64 {
     h.finish()
 }
 
-fn send_metadata_write(port: u16, tgid: u32, deadline_ns: u64, estimated_duration_ns: u64, slo_class: u32, is_cold_start: u32, invocation_id: u64) -> Result<()> {
+fn send_metadata_write(
+    port: u16,
+    tgid: u32,
+    deadline_ns: u64,
+    estimated_duration_ns: u64,
+    slo_class: u32,
+    is_cold_start: u32,
+    invocation_id: u64,
+) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
-    let mut stream = TcpStream::connect(&addr)
-        .with_context(|| format!("metadata write: connect to {addr}"))?;
+    let mut stream =
+        TcpStream::connect(&addr).with_context(|| format!("metadata write: connect to {addr}"))?;
     let json = serde_json::json!({
         "tgid": tgid,
         "deadline_ns": deadline_ns,
@@ -4121,10 +4241,14 @@ fn send_metadata_write(port: u16, tgid: u32, deadline_ns: u64, estimated_duratio
         "is_cold_start": is_cold_start,
         "invocation_id": invocation_id,
     });
-    stream.write_all(json.to_string().as_bytes()).context("metadata write: send")?;
+    stream
+        .write_all(json.to_string().as_bytes())
+        .context("metadata write: send")?;
     stream.write_all(b"\n").context("metadata write: newline")?;
     let mut response = String::new();
-    BufReader::new(&stream).read_line(&mut response).context("metadata write: response")?;
+    BufReader::new(&stream)
+        .read_line(&mut response)
+        .context("metadata write: response")?;
     if response.trim() != "ok" {
         eprintln!("metadata write: unexpected response: {response}");
     }
@@ -4133,13 +4257,19 @@ fn send_metadata_write(port: u16, tgid: u32, deadline_ns: u64, estimated_duratio
 
 fn send_metadata_delete(port: u16, tgid: u32) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
-    let mut stream = TcpStream::connect(&addr)
-        .with_context(|| format!("metadata delete: connect to {addr}"))?;
+    let mut stream =
+        TcpStream::connect(&addr).with_context(|| format!("metadata delete: connect to {addr}"))?;
     let json = serde_json::json!({"tgid": tgid});
-    stream.write_all(json.to_string().as_bytes()).context("metadata delete: send")?;
-    stream.write_all(b"\n").context("metadata delete: newline")?;
+    stream
+        .write_all(json.to_string().as_bytes())
+        .context("metadata delete: send")?;
+    stream
+        .write_all(b"\n")
+        .context("metadata delete: newline")?;
     let mut response = String::new();
-    BufReader::new(&stream).read_line(&mut response).context("metadata delete: response")?;
+    BufReader::new(&stream)
+        .read_line(&mut response)
+        .context("metadata delete: response")?;
     if response.trim() != "ok" {
         eprintln!("metadata delete: unexpected response: {response}");
     }
@@ -4159,8 +4289,8 @@ fn send_bridge_local_start(
     kind: &str,
 ) -> Result<()> {
     let addr = format!("127.0.0.1:{BRIDGE_PORT}");
-    let mut stream =
-        TcpStream::connect(&addr).with_context(|| format!("bridge local_start: connect to {addr}"))?;
+    let mut stream = TcpStream::connect(&addr)
+        .with_context(|| format!("bridge local_start: connect to {addr}"))?;
     let mut event = serde_json::json!({
         "type": "local_start",
         "activation_id": activation_id,
@@ -4177,7 +4307,9 @@ fn send_bridge_local_start(
     stream
         .write_all(event.to_string().as_bytes())
         .context("bridge local_start: send")?;
-    stream.write_all(b"\n").context("bridge local_start: newline")?;
+    stream
+        .write_all(b"\n")
+        .context("bridge local_start: newline")?;
     let mut response = String::new();
     BufReader::new(&stream)
         .read_line(&mut response)
@@ -4190,8 +4322,8 @@ fn send_bridge_local_start(
 
 fn send_bridge_local_end(activation_id: &str, tgid: u32) -> Result<()> {
     let addr = format!("127.0.0.1:{BRIDGE_PORT}");
-    let mut stream =
-        TcpStream::connect(&addr).with_context(|| format!("bridge local_end: connect to {addr}"))?;
+    let mut stream = TcpStream::connect(&addr)
+        .with_context(|| format!("bridge local_end: connect to {addr}"))?;
     let event = serde_json::json!({
         "type": "local_end",
         "activation_id": activation_id,
@@ -4200,7 +4332,9 @@ fn send_bridge_local_end(activation_id: &str, tgid: u32) -> Result<()> {
     stream
         .write_all(event.to_string().as_bytes())
         .context("bridge local_end: send")?;
-    stream.write_all(b"\n").context("bridge local_end: newline")?;
+    stream
+        .write_all(b"\n")
+        .context("bridge local_end: newline")?;
     let mut response = String::new();
     BufReader::new(&stream)
         .read_line(&mut response)
@@ -4263,6 +4397,25 @@ mod tests {
         .unwrap();
         assert_eq!(timing.starttransfer_ns, 12_345_000);
         assert_eq!(timing.total_ns, 67_890_000);
+    }
+
+    #[test]
+    fn fallback_activation_is_valid_and_preserves_run_latency() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openwhisk_activation.json");
+        let activation = fallback_openwhisk_activation(
+            "cosmos_bench",
+            "0123456789abcdef0123456789abcdef",
+            1_000_000_000,
+            1_250_000_000,
+            "exit:0",
+            "activation get failed",
+        );
+        write_json(&path, &activation).unwrap();
+
+        assert!(openwhisk_activation_valid(&path).unwrap());
+        let latency = activation_latency(&path);
+        assert_eq!(latency.get("run_ns").copied(), Some(250_000_000));
     }
 
     #[test]

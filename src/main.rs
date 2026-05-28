@@ -373,7 +373,7 @@ fn main() -> Result<()> {
 
         let mut policy = match opts.policy {
             PolicyKind::Cosmos => {
-                let mut policy = CosmosPolicy::new(&cosmos_opts);
+                let mut policy = CosmosPolicy::new(&cosmos_opts).with_registry(registry.clone());
                 if auto_disable_small {
                     policy.pools_enabled = false;
                     policy.deadline_scoring_enabled = false;

@@ -11,6 +11,8 @@ use super::types::{
     ResourceProfile,
 };
 
+const COMPLETED_INVOCATION_RETENTION_NS: u64 = 5_000_000_000;
+
 /// Thread-safe central store of all active invocation metadata.
 /// Shared via Arc<RwLock<...>> between the event bridge (writer) and the
 /// scheduler loop (reader).
@@ -43,6 +45,7 @@ impl InvocationRegistry {
         match self.by_id.get_mut(&meta.id) {
             Some(state) => {
                 state.meta = meta;
+                state.completed_at_ns = None;
                 if profile.is_some() {
                     state.profile = profile;
                 }
@@ -68,6 +71,16 @@ impl InvocationRegistry {
     pub fn remove_by_tgid(&mut self, tgid: u32) {
         if let Some(id) = self.by_tgid.remove(&tgid) {
             self.by_id.remove(&id);
+        }
+    }
+
+    /// Mark an invocation complete but retain it briefly so already-queued
+    /// scheduler records can still resolve metadata after the BPF hint is deleted.
+    pub fn mark_completed_by_tgid(&mut self, tgid: u32, now_ns: u64) {
+        if let Some(id) = self.by_tgid.get(&tgid).copied() {
+            if let Some(state) = self.by_id.get_mut(&id) {
+                state.completed_at_ns = Some(now_ns);
+            }
         }
     }
 
@@ -157,7 +170,10 @@ impl InvocationRegistry {
         let cutoff = now_ns.saturating_sub(ttl_ns);
         let mut pruned_tgids = Vec::new();
         self.by_id.retain(|_, state| {
-            if state.meta.created_at_ns < cutoff {
+            let completed_expired = state.completed_at_ns.is_some_and(|completed_at_ns| {
+                now_ns.saturating_sub(completed_at_ns) >= COMPLETED_INVOCATION_RETENTION_NS
+            });
+            if completed_expired || state.meta.created_at_ns < cutoff {
                 pruned_tgids.push(state.meta.tgid);
                 false
             } else {
@@ -320,5 +336,28 @@ mod tests {
         assert_eq!(state.meta.deadline_ns, 9999);
         assert_eq!(state.phase_ctx.phase, PhaseKind::CpuBound);
         assert_eq!(state.profile.as_ref().unwrap().cpu_intensity, Some(0.9));
+        assert_eq!(state.completed_at_ns, None);
+    }
+
+    #[test]
+    fn completed_invocation_is_retained_then_pruned() {
+        let mut reg = InvocationRegistry::new();
+        reg.upsert(test_meta(1, 100, 5000, SloClass::LatencyCritical, false));
+
+        reg.mark_completed_by_tgid(100, 10_000);
+        assert!(reg.lookup_tgid_meta(100).is_some());
+        assert_eq!(
+            reg.lookup_tgid_state(100).unwrap().completed_at_ns,
+            Some(10_000)
+        );
+
+        reg.prune(
+            10_000 + COMPLETED_INVOCATION_RETENTION_NS - 1,
+            60_000_000_000,
+        );
+        assert!(reg.lookup_tgid_meta(100).is_some());
+
+        reg.prune(10_000 + COMPLETED_INVOCATION_RETENTION_NS, 60_000_000_000);
+        assert!(reg.lookup_tgid_meta(100).is_none());
     }
 }

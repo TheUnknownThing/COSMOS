@@ -133,6 +133,7 @@ pub struct InvocationState {
     pub allocation: ResourceAllocation,
     pub cgroup_path: Option<PathBuf>,
     pub cgroup_id: u64,
+    pub completed_at_ns: Option<u64>,
 }
 
 impl InvocationState {
@@ -144,6 +145,7 @@ impl InvocationState {
             allocation: ResourceAllocation::default(),
             cgroup_path: None,
             cgroup_id: 0,
+            completed_at_ns: None,
         }
     }
 

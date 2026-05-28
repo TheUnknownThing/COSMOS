@@ -9,7 +9,7 @@ use scx_utils::Topology;
 use crate::bpf::{QueuedTask, RL_CPU_ANY};
 use crate::policy::cosmos_pool::{effective_tail_guard_cpus, PoolManager, PoolMetrics, TaskPool};
 use crate::policy::{DispatchDecision, PolicyCounters, SchedulingPolicy};
-use crate::registry::{InvocationMeta, InvocationRegistry};
+use crate::registry::{InvocationMeta, InvocationRegistry, PhaseSlackContext, RegistryHandle};
 
 const NSEC_PER_USEC: u64 = 1_000;
 const TASK_STATE_TTL_NS: u64 = 60_000_000_000;
@@ -76,6 +76,7 @@ impl From<CosmosCounters> for PolicyCounters {
 
 pub struct CosmosPolicy {
     pub task_state: HashMap<u32, TaskState>,
+    registry: Option<RegistryHandle>,
     vruntime_now: u64,
     slice_ns: u64,
     slice_ns_min: u64,
@@ -123,6 +124,7 @@ impl CosmosPolicy {
         };
         Self {
             task_state: HashMap::new(),
+            registry: None,
             vruntime_now: 0,
             slice_ns: opts.slice_us * NSEC_PER_USEC,
             slice_ns_min: opts.slice_us_min * NSEC_PER_USEC,
@@ -162,6 +164,11 @@ impl CosmosPolicy {
         }
     }
 
+    pub fn with_registry(mut self, registry: RegistryHandle) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
     pub fn scale_by_weight(task: &QueuedTask, v: u64) -> u64 {
         v.saturating_mul(task.weight) / 100
     }
@@ -194,6 +201,30 @@ impl CosmosPolicy {
         reg: &'a InvocationRegistry,
     ) -> Option<&'a InvocationMeta> {
         reg.lookup_tgid(task.tgid).and_then(|id| reg.get(id))
+    }
+
+    fn phase_ctx_for<'a>(
+        &self,
+        task: &QueuedTask,
+        reg: &'a InvocationRegistry,
+    ) -> Option<&'a PhaseSlackContext> {
+        reg.lookup_tgid_state(task.tgid)
+            .map(|state| &state.phase_ctx)
+    }
+
+    fn phase_contexts_from_registry(&self, raw: &[QueuedTask]) -> HashMap<u32, PhaseSlackContext> {
+        let Some(registry) = &self.registry else {
+            return HashMap::new();
+        };
+        let Ok(reg) = registry.try_read() else {
+            return HashMap::new();
+        };
+        raw.iter()
+            .filter_map(|task| {
+                reg.lookup_tgid_state(task.tgid)
+                    .map(|state| (task.tgid, state.phase_ctx.clone()))
+            })
+            .collect()
     }
 
     fn heuristic_classify(&self, task: &QueuedTask, _effective_slo: u64) -> TaskClass {
@@ -328,6 +359,7 @@ impl CosmosPolicy {
         class: TaskClass,
         now: u64,
         meta: Option<&InvocationMeta>,
+        phase_ctx: Option<&PhaseSlackContext>,
         vtime: u64,
     ) -> u64 {
         let fair = vtime.saturating_add(task.exec_runtime.min(self.slice_ns.saturating_mul(100)));
@@ -350,7 +382,7 @@ impl CosmosPolicy {
                         let base = fair
                             .saturating_add(anchor)
                             .saturating_sub(Self::scale_by_weight(task, urgency));
-                        return match class {
+                        let score = match class {
                             TaskClass::ColdStart => base.saturating_sub(Self::scale_by_weight(
                                 task,
                                 self.slo_target_ns.saturating_add(self.cold_start_boost_ns),
@@ -360,6 +392,7 @@ impl CosmosPolicy {
                             }
                             TaskClass::Background => base.saturating_add(self.slo_target_ns),
                         };
+                        return Self::apply_phase_bias(task, score, phase_ctx);
                     }
                 }
             }
@@ -372,10 +405,38 @@ impl CosmosPolicy {
             TaskClass::HotInvocation => effective_slo.saturating_div(2),
             TaskClass::Background => 0,
         };
-        fair.saturating_sub(Self::scale_by_weight(task, boost))
+        let score = fair.saturating_sub(Self::scale_by_weight(task, boost));
+        Self::apply_phase_bias(task, score, phase_ctx)
     }
 
-    fn slice_for(&self, task: &QueuedTask, class: TaskClass, pool: TaskPool, effective_slo: u64) -> u64 {
+    fn apply_phase_bias(
+        task: &QueuedTask,
+        score: u64,
+        phase_ctx: Option<&PhaseSlackContext>,
+    ) -> u64 {
+        let Some(ctx) = phase_ctx else {
+            return score;
+        };
+        let magnitude = ctx.cpu_priority_modifier.unsigned_abs();
+        let scaled = Self::scale_by_weight(task, magnitude);
+        if ctx.cpu_priority_modifier >= 0 {
+            score.saturating_sub(scaled)
+        } else {
+            score.saturating_add(scaled)
+        }
+    }
+
+    fn slice_for(
+        &self,
+        task: &QueuedTask,
+        class: TaskClass,
+        pool: TaskPool,
+        effective_slo: u64,
+        phase_ctx: Option<&PhaseSlackContext>,
+    ) -> u64 {
+        if phase_ctx.is_some_and(|ctx| !ctx.needs_cpu) {
+            return self.slice_ns_min;
+        }
         if pool == TaskPool::TailGuard {
             return effective_slo.max(self.slice_ns_min);
         }
@@ -450,6 +511,7 @@ impl CosmosPolicy {
         now: u64,
     ) -> (TaskClass, TaskPool, u64, u64, bool) {
         let meta = self.meta_for(task, reg);
+        let phase_ctx = self.phase_ctx_for(task, reg);
         let has_meta = meta.is_some();
         let class = self.classify(task, meta);
 
@@ -465,9 +527,9 @@ impl CosmosPolicy {
 
         self.update_task_state(task, meta, now);
         let pool = self.choose_pool(task, class, meta, now);
-        let score = self.score_for_vtime(task, class, now, meta, task.vtime);
+        let score = self.score_for_vtime(task, class, now, meta, phase_ctx, task.vtime);
         let effective_slo = self.task_slo_target(meta);
-        let slice = self.slice_for(task, class, pool, effective_slo);
+        let slice = self.slice_for(task, class, pool, effective_slo, phase_ctx);
 
         if has_meta {
             self.nr_metadata_classified = self.nr_metadata_classified.saturating_add(1);
@@ -515,7 +577,19 @@ impl CosmosPolicy {
         now: u64,
         m: Option<&InvocationMeta>,
     ) -> u64 {
-        self.score_for_vtime(t, c, now, m, t.vtime)
+        self.score_for_vtime(t, c, now, m, None, t.vtime)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn score_with_phase_test(
+        &self,
+        t: &QueuedTask,
+        c: TaskClass,
+        now: u64,
+        m: Option<&InvocationMeta>,
+        phase_ctx: Option<&PhaseSlackContext>,
+    ) -> u64 {
+        self.score_for_vtime(t, c, now, m, phase_ctx, t.vtime)
     }
 
     #[cfg(test)]
@@ -538,9 +612,11 @@ impl SchedulingPolicy for CosmosPolicy {
             Vec::with_capacity(raw.len());
         let mut lat = 0u64;
         let mut bat = 0u64;
+        let phase_contexts = self.phase_contexts_from_registry(raw);
 
         for (i, task) in raw.iter().enumerate() {
             let meta = resolved_meta.get(i).and_then(|m| m.as_ref());
+            let phase_ctx = phase_contexts.get(&task.tgid);
             let has_meta = meta.is_some();
             let class = self.classify(task, meta);
 
@@ -556,9 +632,9 @@ impl SchedulingPolicy for CosmosPolicy {
 
             self.update_task_state(task, meta, now);
             let pool = self.choose_pool(task, class, meta, now);
-            let score = self.score_for_vtime(task, class, now, meta, effective_vtime);
+            let score = self.score_for_vtime(task, class, now, meta, phase_ctx, effective_vtime);
             let effective_slo = self.task_slo_target(meta);
-            let slice = self.slice_for(task, class, pool, effective_slo);
+            let slice = self.slice_for(task, class, pool, effective_slo, phase_ctx);
 
             if has_meta {
                 self.nr_metadata_classified = self.nr_metadata_classified.saturating_add(1);
@@ -765,7 +841,7 @@ impl SchedulingPolicy for CosmosPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::SloClass;
+    use crate::registry::{PhaseKind, PhaseSlackContext, SlackLevel, SloClass};
     const MS: u64 = 1_000_000;
 
     fn opts() -> crate::CosmosOpts {
@@ -1093,6 +1169,59 @@ mod tests {
         let (c, _, sc, _, _) = p.enqueue_test(&mut t, &r, now);
         assert_eq!(c, TaskClass::ColdStart);
         assert_eq!(sc, expected_heuristic(&p, &t, c));
+    }
+
+    #[test]
+    fn phase_priority_bias_changes_score() {
+        let o = opts();
+        let p = pl(&o);
+        let mut t = qt(2100, 210, "w", 1 * MS, 100);
+        t.vtime = 100 * MS;
+        let base = p.score_test(&t, TaskClass::Background, TaskPool::None, 100 * MS, None);
+        let boost = PhaseSlackContext {
+            phase: PhaseKind::CpuBound,
+            slack_level: SlackLevel::Critical,
+            cpu_priority_modifier: 10 * MS as i64,
+            needs_cpu: true,
+            last_phase_update_ns: 0,
+        };
+        let penalize = PhaseSlackContext {
+            phase: PhaseKind::IoBound,
+            slack_level: SlackLevel::Relaxed,
+            cpu_priority_modifier: -(10 * MS as i64),
+            needs_cpu: false,
+            last_phase_update_ns: 0,
+        };
+
+        let boosted =
+            p.score_with_phase_test(&t, TaskClass::Background, 100 * MS, None, Some(&boost));
+        let penalized =
+            p.score_with_phase_test(&t, TaskClass::Background, 100 * MS, None, Some(&penalize));
+
+        assert!(boosted < base);
+        assert!(penalized > base);
+    }
+
+    #[test]
+    fn non_cpu_phase_gets_min_slice() {
+        let o = opts();
+        let mut p = pl(&o);
+        let now = 100 * MS;
+        let mut r = build_reg(&[(1, 211, now + 100 * MS, 0, 0)]);
+        r.update_phase_ctx(
+            211,
+            1,
+            PhaseSlackContext {
+                phase: PhaseKind::IoBound,
+                slack_level: SlackLevel::Normal,
+                cpu_priority_modifier: -5 * MS as i64,
+                needs_cpu: false,
+                last_phase_update_ns: now,
+            },
+        );
+        let (_, _, _, slice, _) = p.enqueue_test(&mut qt(2110, 211, "w", 1 * MS, 100), &r, now);
+
+        assert_eq!(slice, p.slice_ns_min);
     }
 
     #[test]

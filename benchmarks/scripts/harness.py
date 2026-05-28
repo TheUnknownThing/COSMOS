@@ -220,6 +220,48 @@ def stopped_workload_command(command: list[str]) -> list[str]:
     return ["bash", "-c", STOP_SCRIPT, "cosmos-workload", *command]
 
 
+def profile_hints_for_workload(workload: str) -> dict:
+    profiles = {
+        "cpu_burst": {
+            "cpu_intensity": 0.95,
+            "io_weight": 400,
+        },
+        "sleep_short": {
+            "cpu_intensity": 0.05,
+            "io_weight": 100,
+        },
+        "io_mixed": {
+            "cpu_intensity": 0.35,
+            "io_weight": 700,
+            "io_bandwidth_bytes_per_sec": 64 * 1024 * 1024,
+        },
+        "memory_heavy": {
+            "cpu_intensity": 0.45,
+            "memory_bytes": 256 * 1024 * 1024,
+            "working_set_bytes": 128 * 1024 * 1024,
+            "io_weight": 350,
+        },
+        "network_heavy": {
+            "cpu_intensity": 0.30,
+            "network_bandwidth_bytes_per_sec": 128 * 1024 * 1024,
+            "io_weight": 300,
+        },
+        "compression_mixed": {
+            "cpu_intensity": 0.75,
+            "memory_bytes": 128 * 1024 * 1024,
+            "working_set_bytes": 64 * 1024 * 1024,
+            "io_weight": 600,
+        },
+        "graph_bfs": {
+            "cpu_intensity": 0.55,
+            "memory_bytes": 192 * 1024 * 1024,
+            "working_set_bytes": 96 * 1024 * 1024,
+            "io_weight": 300,
+        },
+    }
+    return dict(profiles.get(workload, {}))
+
+
 def send_event_bridge_event(port: int, event: dict) -> None:
     payload = json.dumps(event).encode("utf-8") + b"\n"
     with socket.create_connection(
@@ -445,6 +487,7 @@ def run_workload_invocation(
     use_metadata: bool,
     config: str,
     metadata_bridge_port: int | None = None,
+    slo_class: int | None = None,
 ) -> int:
     stderr_path = output_json.with_suffix(".stderr")
     command = workload_command(workload, duration_ms)
@@ -463,6 +506,7 @@ def run_workload_invocation(
             raise RuntimeError("metadata invocations require a running event bridge")
         env = os.environ.copy()
         command = stopped_workload_command(command)
+    effective_slo_class = spec.default_slo_class if slo_class is None else slo_class
 
     with stderr_path.open("w", encoding="utf-8") as stderr_file:
         if metadata_bridge_port is None:
@@ -492,10 +536,11 @@ def run_workload_invocation(
                         "tgid": tgid,
                         "timeout_ms": max(1, deadline_us // 1_000),
                         "estimated_duration_ms": duration_ms,
-                        "slo_class": spec.default_slo_class,
+                        "slo_class": effective_slo_class,
                         "action_name": workload,
                         "kind": "local-rust",
                         "cold_start": False,
+                        "profile_hints": profile_hints_for_workload(workload),
                     },
                 )
             if DEBUG_BPF_MAP:
@@ -550,6 +595,7 @@ def stage_metadata_bridge_invocation(
     invocation_id: int,
     config: str,
     metadata_bridge_port: int,
+    slo_class: int | None = None,
 ) -> StagedInvocation:
     stderr_path = output_json.with_suffix(".stderr")
     command = stopped_workload_command(workload_command(workload, duration_ms))
@@ -557,6 +603,7 @@ def stage_metadata_bridge_invocation(
     launch_start_ns = time.monotonic_ns()
     stderr_file = stderr_path.open("w", encoding="utf-8")
     process: subprocess.Popen[bytes] | None = None
+    effective_slo_class = spec.default_slo_class if slo_class is None else slo_class
     try:
         process = subprocess.Popen(
             command,
@@ -575,10 +622,11 @@ def stage_metadata_bridge_invocation(
                     "tgid": tgid,
                     "timeout_ms": max(1, deadline_us // 1_000),
                     "estimated_duration_ms": duration_ms,
-                    "slo_class": spec.default_slo_class,
+                    "slo_class": effective_slo_class,
                     "action_name": workload,
                     "kind": "local-rust",
                     "cold_start": False,
+                    "profile_hints": profile_hints_for_workload(workload),
                 },
             )
         metadata_key_visible = None
@@ -665,6 +713,7 @@ def run_metadata_bridge_invocations(
     deadline_us: int,
     config: str,
     metadata_bridge_port: int,
+    slo_class: int | None = None,
 ) -> int:
     staged_invocations: list[StagedInvocation] = []
     try:
@@ -679,6 +728,7 @@ def run_metadata_bridge_invocations(
                     invocation_id,
                     config,
                     metadata_bridge_port,
+                    slo_class,
                 )
                 for invocation_id in range(1, concurrency + 1)
             ]
@@ -728,6 +778,7 @@ def run_mixed_metadata_bridge_invocations(
     deadline_us: int,
     config: str,
     metadata_bridge_port: int,
+    slo_class: int | None = None,
 ) -> int:
     total = sum(count for _, count in mix_specs)
     staged_invocations: list[StagedInvocation] = []
@@ -749,6 +800,7 @@ def run_mixed_metadata_bridge_invocations(
                             inv_id,
                             config,
                             metadata_bridge_port,
+                            slo_class,
                         )
                     )
                     inv_id += 1
@@ -787,6 +839,7 @@ def run_mixed_direct_invocations(
     use_metadata: bool,
     config: str,
     metadata_bridge_port: int | None = None,
+    slo_class: int | None = None,
 ) -> int:
     total = sum(count for _, count in mix_specs)
     failures = 0
@@ -808,6 +861,7 @@ def run_mixed_direct_invocations(
                         use_metadata,
                         config,
                         metadata_bridge_port,
+                        slo_class,
                     )
                 )
                 inv_id += 1
@@ -826,6 +880,7 @@ def write_manifest(
     deadline_us: int,
     metadata_mode: str,
     scheduler_flags: Iterable[str],
+    slo_class: int | None = None,
 ) -> None:
     payload: dict = {
         "config": config,
@@ -836,6 +891,7 @@ def write_manifest(
         "cpu_cores": os.cpu_count() or 1,
         "metadata_mode": metadata_mode,
         "scheduler_flags": list(scheduler_flags),
+        "slo_class_override": slo_class,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     if "," not in workload:
@@ -896,6 +952,7 @@ def run_invocations(
     use_metadata: bool,
     config: str,
     metadata_bridge_port: int | None = None,
+    slo_class: int | None = None,
 ) -> int:
     run_dir.joinpath("invocations").mkdir(parents=True, exist_ok=True)
     ensure_benchmark_workload_build()
@@ -907,11 +964,17 @@ def run_invocations(
         mix_specs = parse_mix_spec(workload)
         if use_metadata and metadata_bridge_port is not None:
             failures = run_mixed_metadata_bridge_invocations(
-                run_dir, mix_specs, deadline_us, config, metadata_bridge_port
+                run_dir, mix_specs, deadline_us, config, metadata_bridge_port, slo_class
             )
         else:
             failures = run_mixed_direct_invocations(
-                run_dir, mix_specs, deadline_us, use_metadata, config, metadata_bridge_port
+                run_dir,
+                mix_specs,
+                deadline_us,
+                use_metadata,
+                config,
+                metadata_bridge_port,
+                slo_class,
             )
         write_client_latency_csv(run_dir)
         return failures
@@ -925,6 +988,7 @@ def run_invocations(
             deadline_us,
             config,
             metadata_bridge_port,
+            slo_class,
         )
         write_client_latency_csv(run_dir)
         return failures
@@ -942,6 +1006,7 @@ def run_invocations(
                 use_metadata,
                 config,
                 metadata_bridge_port,
+                slo_class,
             )
             for invocation_id in range(1, concurrency + 1)
         ]

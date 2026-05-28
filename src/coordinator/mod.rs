@@ -2,12 +2,19 @@
 // GNU General Public License version 2.
 
 mod phase_tracker;
+mod policy;
+mod profiles;
+mod slack;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::cgroup::{CgroupReader, CgroupResolver};
-use crate::registry::{InvocationState, PhaseKind, PhaseSlackContext};
+use crate::registry::{InvocationRegistry, InvocationState, PhaseKind, PhaseSlackContext};
 
+use self::policy::compute_allocation;
+use self::profiles::ResourceProfileStore;
+use self::slack::compute_phase_slack_context;
 pub use phase_tracker::PhaseTracker;
 
 #[derive(Debug, Clone)]
@@ -25,6 +32,101 @@ pub struct PhaseCoordinator {
     tracker: PhaseTracker,
     sample_interval_ns: u64,
     next_sample_at_ns: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CoordinationTickStats {
+    pub phase_samples: u64,
+    pub phase_ctx_updates: u64,
+    pub allocation_updates: u64,
+    pub cgroup_updates: u64,
+}
+
+pub struct CoordinationEngine {
+    phase: PhaseCoordinator,
+    profiles: ResourceProfileStore,
+}
+
+impl CoordinationEngine {
+    pub fn new(sample_interval: Duration) -> Self {
+        Self {
+            phase: PhaseCoordinator::new(sample_interval),
+            profiles: ResourceProfileStore::new(),
+        }
+    }
+
+    pub fn should_tick(&self, now_ns: u64) -> bool {
+        self.phase.should_sample(now_ns)
+    }
+
+    pub fn profiles_mut(&mut self) -> &mut ResourceProfileStore {
+        &mut self.profiles
+    }
+
+    pub fn tick(
+        &mut self,
+        registry: &mut InvocationRegistry,
+        now_ns: u64,
+    ) -> CoordinationTickStats {
+        if !self.should_tick(now_ns) {
+            return CoordinationTickStats::default();
+        }
+
+        let states = registry.active_state_snapshot();
+        let active_states: Vec<_> = states
+            .iter()
+            .filter(|state| state.completed_at_ns.is_none())
+            .cloned()
+            .collect();
+        let phase_updates = self.phase.sample(&active_states, now_ns);
+        let mut stats = CoordinationTickStats {
+            phase_samples: phase_updates.len() as u64,
+            ..CoordinationTickStats::default()
+        };
+        let mut sampled_phase_by_invocation = HashMap::with_capacity(phase_updates.len());
+
+        for update in phase_updates {
+            if let (Some(path), Some(cgroup_id)) = (update.cgroup_path.clone(), update.cgroup_id) {
+                registry.update_cgroup(update.tgid, update.invocation_id, path, cgroup_id);
+                stats.cgroup_updates = stats.cgroup_updates.saturating_add(1);
+            }
+            sampled_phase_by_invocation.insert((update.tgid, update.invocation_id), update);
+        }
+
+        for state in states {
+            if state.completed_at_ns.is_some() {
+                continue;
+            }
+            let sampled = sampled_phase_by_invocation.get(&(state.meta.tgid, state.meta.id));
+            let phase = sampled
+                .map(|update| update.phase_ctx.phase)
+                .unwrap_or(state.phase_ctx.phase);
+            let phase_ctx = compute_phase_slack_context(
+                &state.meta,
+                phase,
+                now_ns,
+                &state.phase_ctx,
+                sampled.is_some(),
+            );
+            let profile = self.profiles.profile_for(&state);
+            let allocation = compute_allocation(&state.meta, profile.as_ref(), &phase_ctx);
+
+            if phase_ctx != state.phase_ctx {
+                registry.update_phase_ctx(state.meta.tgid, state.meta.id, phase_ctx);
+                stats.phase_ctx_updates = stats.phase_ctx_updates.saturating_add(1);
+            }
+            if allocation != state.allocation {
+                registry.update_allocation(state.meta.tgid, state.meta.id, allocation);
+                stats.allocation_updates = stats.allocation_updates.saturating_add(1);
+            }
+        }
+
+        stats
+    }
+
+    pub fn remove_tgid(&mut self, tgid: u32) {
+        self.phase.remove_tgid(tgid);
+    }
 }
 
 impl PhaseCoordinator {
@@ -101,7 +203,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::registry::{InvocationMeta, InvocationState, PhaseKind, SloClass};
+    use crate::registry::{
+        InvocationMeta, InvocationRegistry, InvocationState, PhaseKind, ResourceProfile,
+        SlackLevel, SloClass,
+    };
 
     fn state_for(tgid: u32, id: u64, cgroup_path: PathBuf) -> InvocationState {
         let mut state = InvocationState::new(InvocationMeta {
@@ -148,6 +253,40 @@ mod tests {
             return None;
         }
         Some(path)
+    }
+
+    #[test]
+    fn coordination_tick_updates_slack_and_allocation_in_registry() {
+        let now = 100_000_000;
+        let mut registry = InvocationRegistry::new();
+        registry.upsert_with_profile(
+            InvocationMeta {
+                id: 1,
+                tgid: 101,
+                deadline_ns: now + 5_000_000,
+                estimated_duration_ns: 10_000_000,
+                slo_class: SloClass::LatencyCritical,
+                is_cold_start: false,
+                created_at_ns: 0,
+            },
+            Some(ResourceProfile {
+                memory_bytes: Some(128 * 1024 * 1024),
+                working_set_bytes: Some(64 * 1024 * 1024),
+                io_bandwidth_bytes_per_sec: Some(1_000_000),
+                ..ResourceProfile::default()
+            }),
+        );
+
+        let mut engine = CoordinationEngine::new(Duration::from_millis(100));
+        let stats = engine.tick(&mut registry, now);
+        let state = registry.lookup_tgid_state(101).unwrap();
+
+        assert_eq!(stats.phase_ctx_updates, 1);
+        assert_eq!(stats.allocation_updates, 1);
+        assert_eq!(state.phase_ctx.slack_level, SlackLevel::Critical);
+        assert_eq!(state.phase_ctx.phase, PhaseKind::Unknown);
+        assert_eq!(state.allocation.memory_min_bytes, Some(64 * 1024 * 1024));
+        assert!(state.allocation.memory_high_bytes.unwrap() > 128 * 1024 * 1024);
     }
 
     fn remove_test_cgroup(path: &PathBuf) {

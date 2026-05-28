@@ -41,6 +41,7 @@ cd "$OW_DIR"
 ./gradlew :core:standalone:build -x test
 
 HOST_IP="$(ip -4 route get 8.8.8.8 | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)"
+mkdir -p "$(dirname "$OW_LOG")" "$COSMOS_PREFIX/benchmarks/openwhisk-suite-home"
 "$JAVA_HOME/bin/java" \
   -Dwhisk.standalone.host.name="$HOST_IP" \
   -Dwhisk.standalone.host.ip="$HOST_IP" \

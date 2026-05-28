@@ -83,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--duration-ms", type=int)
     parser.add_argument("--deadline-us", type=int)
+    parser.add_argument(
+        "--slo-class",
+        type=int,
+        choices=[0, 1, 2],
+        help="Override synthetic metadata SLO class: 0 latency-critical, 1 standard, 2 batch",
+    )
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument(
         "--scheduler-bin",
@@ -126,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         deadline_us,
         metadata_mode,
         scheduler_flags,
+        args.slo_class,
     )
 
     harness.ensure_release_build()
@@ -170,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             use_metadata,
             args.config,
             metadata_bridge_port,
+            args.slo_class,
         )
     finally:
         harness.stop_process(stats_capture, signal.SIGINT)
