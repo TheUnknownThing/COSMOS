@@ -12,6 +12,7 @@ use bpf::*;
 mod metadata;
 mod stats;
 
+mod actuator;
 mod adapter;
 mod cgroup;
 mod coordinator;

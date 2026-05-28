@@ -47,13 +47,13 @@ impl CpuAdapter for ScxAdapter<'_> {
         cpu: i32,
         slice_ns: u64,
         vtime: u64,
-        _enq_flags: u64,
+        enq_flags: u64,
         enq_cnt: u64,
     ) -> bool {
         let d = DispatchedTask {
             pid,
             cpu,
-            flags: 0,
+            flags: enq_flags,
             slice_ns,
             vtime,
             enq_cnt,

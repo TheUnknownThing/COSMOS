@@ -233,18 +233,15 @@ fn handle_metadata_connection(
     registry: RegistryHandle,
     profile_catalog: ProfileCatalogHandle,
 ) {
-    let mut stream = stream;
+    let mut reader = BufReader::new(stream);
 
     loop {
         let mut line = String::new();
-        {
-            let mut reader = BufReader::new(&stream);
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(_) => break,
-            };
-        }
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => break,
+        };
 
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -289,7 +286,7 @@ fn handle_metadata_connection(
                     }
                 }
 
-                let _ = stream.write_all(b"ok\n");
+                let _ = reader.get_mut().write_all(b"ok\n");
             }
             Ok(MetadataCommand::Delete(cmd)) => {
                 {
@@ -301,11 +298,11 @@ fn handle_metadata_connection(
                     delete_has_invocation(fd, cmd.tgid);
                 }
 
-                let _ = stream.write_all(b"ok\n");
+                let _ = reader.get_mut().write_all(b"ok\n");
             }
             Err(e) => {
                 eprintln!("metadata parse error: {} (line: {})", e, trimmed);
-                let _ = stream.write_all(b"error\n");
+                let _ = reader.get_mut().write_all(b"error\n");
             }
         }
     }
@@ -314,7 +311,10 @@ fn handle_metadata_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::InvocationRegistry;
+    use std::net::{Shutdown, TcpListener, TcpStream};
     use std::path::PathBuf;
+    use std::sync::{Arc, RwLock};
 
     fn profile(memory_bytes: u64, io_weight: u64) -> ResourceProfile {
         ResourceProfile {
@@ -383,5 +383,43 @@ mod tests {
         let result = ProfileCatalog::load(Some(path.as_path()));
         let _ = fs::remove_file(&path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn persistent_connection_processes_buffered_commands() {
+        let registry: RegistryHandle = Arc::new(RwLock::new(InvocationRegistry::new()));
+        let profile_catalog: ProfileCatalogHandle = Arc::new(ProfileCatalog::default());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_registry = registry.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_metadata_connection(stream, server_registry, profile_catalog);
+        });
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .write_all(
+                b"{\"tgid\":101,\"deadline_ns\":1000,\"estimated_duration_ns\":500,\"slo_class\":1,\"is_cold_start\":0,\"invocation_id\":9001}\n\
+                  {\"tgid\":202,\"deadline_ns\":2000,\"estimated_duration_ns\":750,\"slo_class\":2,\"is_cold_start\":1,\"invocation_id\":9002}\n",
+            )
+            .unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+
+        let mut responses = BufReader::new(client);
+        let mut line = String::new();
+        responses.read_line(&mut line).unwrap();
+        assert_eq!(line, "ok\n");
+        line.clear();
+        responses.read_line(&mut line).unwrap();
+        assert_eq!(line, "ok\n");
+
+        server.join().unwrap();
+
+        let reg = registry.read().unwrap();
+        assert_eq!(reg.lookup_tgid(101), Some(9001));
+        assert_eq!(reg.lookup_tgid(202), Some(9002));
+        assert_eq!(reg.lookup_tgid_meta(202).unwrap().deadline_ns, 2000);
     }
 }

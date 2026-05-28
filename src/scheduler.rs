@@ -1,6 +1,7 @@
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
 
+use crate::actuator::ResourceActuator;
 use crate::adapter::CpuAdapter;
 use crate::coordinator::CoordinationEngine;
 use crate::metadata::delete_invocation_hint;
@@ -23,6 +24,7 @@ pub struct Scheduler<P: SchedulingPolicy, A: CpuAdapter> {
     prune_counter: u64,
     init_page_faults: u64,
     coordinator: CoordinationEngine,
+    actuator: ResourceActuator,
 }
 
 impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
@@ -40,6 +42,7 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             prune_counter: 0,
             init_page_faults: 0,
             coordinator: CoordinationEngine::new(Duration::from_millis(100)),
+            actuator: ResourceActuator::new(),
         }
     }
     pub fn run(&mut self) -> Result<UserExitInfo> {
@@ -49,6 +52,9 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             if self.coordinator.should_tick(now) {
                 if let Ok(mut reg) = self.registry.try_write() {
                     self.coordinator.tick(&mut reg, now);
+                }
+                if let Ok(reg) = self.registry.try_read() {
+                    self.actuator.apply_from_registry(&reg);
                 }
             }
             let raw = self.adapter.drain();
