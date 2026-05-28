@@ -170,6 +170,17 @@ impl CosmosPolicy {
         v.saturating_mul(100) / task.weight.max(1)
     }
 
+    fn task_slo_target(&self, meta: Option<&InvocationMeta>) -> u64 {
+        meta.and_then(|m| {
+            if m.estimated_duration_ns > 0 {
+                Some(m.estimated_duration_ns)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(self.slo_target_ns)
+    }
+
     fn hint_match(&self, task: &QueuedTask) -> bool {
         let c = task.comm_str();
         self.invocation_comm
@@ -185,37 +196,36 @@ impl CosmosPolicy {
         reg.lookup_tgid(task.tgid).and_then(|id| reg.get(id))
     }
 
-    fn heuristic_classify(&self, task: &QueuedTask) -> TaskClass {
+    fn heuristic_classify(&self, task: &QueuedTask, _effective_slo: u64) -> TaskClass {
+        if self.hint_match(task) {
+            return self.heuristic_classify_hint(task, _effective_slo);
+        }
+        TaskClass::Background
+    }
+
+    fn heuristic_classify_hint(&self, task: &QueuedTask, effective_slo: u64) -> TaskClass {
         let Some(st) = self.task_state.get(&task.tgid) else {
-            return if task.exec_runtime <= self.slo_target_ns || self.hint_match(task) {
+            return if task.exec_runtime <= effective_slo {
                 TaskClass::ColdStart
             } else {
                 TaskClass::Background
             };
         };
-        if self.hint_match(task) {
-            return if st.wakeups <= 1 {
-                TaskClass::ColdStart
-            } else {
-                TaskClass::HotInvocation
-            };
-        }
-        if task.exec_runtime <= self.slo_target_ns
-            && st.avg_runtime_ns <= self.slo_target_ns.saturating_mul(2)
-        {
-            TaskClass::HotInvocation
+        if st.wakeups <= 1 {
+            TaskClass::ColdStart
         } else {
-            TaskClass::Background
+            TaskClass::HotInvocation
         }
     }
 
     fn classify(&self, task: &QueuedTask, meta: Option<&InvocationMeta>) -> TaskClass {
         let Some(m) = meta else {
-            return self.heuristic_classify(task);
+            return self.heuristic_classify(task, self.slo_target_ns);
         };
         if m.slo_class == crate::registry::SloClass::None {
-            return self.heuristic_classify(task);
+            return self.heuristic_classify(task, self.slo_target_ns);
         }
+        let effective_slo = self.task_slo_target(Some(m));
         match m.slo_class {
             crate::registry::SloClass::LatencyCritical => {
                 let is_new = self
@@ -228,9 +238,9 @@ impl CosmosPolicy {
                     TaskClass::HotInvocation
                 }
             }
-            crate::registry::SloClass::Standard => self.heuristic_classify(task),
+            crate::registry::SloClass::Standard => self.heuristic_classify(task, effective_slo),
             crate::registry::SloClass::Batch => TaskClass::Background,
-            crate::registry::SloClass::None => self.heuristic_classify(task),
+            crate::registry::SloClass::None => self.heuristic_classify(task, effective_slo),
         }
     }
 
@@ -354,24 +364,24 @@ impl CosmosPolicy {
                 }
             }
         }
+        let effective_slo = self.task_slo_target(meta);
         let boost = match class {
-            TaskClass::ColdStart => self
-                .slo_target_ns
-                .saturating_mul(2)
+            TaskClass::ColdStart => effective_slo
+                .saturating_div(2)
                 .saturating_add(self.cold_start_boost_ns),
-            TaskClass::HotInvocation => self.slo_target_ns,
+            TaskClass::HotInvocation => effective_slo.saturating_div(2),
             TaskClass::Background => 0,
         };
         fair.saturating_sub(Self::scale_by_weight(task, boost))
     }
 
-    fn slice_for(&self, task: &QueuedTask, class: TaskClass, pool: TaskPool) -> u64 {
+    fn slice_for(&self, task: &QueuedTask, class: TaskClass, pool: TaskPool, effective_slo: u64) -> u64 {
         if pool == TaskPool::TailGuard {
-            return self.slo_target_ns.max(self.slice_ns_min);
+            return effective_slo.max(self.slice_ns_min);
         }
         let base = match class {
-            TaskClass::ColdStart => self.slo_target_ns / 4,
-            TaskClass::HotInvocation => self.slo_target_ns / 8,
+            TaskClass::ColdStart => effective_slo / 4,
+            TaskClass::HotInvocation => effective_slo / 8,
             TaskClass::Background => self.slice_ns,
         };
         Self::scale_by_weight(task, base.max(self.slice_ns_min)).max(self.slice_ns_min)
@@ -456,7 +466,8 @@ impl CosmosPolicy {
         self.update_task_state(task, meta, now);
         let pool = self.choose_pool(task, class, meta, now);
         let score = self.score_for_vtime(task, class, now, meta, task.vtime);
-        let slice = self.slice_for(task, class, pool);
+        let effective_slo = self.task_slo_target(meta);
+        let slice = self.slice_for(task, class, pool, effective_slo);
 
         if has_meta {
             self.nr_metadata_classified = self.nr_metadata_classified.saturating_add(1);
@@ -509,7 +520,7 @@ impl CosmosPolicy {
 
     #[cfg(test)]
     pub(crate) fn heuristic_test(&self, t: &QueuedTask) -> TaskClass {
-        self.heuristic_classify(t)
+        self.heuristic_classify(t, self.slo_target_ns)
     }
 }
 
@@ -546,7 +557,8 @@ impl SchedulingPolicy for CosmosPolicy {
             self.update_task_state(task, meta, now);
             let pool = self.choose_pool(task, class, meta, now);
             let score = self.score_for_vtime(task, class, now, meta, effective_vtime);
-            let slice = self.slice_for(task, class, pool);
+            let effective_slo = self.task_slo_target(meta);
+            let slice = self.slice_for(task, class, pool, effective_slo);
 
             if has_meta {
                 self.nr_metadata_classified = self.nr_metadata_classified.saturating_add(1);
@@ -597,6 +609,7 @@ impl SchedulingPolicy for CosmosPolicy {
                 .then_with(|| a.1.cmp(&b.1))
                 .then_with(|| b.2.cmp(&a.2))
                 .then_with(|| a.3.cmp(&b.3))
+                .then_with(|| a.9.cmp(&b.9))
                 .then_with(|| a.4.cmp(&b.4))
         });
 
@@ -789,7 +802,6 @@ mod tests {
             vtime: 0,
             enq_cnt: 0,
             comm: c,
-            has_invocation_meta: 0,
         }
     }
 
@@ -802,9 +814,9 @@ mod tests {
         let boost = match class {
             TaskClass::ColdStart => policy
                 .slo_target_ns
-                .saturating_mul(2)
+                .saturating_div(2)
                 .saturating_add(policy.cold_start_boost_ns),
-            TaskClass::HotInvocation => policy.slo_target_ns,
+            TaskClass::HotInvocation => policy.slo_target_ns.saturating_div(2),
             TaskClass::Background => 0,
         };
         fair.saturating_sub(CosmosPolicy::scale_by_weight(task, boost))
@@ -858,7 +870,7 @@ mod tests {
         let r = InvocationRegistry::new();
         assert_eq!(
             p.classify_test(&qt(1001, 999, "w", 5 * MS, 100), &r),
-            TaskClass::ColdStart
+            TaskClass::Background
         );
     }
     #[test]
@@ -894,7 +906,7 @@ mod tests {
         let r = build_reg(&[(1, 100, 200 * MS, 1, 0)]);
         assert_eq!(
             p.classify_test(&qt(1001, 100, "w", 5 * MS, 100), &r),
-            TaskClass::ColdStart
+            TaskClass::Background
         );
     }
 
@@ -1055,7 +1067,7 @@ mod tests {
         let now = 100 * MS;
         let mut t = qt(1006, 999, "w", 5 * MS, 100);
         let (c, _, sc, _, _) = p.enqueue_test(&mut t, &r, now);
-        assert_eq!(c, TaskClass::ColdStart);
+        assert_eq!(c, TaskClass::Background);
         assert_eq!(sc, expected_heuristic(&p, &t, c));
     }
     #[test]

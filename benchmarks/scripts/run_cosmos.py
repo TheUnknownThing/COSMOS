@@ -11,12 +11,13 @@ from pathlib import Path
 import harness
 
 
-def cosmos_config(config: str, deadline_us: int) -> tuple[list[str], str, bool]:
+def cosmos_config(config: str, deadline_us: int, duration_ms: int) -> tuple[list[str], str, bool]:
+    slo_target_us = duration_ms * 1000
     if config == "cosmos-heuristic":
         return (
             [
                 "--slo-target-us",
-                str(deadline_us),
+                str(slo_target_us),
                 "--disable-pools",
                 "--disable-deadline-scoring",
                 "--tail-guard-cpus",
@@ -31,7 +32,7 @@ def cosmos_config(config: str, deadline_us: int) -> tuple[list[str], str, bool]:
         return (
             [
                 "--slo-target-us",
-                str(deadline_us),
+                str(slo_target_us),
                 "--disable-pools",
                 "--disable-deadline-scoring",
                 "--tail-guard-cpus",
@@ -46,7 +47,7 @@ def cosmos_config(config: str, deadline_us: int) -> tuple[list[str], str, bool]:
         return (
             [
                 "--slo-target-us",
-                str(deadline_us),
+                str(slo_target_us),
                 "--disable-deadline-scoring",
                 "--tail-guard-cpus",
                 "0",
@@ -58,7 +59,7 @@ def cosmos_config(config: str, deadline_us: int) -> tuple[list[str], str, bool]:
         )
     if config == "cosmos-full":
         return (
-            ["--slo-target-us", str(deadline_us)],
+            ["--slo-target-us", str(slo_target_us)],
             "metadata-full",
             True,
         )
@@ -109,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         duration_ms = args.duration_ms or spec.default_duration_ms
         deadline_us = harness.resolve_deadline_us(spec, duration_ms, args.deadline_us)
     scheduler_flags, metadata_mode, use_metadata = cosmos_config(
-        args.config, deadline_us
+        args.config, deadline_us, duration_ms
     )
     scheduler_flags.extend(args.scheduler_flag)
 

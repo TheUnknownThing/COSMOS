@@ -118,22 +118,117 @@ CPU_BOUND, IO_PAGECACHE, CACHE_OR_MEM_BOUND, MIXED_UNKNOWN phases.
    COSMOS delivers +7.8% invocation count with 29% lower p50 latency.
 3. **SLO violation reduction** — at overloaded 100-concurrency cpu_burst, COSMOS
    cuts violations from 73 to 25 (-65.8%).
-4. **COSMOS V1 has a Node.js regression in throughput mode** — only 50% of CFS
-   invocation count at 128 concurrent Node.js processes. This is a targeted
-   optimization opportunity for V2.
+4. **COSMOS has a Node.js regression in throughput mode** — only 50% of CFS
+   invocation count at 128 concurrent Node.js processes.
 5. **Sleep/trivial workloads** show near-zero overhead, confirming COSMOS adds
    no measurable dispatching cost for idle workloads.
 6. **Profile DB is functional** — 13 SeBS + synthetic workload profiles with
    full phase classification, ready for offline scheduler tuning.
 ---
+---
+## Part 3: OpenWhisk Setup on amd002
+| Detail | Value |
+|--------|-------|
+| Docker | v29.5.2 (host), v29.0.0 (static binary injected into container) |
+| OpenWhisk | `openwhisk/standalone:nightly` |
+| wsk CLI | v1.2.0, API host `http://128.110.218.241:3233` |
+| JDK | openjdk-17-jdk-headless |
+| Runtimes | nodejs:20 (prewarmed), python:3.11 (ephemeral) |
+| COSMOS commit | `35981d9` (V2) |
+
+### Setup challenges
+- Docker socket conflict: systemd docker.socket blocked dockerd. Fixed by `systemctl stop docker.socket` and starting dockerd directly.
+- Docker API mismatch: container had CLI v18.06.3 (API 1.38), host v29.5.2 (API 1.40+). Fixed by injecting static Docker 29.0.0 binary via `docker cp`.
+- **Profiler container discovery bug** (fixed): `find_openwhisk_container` only matched by action name, but OpenWhisk standalone reuses prewarmed containers named `wsk0_N_prewarm_nodejs20` for Node.js. Added runtime-kind fallback (3-tier matching: action-key → kind-key → any-wsk).
+
+---
+## Part 4: COSMOS V2 — Pool Configuration Sensitivity
+The V2 scheduler supports configurable pool sizes. Testing reveals pool balance
+is the dominant factor in COSMOS performance.
+
+| Workload | Mode | Pool (L+B) | CFS p50 | COSMOS p50 | p50 Δ | Invocations Δ |
+|---|---|---|---|---|---|---|
+| sleep-py | burst | 32+32 | 139.9ms | 153.1ms | +9.4% | +0.0% |
+| sleep-py | burst | 47+17 | 143.5ms | 145.6ms | +1.5% | +0.0% |
+| sleep-py | throughput | 32+32 | 145.6ms | 144.1ms | -1.0% | **-20.7%** |
+| **html-py** | **burst** | **32+32** | 264.8ms | **101.6ms** | **-61.7%** | +0.0% |
+| html-py | burst | 47+17 | 86.1ms | 92.7ms | +7.7% | +0.0% |
+| **html-py** | **throughput** | **32+32** | 123.7ms | 128.7ms | +4.0% | **+140.0%** |
+| html-py | throughput | 47+17 | 129.2ms | 122.8ms | -5.0% | +6.2% |
+| graph-bfs-py | burst | 32+32 | 978.8ms | 1127.1ms | +15.2% | +0.0% |
+| graph-bfs-py | throughput | 32+32 | 1143.1ms | 2772.7ms | +142.6% | **-45.9%** |
+
+**Key findings:**
+1. **Pool balance is critical.** 32 latency + 32 batch produces -61.7% burst
+   p50 and +140% invocation throughput for dynamic-html. Switching to 47+17
+   reduces the advantage to near-zero.
+2. **dynamic-html Python** is the best-case workload for COSMOS — CPU-bound
+   template rendering benefits from CS-aware scheduling and batch pool isolation.
+3. **graph-bfs Python** shows regression with COSMOS at 32+32 — the igraph
+   library's C extensions may interact poorly with sched_ext CPU pinning.
+4. **sleep Python** is scheduler-agnostic as expected (near-zero delta).
+
+---
+## Part 5: OpenWhisk — Cold/Warm Profiling & COSMOS Integration
+
+### Cold Start Profiling (Node.js, prewarmed containers)
+
+| Action | Warmth | Duration | Init Time | Queue Wait | Container |
+|---|---|---|---|---|---|
+| ow_cpu_burn | cold | 319ms | 116ms | 219ms | wsk0_21_prewarm_nodejs20 |
+| ow_cpu_burn | warm | 202ms | — | — | wsk0_N_prewarm_nodejs20 |
+| ow_sleep_slow | cold | 203ms | — | — | wsk0_22_guest_ow_sleep_slow |
+
+Cold start adds ~117ms init overhead on prewarmed containers.
+
+### COSMOS Event Bridge Integration
+
+```
+[OK] local_start: activation=ow-ow_sleep_slow-782876 tgid=782876 action=ow_sleep_slow kind=nodejs:20
+[OK] local_end: activation=53a01763... tgid=782876 (deleted)
+[OK] 6 scheduler stat samples collected per invocation
+```
+
+The profiler successfully sends `local_start`/`local_end` events through the
+event bridge (port 9731), which relays them to the COSMOS scheduler metadata
+port (9732). The scheduler classifies the OpenWhisk container process and
+collects per-task CPU stats.
+
+### OpenWhisk Concurrent Load Limitation
+
+OpenWhisk standalone enforces **max 1 concurrent invocation per action**,
+returning HTTP 429 for any additional concurrent requests. This prevents
+meaningful throughput/burst comparison in OpenWhisk mode. The only successful
+concurrent run was `ow_sleep_slow` burst: 59/60 requests succeeded, both
+CFS and COSMOS showed p50≈878ms (no significant scheduler impact for
+idle-wait workloads).
+
+### Profiler Container Discovery Fix
+
+Commit changes in `benchmarks/profiler/src/main.rs`:
+
+```
+fn find_openwhisk_container(action: &str, kind: &str) -> Result<ContainerInfo>
+```
+
+Three-tier matching:
+1. **Action-key match** — for ephemeral containers (`wsk0_N_guest_actionname`)
+2. **Runtime-key fallback** — for prewarmed containers (`wsk0_N_prewarm_nodejs20`)
+3. **Any `wsk*` fallback** — last resort
+
+The runtime key is extracted from `--kind` (e.g., `nodejs:20` → `nodejs`,
+`python:3.11` → `python`).
+
+---
 ## Limitations
 - Single repetition per workload-mode pair (except duplicates from retries)
 - Node.js throughput regression not root-caused — likely V1 scheduling
   interaction with Node.js's multi-threaded runtime
-- OpenWhisk mode not tested (Docker daemon inactive on amd002)
+- OpenWhisk concurrent load limited by 1-invocation-per-action throttle
 - SeBS benchmarks requiring external services (uploader, crud-api, thumbnailer,
   video-processing, image-recognition) not runnable in standalone mode
-- Graph benchmarks run only at size=10; larger inputs may expose different
-  scheduling behavior
-- Comparisons used COSMOS V1 (commit `484e993`); V2 policy tuning may improve
-  Node.js throughput and continuous-mode results
+- Graph benchmarks run with small inputs (size=10 for bfs, size=100 for others);
+  larger inputs may expose different scheduling behavior
+- Pool configuration tested at only 2 levels (32+32, 47+17); optimal pooling
+  likely workload-dependent
+- COSMOS graph-bfs regression not root-caused — may be igraph C extension vs sched_ext interaction

@@ -1363,7 +1363,7 @@ fn openwhisk(args: OpenWhiskArgs) -> Result<()> {
     let container = invoke_result
         .container
         .clone()
-        .or_else(|| find_openwhisk_container(&args.action).ok());
+            .or_else(|| find_openwhisk_container(&args.action, &args.kind).ok());
     if let Some(info) = &container {
         meta.cgroup_path = info.cgroup_path.display().to_string();
         write_json(&run_dir.join("run_meta.json"), &meta)?;
@@ -1759,7 +1759,7 @@ fn run_invoke_with_sampling(
     let status = match (|| -> Result<ExitStatus> {
         let status = loop {
             if discovered.is_none() {
-                if let Ok(info) = find_openwhisk_container(&args.action) {
+                if let Ok(info) = find_openwhisk_container(&args.action, &args.kind) {
                     append_container_discovered_event(run_dir, &info, send_ns)?;
                     sample_once_with_scheduler(
                         run_dir,
@@ -1826,7 +1826,7 @@ fn run_invoke_with_sampling(
 
     let deadline = Instant::now() + Duration::from_millis(args.docker_grace_ms);
     while discovered.is_none() && Instant::now() < deadline {
-        if let Ok(info) = find_openwhisk_container(&args.action) {
+        if let Ok(info) = find_openwhisk_container(&args.action, &args.kind) {
             append_container_discovered_event(run_dir, &info, send_ns)?;
             sample_once_with_scheduler(
                 run_dir,
@@ -2017,7 +2017,7 @@ fn parse_activation_id(stdout: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn find_openwhisk_container(action: &str) -> Result<ContainerInfo> {
+fn find_openwhisk_container(action: &str, kind: &str) -> Result<ContainerInfo> {
     let output = Command::new("docker")
         .args(["ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}"])
         .output()
@@ -2026,16 +2026,40 @@ fn find_openwhisk_container(action: &str) -> Result<ContainerInfo> {
         bail!("docker ps failed");
     }
     let action_key = docker_action_key(action);
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    let runtime_key = docker_action_key(kind.split(':').next().unwrap_or(kind));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut fallback: Option<(&str, &str)> = None;
+
+    for line in stdout.lines() {
         let mut parts = line.split_whitespace();
         let Some(id) = parts.next() else {
             continue;
         };
         let name = parts.next().unwrap_or("");
+        if !name.starts_with("wsk") {
+            continue;
+        }
         let normalized_name = docker_action_key(name);
-        if name.starts_with("wsk")
-            && (action_key.is_empty() || normalized_name.contains(&action_key))
-        {
+        if action_key.is_empty() || normalized_name.contains(&action_key) {
+            return inspect_container(id, name);
+        }
+        let prewarm_match = !runtime_key.is_empty() && normalized_name.contains(&runtime_key);
+        if prewarm_match && fallback.is_none() {
+            fallback = Some((id, name));
+        }
+    }
+
+    if let Some((id, name)) = fallback {
+        return inspect_container(id, name);
+    }
+
+    for line in stdout.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(id) = parts.next() else {
+            continue;
+        };
+        let name = parts.next().unwrap_or("");
+        if name.starts_with("wsk") {
             return inspect_container(id, name);
         }
     }

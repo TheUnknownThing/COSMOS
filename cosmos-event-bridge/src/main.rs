@@ -164,7 +164,7 @@ fn slo_class_from_timeout(timeout_ms: u64) -> u32 {
 
 fn resolve_slo_class(timeout_ms: u64, explicit: Option<u32>) -> u32 {
     match explicit {
-        Some(v @ 0..=2) if v != 1 => v,
+        Some(v @ 0..=2) => v,
         _ => slo_class_from_timeout(timeout_ms),
     }
 }

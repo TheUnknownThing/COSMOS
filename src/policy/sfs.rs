@@ -350,7 +350,6 @@ mod tests {
             vtime: 0,
             enq_cnt: 0,
             comm: [0; 16],
-            has_invocation_meta: 0,
         }
     }
 
