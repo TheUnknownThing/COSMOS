@@ -111,6 +111,7 @@ mod tests {
             estimated_duration_ns,
             slo_class: SloClass::LatencyCritical,
             is_cold_start: false,
+            profile_id: None,
             created_at_ns,
         }
     }

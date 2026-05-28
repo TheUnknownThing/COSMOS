@@ -101,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--event-bridge-port", type=int, default=harness.DEFAULT_EVENT_BRIDGE_PORT
     )
+    parser.add_argument(
+        "--profile-catalog",
+        type=Path,
+        default=harness.DEFAULT_PROFILE_CATALOG,
+    )
     parser.add_argument("--scheduler-flag", action="append", default=[])
     return parser
 
@@ -118,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     scheduler_flags, metadata_mode, use_metadata = cosmos_config(
         args.config, deadline_us, duration_ms
     )
+    if use_metadata:
+        scheduler_flags.extend(["--profile-catalog", str(args.profile_catalog)])
     scheduler_flags.extend(args.scheduler_flag)
 
     config_root = args.out_dir or harness.default_results_dir(args.config)

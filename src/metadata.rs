@@ -8,11 +8,14 @@
 //! BPF hint only when metadata changes scheduling behavior.
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use cosmos_metadata_model::{MetadataCommand, ProfileCatalogFile, ProfileId};
+use std::collections::HashMap;
 use std::ffi::CString;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::OnceLock;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,58 +30,59 @@ const BPF_ATTR_SZ: usize = 64;
 
 static HAS_INVOCATION_FD: OnceLock<i32> = OnceLock::new();
 
-#[derive(Debug, Deserialize)]
-struct MetadataWrite {
-    tgid: u32,
-    deadline_ns: u64,
-    #[serde(default)]
-    estimated_duration_ns: u64,
-    slo_class: u32,
-    is_cold_start: u32,
-    invocation_id: u64,
-    #[serde(default)]
-    profile_hints: Option<ProfileHintsWire>,
+#[derive(Debug, Clone, Default)]
+pub struct ProfileCatalog {
+    profiles: HashMap<ProfileId, ResourceProfile>,
 }
 
-#[derive(Debug, Deserialize)]
-struct MetadataDelete {
-    tgid: u32,
-}
+pub type ProfileCatalogHandle = Arc<ProfileCatalog>;
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum MetadataCommand {
-    Write(MetadataWrite),
-    Delete(MetadataDelete),
-}
-
-#[derive(Debug, Deserialize)]
-struct ProfileHintsWire {
-    #[serde(default)]
-    cpu_intensity: Option<f64>,
-    #[serde(default)]
-    memory_bytes: Option<u64>,
-    #[serde(default)]
-    working_set_bytes: Option<u64>,
-    #[serde(default)]
-    io_weight: Option<u64>,
-    #[serde(default)]
-    io_bandwidth_bytes_per_sec: Option<u64>,
-    #[serde(default)]
-    network_bandwidth_bytes_per_sec: Option<u64>,
-}
-
-impl From<ProfileHintsWire> for ResourceProfile {
-    fn from(value: ProfileHintsWire) -> Self {
-        Self {
-            cpu_intensity: value.cpu_intensity,
-            memory_bytes: value.memory_bytes,
-            working_set_bytes: value.working_set_bytes,
-            io_weight: value.io_weight,
-            io_bandwidth_bytes_per_sec: value.io_bandwidth_bytes_per_sec,
-            network_bandwidth_bytes_per_sec: value.network_bandwidth_bytes_per_sec,
+impl ProfileCatalog {
+    pub fn load(path: Option<&Path>) -> Result<Self> {
+        let Some(path) = path else {
+            return Ok(Self::default());
+        };
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read profile catalog {}", path.display()))?;
+        let file: ProfileCatalogFile = serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse profile catalog {}", path.display()))?;
+        if file.version != 1 {
+            anyhow::bail!(
+                "unsupported profile catalog version {} in {}",
+                file.version,
+                path.display()
+            );
         }
+        Ok(Self {
+            profiles: file.profiles.into_iter().collect(),
+        })
     }
+
+    fn resolve(&self, profile_id: &str) -> Option<&ResourceProfile> {
+        self.profiles.get(profile_id)
+    }
+}
+
+pub fn load_profile_catalog(path: Option<&Path>) -> Result<ProfileCatalogHandle> {
+    Ok(Arc::new(ProfileCatalog::load(path)?))
+}
+
+fn resolve_profile(
+    catalog: &ProfileCatalog,
+    profile_id: Option<&str>,
+    inline_hints: Option<&ResourceProfile>,
+) -> Option<ResourceProfile> {
+    let baseline = profile_id.and_then(|profile_id| match catalog.resolve(profile_id) {
+        Some(profile) => Some(profile.clone()),
+        None => {
+            eprintln!(
+                "COSMOS metadata warning: unknown profile_id={} - using inline hints only",
+                profile_id
+            );
+            None
+        }
+    });
+    ResourceProfile::merged(baseline.as_ref(), inline_hints)
 }
 
 unsafe fn sys_bpf(cmd: i32, attr: *const u8, size: u32) -> i64 {
@@ -176,15 +180,23 @@ pub fn delete_invocation_hint(tgid: u32) {
 }
 
 /// Spawn a metadata ingestion thread that listens on a TCP port.
-pub fn spawn_metadata_listener(registry: RegistryHandle, port: u16) -> thread::JoinHandle<()> {
+pub fn spawn_metadata_listener(
+    registry: RegistryHandle,
+    port: u16,
+    profile_catalog: ProfileCatalogHandle,
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        if let Err(e) = run_metadata_listener(registry, port) {
+        if let Err(e) = run_metadata_listener(registry, port, profile_catalog) {
             eprintln!("COSMOS metadata listener error: {:#}", e);
         }
     })
 }
 
-fn run_metadata_listener(registry: RegistryHandle, port: u16) -> Result<()> {
+fn run_metadata_listener(
+    registry: RegistryHandle,
+    port: u16,
+    profile_catalog: ProfileCatalogHandle,
+) -> Result<()> {
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr)
         .with_context(|| format!("failed to bind metadata listener to {}", addr))?;
@@ -203,8 +215,9 @@ fn run_metadata_listener(registry: RegistryHandle, port: u16) -> Result<()> {
                     let _ = HAS_INVOCATION_FD.set(fd);
                 }
                 let reg = registry.clone();
+                let profile_catalog = profile_catalog.clone();
                 thread::spawn(move || {
-                    handle_metadata_connection(stream, reg);
+                    handle_metadata_connection(stream, reg, profile_catalog);
                 });
             }
             Err(e) => {
@@ -215,7 +228,11 @@ fn run_metadata_listener(registry: RegistryHandle, port: u16) -> Result<()> {
     Ok(())
 }
 
-fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle) {
+fn handle_metadata_connection(
+    stream: TcpStream,
+    registry: RegistryHandle,
+    profile_catalog: ProfileCatalogHandle,
+) {
     let mut stream = stream;
 
     loop {
@@ -244,6 +261,11 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle) {
                 };
 
                 let now = crate::monotonic_now_ns();
+                let profile = resolve_profile(
+                    &profile_catalog,
+                    cmd.profile_id.as_deref(),
+                    cmd.profile_hints.as_ref(),
+                );
                 {
                     let mut reg = registry.write().unwrap();
                     let meta = InvocationMeta {
@@ -253,9 +275,10 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle) {
                         estimated_duration_ns: cmd.estimated_duration_ns,
                         slo_class,
                         is_cold_start: cmd.is_cold_start != 0,
+                        profile_id: cmd.profile_id.clone(),
                         created_at_ns: now,
                     };
-                    reg.upsert_with_profile(meta, cmd.profile_hints.map(Into::into));
+                    reg.upsert_with_profile(meta, profile);
                 }
 
                 if let Some(&fd) = HAS_INVOCATION_FD.get() {
@@ -285,5 +308,80 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle) {
                 let _ = stream.write_all(b"error\n");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn profile(memory_bytes: u64, io_weight: u64) -> ResourceProfile {
+        ResourceProfile {
+            memory_bytes: Some(memory_bytes),
+            io_weight: Some(io_weight),
+            ..ResourceProfile::default()
+        }
+    }
+
+    #[test]
+    fn resolve_profile_uses_catalog_baseline() {
+        let mut profiles = HashMap::new();
+        profiles.insert("memory_heavy".to_string(), profile(256, 300));
+        let catalog = ProfileCatalog { profiles };
+
+        let resolved = resolve_profile(&catalog, Some("memory_heavy"), None).unwrap();
+        assert_eq!(resolved.memory_bytes, Some(256));
+        assert_eq!(resolved.io_weight, Some(300));
+    }
+
+    #[test]
+    fn resolve_profile_applies_inline_overrides() {
+        let mut profiles = HashMap::new();
+        profiles.insert("memory_heavy".to_string(), profile(256, 300));
+        let catalog = ProfileCatalog { profiles };
+
+        let resolved = resolve_profile(
+            &catalog,
+            Some("memory_heavy"),
+            Some(&ResourceProfile {
+                io_weight: Some(900),
+                network_bandwidth_bytes_per_sec: Some(10_000),
+                ..ResourceProfile::default()
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.memory_bytes, Some(256));
+        assert_eq!(resolved.io_weight, Some(900));
+        assert_eq!(resolved.network_bandwidth_bytes_per_sec, Some(10_000));
+    }
+
+    #[test]
+    fn resolve_profile_falls_back_to_inline_for_unknown_id() {
+        let catalog = ProfileCatalog::default();
+        let resolved = resolve_profile(
+            &catalog,
+            Some("unknown"),
+            Some(&ResourceProfile {
+                io_weight: Some(123),
+                ..ResourceProfile::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(resolved.io_weight, Some(123));
+    }
+
+    #[test]
+    fn profile_catalog_load_rejects_unsupported_version() {
+        let path = PathBuf::from(format!(
+            "/tmp/cosmos-profile-catalog-{}-{}.json",
+            std::process::id(),
+            crate::monotonic_now_ns()
+        ));
+        fs::write(&path, r#"{"version":2,"profiles":{}}"#).unwrap();
+        let result = ProfileCatalog::load(Some(path.as_path()));
+        let _ = fs::remove_file(&path);
+        assert!(result.is_err());
     }
 }

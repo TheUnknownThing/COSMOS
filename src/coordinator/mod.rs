@@ -3,7 +3,6 @@
 
 mod phase_tracker;
 mod policy;
-mod profiles;
 mod slack;
 
 use std::collections::HashMap;
@@ -13,7 +12,6 @@ use crate::cgroup::{CgroupReader, CgroupResolver};
 use crate::registry::{InvocationRegistry, InvocationState, PhaseKind, PhaseSlackContext};
 
 use self::policy::compute_allocation;
-use self::profiles::ResourceProfileStore;
 use self::slack::compute_phase_slack_context;
 pub use phase_tracker::PhaseTracker;
 
@@ -44,23 +42,17 @@ pub struct CoordinationTickStats {
 
 pub struct CoordinationEngine {
     phase: PhaseCoordinator,
-    profiles: ResourceProfileStore,
 }
 
 impl CoordinationEngine {
     pub fn new(sample_interval: Duration) -> Self {
         Self {
             phase: PhaseCoordinator::new(sample_interval),
-            profiles: ResourceProfileStore::new(),
         }
     }
 
     pub fn should_tick(&self, now_ns: u64) -> bool {
         self.phase.should_sample(now_ns)
-    }
-
-    pub fn profiles_mut(&mut self) -> &mut ResourceProfileStore {
-        &mut self.profiles
     }
 
     pub fn tick(
@@ -108,8 +100,7 @@ impl CoordinationEngine {
                 &state.phase_ctx,
                 sampled.is_some(),
             );
-            let profile = self.profiles.profile_for(&state);
-            let allocation = compute_allocation(&state.meta, profile.as_ref(), &phase_ctx);
+            let allocation = compute_allocation(&state.meta, state.profile.as_ref(), &phase_ctx);
 
             if phase_ctx != state.phase_ctx {
                 registry.update_phase_ctx(state.meta.tgid, state.meta.id, phase_ctx);
@@ -216,6 +207,7 @@ mod tests {
             estimated_duration_ns: 0,
             slo_class: SloClass::Standard,
             is_cold_start: false,
+            profile_id: None,
             created_at_ns: 0,
         });
         state.cgroup_id = fs::metadata(&cgroup_path).unwrap().ino();
@@ -267,6 +259,7 @@ mod tests {
                 estimated_duration_ns: 10_000_000,
                 slo_class: SloClass::LatencyCritical,
                 is_cold_start: false,
+                profile_id: None,
                 created_at_ns: 0,
             },
             Some(ResourceProfile {

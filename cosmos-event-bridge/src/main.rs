@@ -2,8 +2,8 @@ mod metadata_writer;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use cosmos_metadata_model::{ProfileHints, ProfileId};
 use serde::Deserialize;
-use serde_json::Value;
 use std::collections::hash_map::Entry;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -40,7 +40,9 @@ struct StartEvent {
     kind: String,
     cold_start: bool,
     #[serde(default)]
-    profile_hints: Option<Value>,
+    profile_id: Option<ProfileId>,
+    #[serde(default)]
+    profile_hints: Option<ProfileHints>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,7 +63,9 @@ struct LocalStartEvent {
     kind: String,
     cold_start: bool,
     #[serde(default)]
-    profile_hints: Option<Value>,
+    profile_id: Option<ProfileId>,
+    #[serde(default)]
+    profile_hints: Option<ProfileHints>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,6 +217,7 @@ impl BridgeState {
                 slo_class,
                 if ev.cold_start { 1 } else { 0 },
                 invocation_id,
+                ev.profile_id.as_deref(),
                 ev.profile_hints.as_ref(),
             )
             .with_context(|| format!("failed to write metadata for tgid={}", tgid))?;
@@ -299,6 +304,7 @@ fn handle_local_start(ev: &LocalStartEvent) -> Result<()> {
         slo_class,
         if ev.cold_start { 1 } else { 0 },
         invocation_id,
+        ev.profile_id.as_deref(),
         ev.profile_hints.as_ref(),
     )
     .with_context(|| format!("failed to write metadata for local tgid={}", ev.tgid))?;

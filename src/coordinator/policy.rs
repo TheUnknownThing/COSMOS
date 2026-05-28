@@ -160,6 +160,7 @@ mod tests {
             estimated_duration_ns: 0,
             slo_class,
             is_cold_start: false,
+            profile_id: None,
             created_at_ns: 0,
         }
     }

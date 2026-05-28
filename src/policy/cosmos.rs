@@ -913,6 +913,7 @@ mod tests {
                     _ => SloClass::None,
                 },
                 is_cold_start: cold != 0,
+                profile_id: None,
                 created_at_ns: 1000,
             });
         }

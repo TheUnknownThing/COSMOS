@@ -32,6 +32,7 @@ use scx_utils::build_id;
 use scx_utils::libbpf_clap_opts::LibbpfOpts;
 
 use adapter::scx::ScxAdapter;
+use metadata::load_profile_catalog;
 use metadata::spawn_metadata_listener;
 use policy::cosmos::CosmosPolicy;
 use policy::sfs::SfsPolicy;
@@ -176,6 +177,10 @@ struct Opts {
     /// TCP port for metadata ingestion from the event bridge.
     #[clap(long, default_value = "9732")]
     metadata_port: u16,
+
+    /// Static profile catalog JSON loaded once at startup.
+    #[clap(long)]
+    profile_catalog: Option<std::path::PathBuf>,
 
     /// Show descriptions for statistics.
     #[clap(long)]
@@ -336,7 +341,9 @@ fn main() -> Result<()> {
     let cosmos_opts: CosmosOpts = (&opts).into();
     let sfs_opts: SfsOpts = (&opts).into();
     let registry: RegistryHandle = Arc::new(RwLock::new(InvocationRegistry::new()));
-    let _metadata_handle = spawn_metadata_listener(registry.clone(), opts.metadata_port);
+    let profile_catalog = load_profile_catalog(opts.profile_catalog.as_deref())?;
+    let _metadata_handle =
+        spawn_metadata_listener(registry.clone(), opts.metadata_port, profile_catalog);
 
     loop {
         let stats_server = StatsServer::new(stats::server_data()).launch()?;

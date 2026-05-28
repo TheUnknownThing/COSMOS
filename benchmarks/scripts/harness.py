@@ -27,6 +27,7 @@ REPO_ROOT = SCRIPT_DIR.parent.parent
 RESULTS_ROOT = SCRIPT_DIR / "results"
 DEFAULT_STATS_SOCKET = Path("/var/run/scx/root/stats")
 DEFAULT_EVENT_BRIDGE_PORT = 9731
+DEFAULT_PROFILE_CATALOG = REPO_ROOT / "benchmarks" / "configs" / "profile_catalog.json"
 DEFAULT_SLO_MIN_SLACK_US = 5_000
 DEFAULT_WORKLOAD_DURATION_MS = 250
 SCHEDULER_STATS_READY_TIMEOUT_S = 30.0
@@ -40,6 +41,7 @@ BENCHMARK_WORKLOAD_BIN = REPO_ROOT / "target" / "release" / "cosmos-benchmark-wo
 DEBUG_BPF_MAP = os.environ.get("COSMOS_BENCH_DEBUG_BPF_MAP") == "1"
 GATE_SCRIPT = 'IFS= read -r _ <&"$COSMOS_START_FD"; exec "$@"'
 STOP_SCRIPT = 'kill -STOP $$; exec "$@"'
+INLINE_PROFILE_HINTS = os.environ.get("COSMOS_BENCH_INLINE_PROFILE_HINTS") == "1"
 
 
 @dataclass(frozen=True)
@@ -220,46 +222,67 @@ def stopped_workload_command(command: list[str]) -> list[str]:
     return ["bash", "-c", STOP_SCRIPT, "cosmos-workload", *command]
 
 
+WORKLOAD_PROFILE_HINTS: dict[str, dict[str, int | float]] = {
+    "cpu_burst": {
+        "cpu_intensity": 0.95,
+        "io_weight": 400,
+    },
+    "sleep_short": {
+        "cpu_intensity": 0.05,
+        "io_weight": 100,
+    },
+    "io_mixed": {
+        "cpu_intensity": 0.35,
+        "io_weight": 700,
+        "io_bandwidth_bytes_per_sec": 64 * 1024 * 1024,
+    },
+    "memory_heavy": {
+        "cpu_intensity": 0.45,
+        "memory_bytes": 256 * 1024 * 1024,
+        "working_set_bytes": 128 * 1024 * 1024,
+        "io_weight": 350,
+    },
+    "network_heavy": {
+        "cpu_intensity": 0.30,
+        "network_bandwidth_bytes_per_sec": 128 * 1024 * 1024,
+        "io_weight": 300,
+    },
+    "compression_mixed": {
+        "cpu_intensity": 0.75,
+        "memory_bytes": 128 * 1024 * 1024,
+        "working_set_bytes": 64 * 1024 * 1024,
+        "io_weight": 600,
+    },
+    "graph_bfs": {
+        "cpu_intensity": 0.55,
+        "memory_bytes": 192 * 1024 * 1024,
+        "working_set_bytes": 96 * 1024 * 1024,
+        "io_weight": 300,
+    },
+}
+
+
+def profile_id_for_workload(workload: str) -> str | None:
+    if workload in WORKLOAD_PROFILE_HINTS:
+        return workload
+    return None
+
+
 def profile_hints_for_workload(workload: str) -> dict:
-    profiles = {
-        "cpu_burst": {
-            "cpu_intensity": 0.95,
-            "io_weight": 400,
-        },
-        "sleep_short": {
-            "cpu_intensity": 0.05,
-            "io_weight": 100,
-        },
-        "io_mixed": {
-            "cpu_intensity": 0.35,
-            "io_weight": 700,
-            "io_bandwidth_bytes_per_sec": 64 * 1024 * 1024,
-        },
-        "memory_heavy": {
-            "cpu_intensity": 0.45,
-            "memory_bytes": 256 * 1024 * 1024,
-            "working_set_bytes": 128 * 1024 * 1024,
-            "io_weight": 350,
-        },
-        "network_heavy": {
-            "cpu_intensity": 0.30,
-            "network_bandwidth_bytes_per_sec": 128 * 1024 * 1024,
-            "io_weight": 300,
-        },
-        "compression_mixed": {
-            "cpu_intensity": 0.75,
-            "memory_bytes": 128 * 1024 * 1024,
-            "working_set_bytes": 64 * 1024 * 1024,
-            "io_weight": 600,
-        },
-        "graph_bfs": {
-            "cpu_intensity": 0.55,
-            "memory_bytes": 192 * 1024 * 1024,
-            "working_set_bytes": 96 * 1024 * 1024,
-            "io_weight": 300,
-        },
-    }
-    return dict(profiles.get(workload, {}))
+    if not INLINE_PROFILE_HINTS:
+        return {}
+    return dict(WORKLOAD_PROFILE_HINTS.get(workload, {}))
+
+
+def metadata_profile_fields_for_workload(workload: str) -> dict:
+    fields: dict[str, object] = {}
+    profile_id = profile_id_for_workload(workload)
+    if profile_id is not None:
+        fields["profile_id"] = profile_id
+    profile_hints = profile_hints_for_workload(workload)
+    if profile_hints:
+        fields["profile_hints"] = profile_hints
+    return fields
 
 
 def send_event_bridge_event(port: int, event: dict) -> None:
@@ -540,7 +563,7 @@ def run_workload_invocation(
                         "action_name": workload,
                         "kind": "local-rust",
                         "cold_start": False,
-                        "profile_hints": profile_hints_for_workload(workload),
+                        **metadata_profile_fields_for_workload(workload),
                     },
                 )
             if DEBUG_BPF_MAP:
@@ -626,7 +649,7 @@ def stage_metadata_bridge_invocation(
                     "action_name": workload,
                     "kind": "local-rust",
                     "cold_start": False,
-                    "profile_hints": profile_hints_for_workload(workload),
+                    **metadata_profile_fields_for_workload(workload),
                 },
             )
         metadata_key_visible = None

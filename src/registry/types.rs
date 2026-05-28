@@ -3,6 +3,8 @@
 
 use std::path::PathBuf;
 
+use cosmos_metadata_model::{ProfileHints, ProfileId};
+
 /// A unique opaque invocation identifier.
 pub type InvocationId = u64;
 
@@ -25,19 +27,12 @@ pub struct InvocationMeta {
     pub estimated_duration_ns: u64,
     pub slo_class: SloClass,
     pub is_cold_start: bool,
+    pub profile_id: Option<ProfileId>,
     pub created_at_ns: u64,
 }
 
 /// Optional static resource hints attached to an invocation at start time.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ResourceProfile {
-    pub cpu_intensity: Option<f64>,
-    pub memory_bytes: Option<u64>,
-    pub working_set_bytes: Option<u64>,
-    pub io_weight: Option<u64>,
-    pub io_bandwidth_bytes_per_sec: Option<u64>,
-    pub network_bandwidth_bytes_per_sec: Option<u64>,
-}
+pub type ResourceProfile = ProfileHints;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PhaseKind {

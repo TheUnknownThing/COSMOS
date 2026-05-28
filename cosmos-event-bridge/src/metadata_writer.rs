@@ -5,7 +5,7 @@
 //! has_invocation BPF hint.
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use cosmos_metadata_model::{MetadataDelete, MetadataWrite, ProfileHints};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::OnceLock;
@@ -28,26 +28,26 @@ pub fn write_meta(
     slo_class: u32,
     is_cold_start: u32,
     invocation_id: u64,
-    profile_hints: Option<&Value>,
+    profile_id: Option<&str>,
+    profile_hints: Option<&ProfileHints>,
 ) -> Result<()> {
     let addr = get_addr();
     let mut stream = TcpStream::connect(&addr)
         .with_context(|| format!("failed to connect to metadata endpoint at {}", addr))?;
 
-    let mut json = serde_json::json!({
-        "tgid": tgid,
-        "deadline_ns": deadline_ns,
-        "estimated_duration_ns": estimated_duration_ns,
-        "slo_class": slo_class,
-        "is_cold_start": is_cold_start,
-        "invocation_id": invocation_id,
-    });
-    if let Some(hints) = profile_hints {
-        json["profile_hints"] = hints.clone();
-    }
+    let json = MetadataWrite {
+        tgid,
+        deadline_ns,
+        estimated_duration_ns,
+        slo_class,
+        is_cold_start,
+        invocation_id,
+        profile_id: profile_id.map(str::to_owned),
+        profile_hints: profile_hints.cloned(),
+    };
 
     stream
-        .write_all(json.to_string().as_bytes())
+        .write_all(serde_json::to_string(&json)?.as_bytes())
         .context("failed to write metadata to scheduler")?;
     stream.write_all(b"\n").context("failed to write newline")?;
 
@@ -69,12 +69,10 @@ pub fn delete_meta(tgid: u32) -> Result<()> {
     let mut stream = TcpStream::connect(&addr)
         .with_context(|| format!("failed to connect to metadata endpoint at {}", addr))?;
 
-    let json = serde_json::json!({
-        "tgid": tgid,
-    });
+    let json = MetadataDelete { tgid };
 
     stream
-        .write_all(json.to_string().as_bytes())
+        .write_all(serde_json::to_string(&json)?.as_bytes())
         .context("failed to write delete to scheduler")?;
     stream.write_all(b"\n").context("failed to write newline")?;
 

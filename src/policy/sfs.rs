@@ -361,6 +361,7 @@ mod tests {
             estimated_duration_ns: 0,
             slo_class: SloClass::LatencyCritical,
             is_cold_start: id == 1,
+            profile_id: None,
             created_at_ns,
         }
     }

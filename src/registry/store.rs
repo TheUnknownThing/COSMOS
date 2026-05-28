@@ -31,7 +31,11 @@ impl InvocationRegistry {
 
     /// Insert or update invocation metadata.
     pub fn upsert(&mut self, meta: InvocationMeta) {
-        self.upsert_with_profile(meta, None);
+        let profile = self
+            .by_id
+            .get(&meta.id)
+            .and_then(|state| state.profile.clone());
+        self.upsert_with_profile(meta, profile);
     }
 
     /// Insert or update invocation metadata with optional resource hints.
@@ -46,9 +50,7 @@ impl InvocationRegistry {
             Some(state) => {
                 state.meta = meta;
                 state.completed_at_ns = None;
-                if profile.is_some() {
-                    state.profile = profile;
-                }
+                state.profile = profile;
             }
             None => {
                 self.by_id
@@ -221,6 +223,7 @@ mod tests {
             estimated_duration_ns: 0,
             slo_class: slo,
             is_cold_start: cold,
+            profile_id: None,
             created_at_ns: 1000,
         }
     }
@@ -280,6 +283,7 @@ mod tests {
             estimated_duration_ns: 0,
             slo_class: SloClass::LatencyCritical,
             is_cold_start: false,
+            profile_id: None,
             created_at_ns: 1000,
         });
         reg.upsert(InvocationMeta {
@@ -289,6 +293,7 @@ mod tests {
             estimated_duration_ns: 0,
             slo_class: SloClass::Batch,
             is_cold_start: false,
+            profile_id: None,
             created_at_ns: 5000,
         });
         // Prune with now=6000, TTL=2000: entries older than 4000 are removed
@@ -337,6 +342,23 @@ mod tests {
         assert_eq!(state.phase_ctx.phase, PhaseKind::CpuBound);
         assert_eq!(state.profile.as_ref().unwrap().cpu_intensity, Some(0.9));
         assert_eq!(state.completed_at_ns, None);
+    }
+
+    #[test]
+    fn upsert_with_profile_can_clear_effective_profile() {
+        let mut reg = InvocationRegistry::new();
+        let meta = test_meta(1, 100, 5000, SloClass::LatencyCritical, true);
+        reg.upsert_with_profile(
+            meta.clone(),
+            Some(ResourceProfile {
+                cpu_intensity: Some(0.9),
+                ..ResourceProfile::default()
+            }),
+        );
+
+        reg.upsert_with_profile(meta, None);
+
+        assert!(reg.get_state(1).unwrap().profile.is_none());
     }
 
     #[test]

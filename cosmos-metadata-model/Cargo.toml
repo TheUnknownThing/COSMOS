@@ -1,0 +1,8 @@
+[package]
+name = "cosmos-metadata-model"
+version = "0.1.0"
+edition = "2021"
+description = "Shared metadata wire and profile catalog types for COSMOS"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

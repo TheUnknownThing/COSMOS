@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "profiles": {
+    "cpu_burst": {
+      "cpu_intensity": 0.95,
+      "io_weight": 400
+    },
+    "sleep_short": {
+      "cpu_intensity": 0.05,
+      "io_weight": 100
+    },
+    "io_mixed": {
+      "cpu_intensity": 0.35,
+      "io_weight": 700,
+      "io_bandwidth_bytes_per_sec": 67108864
+    },
+    "memory_heavy": {
+      "cpu_intensity": 0.45,
+      "memory_bytes": 268435456,
+      "working_set_bytes": 134217728,
+      "io_weight": 350
+    },
+    "network_heavy": {
+      "cpu_intensity": 0.3,
+      "network_bandwidth_bytes_per_sec": 134217728,
+      "io_weight": 300
+    },
+    "compression_mixed": {
+      "cpu_intensity": 0.75,
+      "memory_bytes": 134217728,
+      "working_set_bytes": 67108864,
+      "io_weight": 600
+    },
+    "graph_bfs": {
+      "cpu_intensity": 0.55,
+      "memory_bytes": 201326592,
+      "working_set_bytes": 100663296,
+      "io_weight": 300
+    }
+  }
+}

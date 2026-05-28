@@ -60,6 +60,7 @@ latency-aware behavior.
 | `--disable-builtin-idle` | false | Disable direct idle-CPU dispatch |
 | `--disable-deadline-scoring` | false | Use vtime scoring only |
 | `--tail-guard-threshold-us` | — | Slack threshold for tail guard promotion |
+| `--profile-catalog` | — | Static JSON profile catalog loaded once at startup |
 | `--latency-pool-pct` | 50 | % of CPUs in latency pool |
 | `--sfs-threshold-window` | 100 | Arrival samples per SFS threshold update |
 | `--sfs-min-credit-us` | 6000 | Minimum SFS short-job credit (us) |
@@ -150,6 +151,11 @@ Two paths:
 |------|-----------|----------|
 | Event bridge | TCP `127.0.0.1:9731`, NDJSON | OpenWhisk integration |
 | Local events | Direct TCP to event bridge | Benchmark harness |
+
+Metadata writes may carry an optional `profile_id` plus optional inline
+`profile_hints`. When `--profile-catalog <path>` is set, COSMOS resolves
+`profile_id` against the loaded catalog and then applies inline hints as
+field-by-field overrides.
 
 ## Testbed
 
