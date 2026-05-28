@@ -5,6 +5,7 @@
 //! has_invocation BPF hint.
 
 use anyhow::{Context, Result};
+use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::OnceLock;
@@ -27,12 +28,13 @@ pub fn write_meta(
     slo_class: u32,
     is_cold_start: u32,
     invocation_id: u64,
+    profile_hints: Option<&Value>,
 ) -> Result<()> {
     let addr = get_addr();
     let mut stream = TcpStream::connect(&addr)
         .with_context(|| format!("failed to connect to metadata endpoint at {}", addr))?;
 
-    let json = serde_json::json!({
+    let mut json = serde_json::json!({
         "tgid": tgid,
         "deadline_ns": deadline_ns,
         "estimated_duration_ns": estimated_duration_ns,
@@ -40,6 +42,9 @@ pub fn write_meta(
         "is_cold_start": is_cold_start,
         "invocation_id": invocation_id,
     });
+    if let Some(hints) = profile_hints {
+        json["profile_hints"] = hints.clone();
+    }
 
     stream
         .write_all(json.to_string().as_bytes())

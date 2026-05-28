@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::registry::{InvocationMeta, SloClass};
+use crate::registry::{InvocationMeta, ResourceProfile, SloClass};
 use crate::RegistryHandle;
 
 const HAS_INVOCATION_MAP_PATH: &str = "/sys/fs/bpf/cosmos/has_invocation";
@@ -36,6 +36,8 @@ struct MetadataWrite {
     slo_class: u32,
     is_cold_start: u32,
     invocation_id: u64,
+    #[serde(default)]
+    profile_hints: Option<ProfileHintsWire>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +50,35 @@ struct MetadataDelete {
 enum MetadataCommand {
     Write(MetadataWrite),
     Delete(MetadataDelete),
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileHintsWire {
+    #[serde(default)]
+    cpu_intensity: Option<f64>,
+    #[serde(default)]
+    memory_bytes: Option<u64>,
+    #[serde(default)]
+    working_set_bytes: Option<u64>,
+    #[serde(default)]
+    io_weight: Option<u64>,
+    #[serde(default)]
+    io_bandwidth_bytes_per_sec: Option<u64>,
+    #[serde(default)]
+    network_bandwidth_bytes_per_sec: Option<u64>,
+}
+
+impl From<ProfileHintsWire> for ResourceProfile {
+    fn from(value: ProfileHintsWire) -> Self {
+        Self {
+            cpu_intensity: value.cpu_intensity,
+            memory_bytes: value.memory_bytes,
+            working_set_bytes: value.working_set_bytes,
+            io_weight: value.io_weight,
+            io_bandwidth_bytes_per_sec: value.io_bandwidth_bytes_per_sec,
+            network_bandwidth_bytes_per_sec: value.network_bandwidth_bytes_per_sec,
+        }
+    }
 }
 
 unsafe fn sys_bpf(cmd: i32, attr: *const u8, size: u32) -> i64 {
@@ -164,13 +195,11 @@ fn run_metadata_listener(registry: RegistryHandle, port: u16) -> Result<()> {
         match stream {
             Ok(stream) => {
                 if HAS_INVOCATION_FD.get().is_none() {
-                    let fd = open_pinned_map_with_retry(
-                        HAS_INVOCATION_MAP_PATH,
-                        Duration::from_secs(5),
-                    )
-                    .with_context(|| {
-                        format!("failed to open {}", HAS_INVOCATION_MAP_PATH)
-                    })?;
+                    let fd =
+                        open_pinned_map_with_retry(HAS_INVOCATION_MAP_PATH, Duration::from_secs(5))
+                            .with_context(|| {
+                                format!("failed to open {}", HAS_INVOCATION_MAP_PATH)
+                            })?;
                     let _ = HAS_INVOCATION_FD.set(fd);
                 }
                 let reg = registry.clone();
@@ -226,7 +255,7 @@ fn handle_metadata_connection(stream: TcpStream, registry: RegistryHandle) {
                         is_cold_start: cmd.is_cold_start != 0,
                         created_at_ns: now,
                     };
-                    reg.upsert(meta);
+                    reg.upsert_with_profile(meta, cmd.profile_hints.map(Into::into));
                 }
 
                 if let Some(&fd) = HAS_INVOCATION_FD.get() {

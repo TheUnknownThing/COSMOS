@@ -13,6 +13,8 @@ mod metadata;
 mod stats;
 
 mod adapter;
+mod cgroup;
+mod coordinator;
 mod policy;
 mod registry;
 mod scheduler;

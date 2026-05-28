@@ -4,13 +4,18 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use super::types::{InvocationId, InvocationMeta};
+use std::path::PathBuf;
+
+use super::types::{
+    InvocationId, InvocationMeta, InvocationState, PhaseSlackContext, ResourceAllocation,
+    ResourceProfile,
+};
 
 /// Thread-safe central store of all active invocation metadata.
 /// Shared via Arc<RwLock<...>> between the event bridge (writer) and the
 /// scheduler loop (reader).
 pub struct InvocationRegistry {
-    by_id: HashMap<InvocationId, InvocationMeta>,
+    by_id: HashMap<InvocationId, InvocationState>,
     by_tgid: HashMap<u32, InvocationId>,
 }
 
@@ -24,19 +29,37 @@ impl InvocationRegistry {
 
     /// Insert or update invocation metadata.
     pub fn upsert(&mut self, meta: InvocationMeta) {
-        self.by_id.insert(meta.id, meta.clone());
-        // Assumption: At most one active invocation exists per TGID.
-        // If a TGID spawns multiple concurrent invocations (rare), the
-        // last-written wins.
-        self.by_tgid.insert(meta.tgid, meta.id);
+        self.upsert_with_profile(meta, None);
+    }
+
+    /// Insert or update invocation metadata with optional resource hints.
+    pub fn upsert_with_profile(&mut self, meta: InvocationMeta, profile: Option<ResourceProfile>) {
+        if let Some(previous_id) = self.by_tgid.insert(meta.tgid, meta.id) {
+            if previous_id != meta.id {
+                self.by_id.remove(&previous_id);
+            }
+        }
+
+        match self.by_id.get_mut(&meta.id) {
+            Some(state) => {
+                state.meta = meta;
+                if profile.is_some() {
+                    state.profile = profile;
+                }
+            }
+            None => {
+                self.by_id
+                    .insert(meta.id, InvocationState::with_profile(meta, profile));
+            }
+        }
     }
 
     /// Remove invocation when it completes.
     #[allow(dead_code)]
     pub fn remove(&mut self, id: InvocationId) {
-        if let Some(meta) = self.by_id.remove(&id) {
-            if self.by_tgid.get(&meta.tgid) == Some(&id) {
-                self.by_tgid.remove(&meta.tgid);
+        if let Some(state) = self.by_id.remove(&id) {
+            if self.by_tgid.get(&state.meta.tgid) == Some(&id) {
+                self.by_tgid.remove(&state.meta.tgid);
             }
         }
     }
@@ -58,13 +81,70 @@ impl InvocationRegistry {
 
     /// Get metadata for an invocation.
     pub fn get(&self, id: InvocationId) -> Option<&InvocationMeta> {
+        self.by_id.get(&id).map(|state| &state.meta)
+    }
+
+    /// Get the full invocation state.
+    pub fn get_state(&self, id: InvocationId) -> Option<&InvocationState> {
         self.by_id.get(&id)
+    }
+
+    /// Resolve a TGID directly to invocation metadata.
+    pub fn lookup_tgid_meta(&self, tgid: u32) -> Option<&InvocationMeta> {
+        self.lookup_tgid(tgid).and_then(|id| self.get(id))
+    }
+
+    /// Resolve a TGID directly to full invocation state.
+    pub fn lookup_tgid_state(&self, tgid: u32) -> Option<&InvocationState> {
+        self.lookup_tgid(tgid).and_then(|id| self.get_state(id))
+    }
+
+    /// Get a specific invocation by both TGID and invocation ID.
+    pub fn get_invocation(&self, tgid: u32, id: InvocationId) -> Option<&InvocationState> {
+        (self.by_tgid.get(&tgid) == Some(&id))
+            .then(|| self.by_id.get(&id))
+            .flatten()
+    }
+
+    /// Update phase context for a live invocation.
+    pub fn update_phase_ctx(&mut self, tgid: u32, id: InvocationId, phase_ctx: PhaseSlackContext) {
+        if let Some(state) = self.get_invocation_mut(tgid, id) {
+            state.phase_ctx = phase_ctx;
+        }
+    }
+
+    /// Update desired resource allocation for a live invocation.
+    pub fn update_allocation(
+        &mut self,
+        tgid: u32,
+        id: InvocationId,
+        allocation: ResourceAllocation,
+    ) {
+        if let Some(state) = self.get_invocation_mut(tgid, id) {
+            state.allocation = allocation;
+        }
+    }
+
+    /// Cache resolved cgroup identity for an invocation.
+    pub fn update_cgroup(&mut self, tgid: u32, id: InvocationId, path: PathBuf, cgroup_id: u64) {
+        if let Some(state) = self.get_invocation_mut(tgid, id) {
+            state.cgroup_path = Some(path);
+            state.cgroup_id = cgroup_id;
+        }
     }
 
     /// Iterate over all active invocations. Returns a snapshot to
     /// minimise lock hold time.
     #[allow(dead_code)]
     pub fn active_snapshot(&self) -> Vec<InvocationMeta> {
+        self.by_id
+            .values()
+            .map(|state| state.meta.clone())
+            .collect()
+    }
+
+    /// Iterate over full invocation state. Returns a snapshot to minimise lock hold time.
+    pub fn active_state_snapshot(&self) -> Vec<InvocationState> {
         self.by_id.values().cloned().collect()
     }
 
@@ -76,9 +156,9 @@ impl InvocationRegistry {
     pub fn prune(&mut self, now_ns: u64, ttl_ns: u64) -> Vec<u32> {
         let cutoff = now_ns.saturating_sub(ttl_ns);
         let mut pruned_tgids = Vec::new();
-        self.by_id.retain(|_, meta| {
-            if meta.created_at_ns < cutoff {
-                pruned_tgids.push(meta.tgid);
+        self.by_id.retain(|_, state| {
+            if state.meta.created_at_ns < cutoff {
+                pruned_tgids.push(state.meta.tgid);
                 false
             } else {
                 true
@@ -86,6 +166,14 @@ impl InvocationRegistry {
         });
         self.by_tgid.retain(|_, id| self.by_id.contains_key(id));
         pruned_tgids
+    }
+
+    fn get_invocation_mut(&mut self, tgid: u32, id: InvocationId) -> Option<&mut InvocationState> {
+        if self.by_tgid.get(&tgid) == Some(&id) {
+            self.by_id.get_mut(&id)
+        } else {
+            None
+        }
     }
 }
 
@@ -101,7 +189,7 @@ pub type RegistryHandle = Arc<RwLock<InvocationRegistry>>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::types::SloClass;
+    use crate::registry::types::{PhaseKind, ResourceProfile, SloClass};
 
     fn test_meta(
         id: u64,
@@ -163,7 +251,7 @@ mod tests {
         reg.upsert(test_meta(2, 100, 8000, SloClass::Batch, false));
         // Last written invocation wins for the same tgid
         assert_eq!(reg.lookup_tgid(100), Some(2));
-        assert!(reg.get(1).is_some()); // old ID still in by_id
+        assert!(reg.get(1).is_none());
     }
 
     #[test]
@@ -200,5 +288,37 @@ mod tests {
         reg.upsert(test_meta(2, 200, 6000, SloClass::Batch, false));
         let snap = reg.active_snapshot();
         assert_eq!(snap.len(), 2);
+    }
+
+    #[test]
+    fn upsert_with_profile_preserves_runtime_state() {
+        let mut reg = InvocationRegistry::new();
+        let meta = test_meta(1, 100, 5000, SloClass::LatencyCritical, true);
+        reg.upsert_with_profile(
+            meta.clone(),
+            Some(ResourceProfile {
+                cpu_intensity: Some(0.9),
+                ..ResourceProfile::default()
+            }),
+        );
+
+        reg.update_phase_ctx(
+            100,
+            1,
+            PhaseSlackContext {
+                phase: PhaseKind::CpuBound,
+                last_phase_update_ns: 123,
+                ..PhaseSlackContext::default()
+            },
+        );
+
+        let mut refreshed = meta.clone();
+        refreshed.deadline_ns = 9999;
+        reg.upsert(refreshed);
+
+        let state = reg.get_state(1).unwrap();
+        assert_eq!(state.meta.deadline_ns, 9999);
+        assert_eq!(state.phase_ctx.phase, PhaseKind::CpuBound);
+        assert_eq!(state.profile.as_ref().unwrap().cpu_intensity, Some(0.9));
     }
 }

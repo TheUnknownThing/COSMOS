@@ -5,4 +5,7 @@ pub mod store;
 pub mod types;
 
 pub use store::{InvocationRegistry, RegistryHandle};
-pub use types::{InvocationMeta, SloClass};
+pub use types::{
+    InvocationMeta, InvocationState, PhaseKind, PhaseSlackContext, ResourcePressureTotals,
+    ResourceProfile, ResourceSnapshot, SloClass,
+};
