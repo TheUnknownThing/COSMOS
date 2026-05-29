@@ -24,6 +24,7 @@ type AppResult<T> = Result<T, String>;
 struct Args {
     workload: String,
     duration_ms: u64,
+    warm_hold_ms: u64,
 }
 
 fn main() {
@@ -43,7 +44,7 @@ fn run() -> AppResult<()> {
         "cpu_burst" => run_cpu_burst(target),
         "sleep_short" => run_sleep_short(target),
         "io_mixed" => run_io_mixed(target),
-        "memory_heavy" => run_memory_heavy(target),
+        "memory_heavy" => run_memory_heavy(target, Duration::from_millis(args.warm_hold_ms)),
         "network_heavy" => run_network_heavy(target),
         "pipeline" => run_pipeline(target),
         "compression_mixed" => run_compression_mixed(target),
@@ -55,6 +56,7 @@ fn run() -> AppResult<()> {
 fn parse_args(args: impl IntoIterator<Item = String>) -> AppResult<Args> {
     let mut workload = None;
     let mut duration_ms = DEFAULT_DURATION_MS;
+    let mut warm_hold_ms = 0;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -72,6 +74,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> AppResult<Args> {
                     .parse::<u64>()
                     .map_err(|_| format!("invalid duration-ms: {value}"))?;
             }
+            "--warm-hold-ms" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--warm-hold-ms requires a value".to_string())?;
+                warm_hold_ms = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("invalid warm-hold-ms: {value}"))?;
+            }
             "--help" | "-h" => {
                 print_usage();
                 process::exit(0);
@@ -88,11 +98,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> AppResult<Args> {
     Ok(Args {
         workload,
         duration_ms,
+        warm_hold_ms,
     })
 }
 
 fn print_usage() {
-    eprintln!("Usage: cosmos-benchmark-workload --workload <name> [--duration-ms <ms>]");
+    eprintln!(
+        "Usage: cosmos-benchmark-workload --workload <name> [--duration-ms <ms>] [--warm-hold-ms <ms>]"
+    );
 }
 
 fn execute_calibrated_wall_time<F>(target: Duration, mut unit: F) -> AppResult<()>
@@ -203,12 +216,16 @@ fn run_io_mixed(target: Duration) -> AppResult<()> {
     result
 }
 
-fn run_memory_heavy(target: Duration) -> AppResult<()> {
+fn run_memory_heavy(target: Duration, warm_hold: Duration) -> AppResult<()> {
     let mut job = MemoryHeavyJob::new(MEMORY_HEAVY_BYTES);
-    execute_calibrated_wall_time(target, || {
+    let result = execute_calibrated_wall_time(target, || {
         job.run_once();
         Ok(())
-    })
+    });
+    if result.is_ok() && !warm_hold.is_zero() {
+        thread::sleep(warm_hold);
+    }
+    result
 }
 
 fn run_network_heavy(target: Duration) -> AppResult<()> {

@@ -129,6 +129,9 @@ pub struct InvocationState {
     pub cgroup_path: Option<PathBuf>,
     pub cgroup_id: u64,
     pub completed_at_ns: Option<u64>,
+    pub cold_load_penalty_ns: Option<u64>,
+    pub invocation_count: u64,
+    pub last_completed_ns: Option<u64>,
 }
 
 impl InvocationState {
@@ -141,11 +144,15 @@ impl InvocationState {
             cgroup_path: None,
             cgroup_id: 0,
             completed_at_ns: None,
+            cold_load_penalty_ns: None,
+            invocation_count: 1,
+            last_completed_ns: None,
         }
     }
 
     pub fn with_profile(meta: InvocationMeta, profile: Option<ResourceProfile>) -> Self {
         let mut state = Self::new(meta);
+        state.cold_load_penalty_ns = profile.as_ref().and_then(|p| p.cold_load_penalty_ns);
         state.profile = profile;
         state
     }

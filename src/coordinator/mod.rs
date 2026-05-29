@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::cgroup::{CgroupReader, CgroupResolver};
 use crate::registry::{InvocationRegistry, InvocationState, PhaseKind, PhaseSlackContext};
 
-use self::policy::compute_allocation;
+use self::policy::compute_allocation_for_state;
 use self::slack::compute_phase_slack_context;
 pub use phase_tracker::{PhaseTracker, PredictivePhaseTracker};
 
@@ -44,21 +44,31 @@ pub struct CoordinationEngine {
     phase: PhaseCoordinator,
     predictor: PredictivePhaseTracker,
     phase_prediction_enabled: bool,
+    warm_value_enabled: bool,
 }
 
 impl CoordinationEngine {
     pub fn new(sample_interval: Duration) -> Self {
-        Self::with_phase_prediction(sample_interval, true)
+        Self::with_options(sample_interval, true, true)
     }
 
     pub fn with_phase_prediction(
         sample_interval: Duration,
         phase_prediction_enabled: bool,
     ) -> Self {
+        Self::with_options(sample_interval, phase_prediction_enabled, true)
+    }
+
+    pub fn with_options(
+        sample_interval: Duration,
+        phase_prediction_enabled: bool,
+        warm_value_enabled: bool,
+    ) -> Self {
         Self {
             phase: PhaseCoordinator::new(sample_interval),
             predictor: PredictivePhaseTracker::new(),
             phase_prediction_enabled,
+            warm_value_enabled,
         }
     }
 
@@ -97,26 +107,46 @@ impl CoordinationEngine {
         }
 
         for state in states {
-            if state.completed_at_ns.is_some() {
-                continue;
-            }
-            let sampled = sampled_phase_by_invocation.get(&(state.meta.tgid, state.meta.id));
-            let observed_phase = sampled
-                .map(|update| update.phase_ctx.phase)
-                .unwrap_or(state.phase_ctx.phase);
-            let predicted_phase = self
-                .phase_prediction_enabled
-                .then(|| self.predictor.predict(&state, now_ns))
-                .flatten();
-            let phase = predicted_phase.unwrap_or(observed_phase);
-            let phase_ctx = compute_phase_slack_context(
-                &state.meta,
-                phase,
-                now_ns,
-                &state.phase_ctx,
-                sampled.is_some() || predicted_phase.is_some(),
-            );
-            let allocation = compute_allocation(&state.meta, state.profile.as_ref(), &phase_ctx);
+            let (phase_ctx, allocation) = if state.completed_at_ns.is_some() {
+                if state.cgroup_path.is_none() || state.cgroup_id == 0 {
+                    if let Some((path, cgroup_id)) = self.phase.resolve_cgroup(&state) {
+                        registry.update_cgroup(state.meta.tgid, state.meta.id, path, cgroup_id);
+                        stats.cgroup_updates = stats.cgroup_updates.saturating_add(1);
+                    }
+                }
+                let phase_ctx = completed_phase_ctx(now_ns, &state.phase_ctx);
+                let allocation = compute_allocation_for_state(
+                    &state,
+                    &phase_ctx,
+                    now_ns,
+                    self.warm_value_enabled,
+                );
+                (phase_ctx, allocation)
+            } else {
+                let sampled = sampled_phase_by_invocation.get(&(state.meta.tgid, state.meta.id));
+                let observed_phase = sampled
+                    .map(|update| update.phase_ctx.phase)
+                    .unwrap_or(state.phase_ctx.phase);
+                let predicted_phase = self
+                    .phase_prediction_enabled
+                    .then(|| self.predictor.predict(&state, now_ns))
+                    .flatten();
+                let phase = predicted_phase.unwrap_or(observed_phase);
+                let phase_ctx = compute_phase_slack_context(
+                    &state.meta,
+                    phase,
+                    now_ns,
+                    &state.phase_ctx,
+                    sampled.is_some() || predicted_phase.is_some(),
+                );
+                let allocation = compute_allocation_for_state(
+                    &state,
+                    &phase_ctx,
+                    now_ns,
+                    self.warm_value_enabled,
+                );
+                (phase_ctx, allocation)
+            };
 
             if phase_ctx != state.phase_ctx {
                 registry.update_phase_ctx(state.meta.tgid, state.meta.id, phase_ctx);
@@ -187,6 +217,13 @@ impl PhaseCoordinator {
     pub fn remove_tgid(&mut self, tgid: u32) {
         self.tracker.remove(tgid);
     }
+
+    fn resolve_cgroup(&mut self, state: &InvocationState) -> Option<(std::path::PathBuf, u64)> {
+        match state.cgroup_path.as_ref() {
+            Some(path) if state.cgroup_id != 0 => Some((path.clone(), state.cgroup_id)),
+            _ => self.resolver.resolve(state.meta.tgid).ok(),
+        }
+    }
 }
 
 fn build_phase_ctx(phase: PhaseKind, now_ns: u64, prev: &PhaseSlackContext) -> PhaseSlackContext {
@@ -198,6 +235,20 @@ fn build_phase_ctx(phase: PhaseKind, now_ns: u64, prev: &PhaseSlackContext) -> P
         PhaseKind::CpuBound | PhaseKind::Mixed | PhaseKind::Unknown
     );
     ctx
+}
+
+fn completed_phase_ctx(now_ns: u64, prev: &PhaseSlackContext) -> PhaseSlackContext {
+    PhaseSlackContext {
+        phase: PhaseKind::Idle,
+        slack_level: crate::registry::SlackLevel::Normal,
+        cpu_priority_modifier: 0,
+        needs_cpu: false,
+        last_phase_update_ns: if prev.phase == PhaseKind::Idle {
+            prev.last_phase_update_ns
+        } else {
+            now_ns
+        },
+    }
 }
 
 #[cfg(test)]
@@ -372,6 +423,43 @@ mod tests {
         let state = registry.lookup_tgid_state(101).unwrap();
 
         assert_eq!(state.phase_ctx.phase, PhaseKind::Unknown);
+    }
+
+    #[test]
+    fn coordination_tick_updates_completed_warm_value_allocation() {
+        let completed_at = 1_000_000_000;
+        let now = completed_at + 1_000_000_000;
+        let mut registry = InvocationRegistry::new();
+        registry.upsert_with_profile(
+            InvocationMeta {
+                id: 1,
+                tgid: 101,
+                deadline_ns: 0,
+                estimated_duration_ns: 250_000_000,
+                slo_class: SloClass::Standard,
+                is_cold_start: false,
+                profile_id: Some("memory_heavy".to_string()),
+                created_at_ns: 0,
+            },
+            Some(ResourceProfile {
+                memory_bytes: Some(512 * 1024 * 1024),
+                working_set_bytes: Some(256 * 1024 * 1024),
+                cold_load_penalty_ns: Some(2_000_000_000),
+                ..ResourceProfile::default()
+            }),
+        );
+        registry.mark_completed_by_tgid(101, completed_at);
+
+        let mut engine = CoordinationEngine::with_options(Duration::from_millis(100), true, true);
+        let stats = engine.tick(&mut registry, now);
+        let state = registry.lookup_tgid_state(101).unwrap();
+
+        assert_eq!(stats.phase_ctx_updates, 1);
+        assert_eq!(stats.allocation_updates, 1);
+        assert_eq!(state.phase_ctx.phase, PhaseKind::Idle);
+        assert!(!state.phase_ctx.needs_cpu);
+        assert_eq!(state.allocation.memory_min_bytes, Some(256 * 1024 * 1024));
+        assert_eq!(state.allocation.io_weight, None);
     }
 
     fn remove_test_cgroup(path: &PathBuf) {

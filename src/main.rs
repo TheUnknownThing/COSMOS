@@ -195,6 +195,10 @@ struct Opts {
     #[clap(long, action = clap::ArgAction::SetTrue)]
     disable_phase_prediction: bool,
 
+    /// Disable value-based warm-state memory protection for ablation runs.
+    #[clap(long, action = clap::ArgAction::SetTrue)]
+    disable_warm_value: bool,
+
     /// Show descriptions for statistics.
     #[clap(long)]
     help_stats: bool,
@@ -415,6 +419,7 @@ fn main() -> Result<()> {
                 cgroup_actuator_enabled: !opts.disable_cgroup_actuator,
                 network_actuator_enabled: !opts.disable_network_actuator,
                 phase_prediction_enabled: !opts.disable_phase_prediction,
+                warm_value_enabled: !opts.disable_warm_value,
             },
         );
 

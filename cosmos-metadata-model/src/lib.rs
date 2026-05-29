@@ -26,6 +26,8 @@ pub struct ProfileHints {
     pub network_bandwidth_bytes_per_sec: Option<u64>,
     #[serde(default)]
     pub phase_sequence: Option<Vec<PhaseSequenceEntry>>,
+    #[serde(default)]
+    pub cold_load_penalty_ns: Option<u64>,
 }
 
 impl ProfileHints {
@@ -37,6 +39,7 @@ impl ProfileHints {
             && self.io_bandwidth_bytes_per_sec.is_none()
             && self.network_bandwidth_bytes_per_sec.is_none()
             && self.phase_sequence.is_none()
+            && self.cold_load_penalty_ns.is_none()
     }
 
     pub fn overlay(&mut self, override_hints: &Self) {
@@ -60,6 +63,9 @@ impl ProfileHints {
         }
         if override_hints.phase_sequence.is_some() {
             self.phase_sequence = override_hints.phase_sequence.clone();
+        }
+        if override_hints.cold_load_penalty_ns.is_some() {
+            self.cold_load_penalty_ns = override_hints.cold_load_penalty_ns;
         }
     }
 

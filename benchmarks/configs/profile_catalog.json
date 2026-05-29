@@ -18,6 +18,7 @@
       "cpu_intensity": 0.45,
       "memory_bytes": 268435456,
       "working_set_bytes": 134217728,
+      "cold_load_penalty_ns": 2000000000,
       "io_weight": 350
     },
     "network_heavy": {
@@ -29,6 +30,7 @@
       "cpu_intensity": 0.5,
       "memory_bytes": 100663296,
       "working_set_bytes": 50331648,
+      "cold_load_penalty_ns": 750000000,
       "io_weight": 650,
       "io_bandwidth_bytes_per_sec": 100663296,
       "network_bandwidth_bytes_per_sec": 100663296,
@@ -51,6 +53,7 @@
       "cpu_intensity": 0.75,
       "memory_bytes": 134217728,
       "working_set_bytes": 67108864,
+      "cold_load_penalty_ns": 1000000000,
       "io_weight": 600,
       "phase_sequence": [
         {
@@ -71,6 +74,7 @@
       "cpu_intensity": 0.55,
       "memory_bytes": 201326592,
       "working_set_bytes": 100663296,
+      "cold_load_penalty_ns": 1500000000,
       "io_weight": 300
     }
   }

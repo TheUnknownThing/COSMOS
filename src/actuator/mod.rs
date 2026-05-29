@@ -14,7 +14,7 @@ use aya::{
 use log::{info, warn};
 
 use crate::cgroup::CgroupWriter;
-use crate::registry::{InvocationRegistry, ResourceAllocation};
+use crate::registry::{InvocationRegistry, InvocationState, PhaseKind, ResourceAllocation};
 
 const DEFAULT_IO_WEIGHT: u64 = 100;
 
@@ -59,7 +59,7 @@ impl CgroupActuator {
 
         for state in states
             .iter()
-            .filter(|state| state.completed_at_ns.is_none())
+            .filter(|state| should_apply_cgroup_state(state))
         {
             let Some(path) = state.cgroup_path.clone() else {
                 continue;
@@ -186,6 +186,16 @@ impl CgroupActuator {
         }
         Ok(())
     }
+}
+
+fn should_apply_cgroup_state(state: &InvocationState) -> bool {
+    if state.completed_at_ns.is_none() {
+        return true;
+    }
+    state.phase_ctx.phase == PhaseKind::Idle
+        && !state.phase_ctx.needs_cpu
+        && (state.allocation.memory_min_bytes.is_some()
+            || state.allocation.memory_high_bytes.is_some())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -555,6 +565,42 @@ mod tests {
         assert_eq!(
             fs::read_to_string(cgroup.join("io.max")).unwrap(),
             "8:0 rbps=max wbps=max\n"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cgroup_actuator_keeps_warm_idle_memory_policy_after_completion() {
+        let root = temp_root("warm-cgroup");
+        let cgroup = test_cgroup(&root, "warm");
+        let mut registry = InvocationRegistry::new();
+        let mut state = state(1, 100, cgroup.clone());
+        state.phase_ctx.phase = PhaseKind::Idle;
+        state.phase_ctx.needs_cpu = false;
+        state.completed_at_ns = Some(1);
+        state.allocation = ResourceAllocation {
+            memory_high_bytes: Some(256 * 1024 * 1024),
+            memory_min_bytes: Some(128 * 1024 * 1024),
+            ..ResourceAllocation::default()
+        };
+        registry.upsert(state.meta.clone());
+        registry.update_cgroup(
+            state.meta.tgid,
+            state.meta.id,
+            state.cgroup_path.clone().unwrap(),
+            state.cgroup_id,
+        );
+        registry.update_phase_ctx(state.meta.tgid, state.meta.id, state.phase_ctx.clone());
+        registry.mark_completed_by_tgid(100, 1);
+        registry.update_allocation(state.meta.tgid, state.meta.id, state.allocation.clone());
+
+        let mut actuator = CgroupActuator::with_writer(CgroupWriter::with_root(&root));
+        let stats = actuator.apply_from_registry(&registry);
+        assert_eq!(stats.cgroup_applied, 1);
+        assert_eq!(
+            fs::read_to_string(cgroup.join("memory.min")).unwrap(),
+            "134217728\n"
         );
 
         fs::remove_dir_all(root).unwrap();

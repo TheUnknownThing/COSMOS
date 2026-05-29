@@ -2,11 +2,14 @@
 // GNU General Public License version 2.
 
 use crate::registry::{
-    InvocationMeta, PhaseKind, PhaseSlackContext, ResourceAllocation, ResourceProfile, SlackLevel,
-    SloClass,
+    InvocationMeta, InvocationState, PhaseKind, PhaseSlackContext, ResourceAllocation,
+    ResourceProfile, SlackLevel, SloClass,
 };
 
 const MIB: u64 = 1024 * 1024;
+const WARM_REUSE_HALF_LIFE_NS: f64 = 30_000_000_000.0;
+const WARM_VALUE_HIGH_THRESHOLD: f64 = 0.25;
+const WARM_VALUE_LOW_THRESHOLD: f64 = 0.05;
 
 pub fn compute_allocation(
     meta: &InvocationMeta,
@@ -26,6 +29,18 @@ pub fn compute_allocation(
     }
 
     allocation
+}
+
+pub fn compute_allocation_for_state(
+    state: &InvocationState,
+    phase_ctx: &PhaseSlackContext,
+    now_ns: u64,
+    warm_value_enabled: bool,
+) -> ResourceAllocation {
+    if state.completed_at_ns.is_some() {
+        return compute_completed_allocation(state, now_ns, warm_value_enabled);
+    }
+    compute_allocation(&state.meta, state.profile.as_ref(), phase_ctx)
 }
 
 fn io_weight(
@@ -107,6 +122,68 @@ fn apply_memory_profile(
             None => high,
         });
     }
+}
+
+fn compute_completed_allocation(
+    state: &InvocationState,
+    now_ns: u64,
+    warm_value_enabled: bool,
+) -> ResourceAllocation {
+    let mut allocation = ResourceAllocation::default();
+    let Some(profile) = state.profile.as_ref() else {
+        return allocation;
+    };
+
+    if let Some(memory_bytes) = profile.memory_bytes.filter(|v| *v > 0) {
+        let working_set = profile.working_set_bytes.or(profile.memory_bytes);
+        let high = memory_bytes.saturating_add(64 * MIB);
+        allocation.memory_high_bytes = Some(match working_set {
+            Some(ws) => high.max(ws.saturating_add(32 * MIB)),
+            None => high,
+        });
+    }
+
+    if !warm_value_enabled {
+        return allocation;
+    }
+
+    let Some(working_set) = profile
+        .working_set_bytes
+        .or(profile.memory_bytes)
+        .filter(|v| *v > 0)
+    else {
+        return allocation;
+    };
+
+    let Some(value) = warm_state_value(state, now_ns) else {
+        allocation.memory_min_bytes = None;
+        return allocation;
+    };
+
+    allocation.memory_min_bytes = if value > WARM_VALUE_HIGH_THRESHOLD {
+        Some(working_set)
+    } else if value > WARM_VALUE_LOW_THRESHOLD {
+        Some(working_set.saturating_div(2).max(1))
+    } else {
+        None
+    };
+    allocation
+}
+
+fn warm_state_value(state: &InvocationState, now_ns: u64) -> Option<f64> {
+    let completed_at_ns = state.completed_at_ns?;
+    let idle_ns = now_ns.saturating_sub(completed_at_ns).max(1);
+    let cold_load_penalty_ns = state
+        .cold_load_penalty_ns
+        .or_else(|| state.profile.as_ref().and_then(|p| p.cold_load_penalty_ns))?;
+    if cold_load_penalty_ns == 0 {
+        return None;
+    }
+
+    let history_probability = 1.0 - 0.5_f64.powf(state.invocation_count.max(1) as f64);
+    let decay = 0.5_f64.powf(idle_ns as f64 / WARM_REUSE_HALF_LIFE_NS);
+    let reuse_probability = (history_probability * decay).clamp(0.0, 1.0);
+    Some(reuse_probability * (cold_load_penalty_ns as f64 / idle_ns as f64))
 }
 
 fn apply_io_profile(
@@ -214,5 +291,56 @@ mod tests {
         );
         assert_eq!(allocation.memory_min_bytes, Some(128 * MIB));
         assert!(allocation.memory_high_bytes.unwrap() > 256 * MIB);
+    }
+
+    #[test]
+    fn completed_warm_state_gets_value_based_memory_min() {
+        let mut state = InvocationState::with_profile(
+            meta(SloClass::Standard),
+            Some(ResourceProfile {
+                memory_bytes: Some(512 * MIB),
+                working_set_bytes: Some(256 * MIB),
+                cold_load_penalty_ns: Some(2_000_000_000),
+                ..ResourceProfile::default()
+            }),
+        );
+        state.completed_at_ns = Some(1_000_000_000);
+        state.last_completed_ns = Some(1_000_000_000);
+        state.cold_load_penalty_ns = Some(2_000_000_000);
+        state.invocation_count = 3;
+
+        let allocation = compute_allocation_for_state(
+            &state,
+            &ctx(PhaseKind::Idle, SlackLevel::Normal),
+            2_000_000_000,
+            true,
+        );
+        assert_eq!(allocation.memory_min_bytes, Some(256 * MIB));
+        assert!(allocation.memory_high_bytes.unwrap() > 512 * MIB);
+        assert_eq!(allocation.io_weight, None);
+        assert_eq!(allocation.network_priority, None);
+    }
+
+    #[test]
+    fn completed_low_value_warm_state_withdraws_memory_min() {
+        let mut state = InvocationState::with_profile(
+            meta(SloClass::Standard),
+            Some(ResourceProfile {
+                memory_bytes: Some(512 * MIB),
+                working_set_bytes: Some(256 * MIB),
+                cold_load_penalty_ns: Some(100_000_000),
+                ..ResourceProfile::default()
+            }),
+        );
+        state.completed_at_ns = Some(1_000_000_000);
+        state.cold_load_penalty_ns = Some(100_000_000);
+
+        let allocation = compute_allocation_for_state(
+            &state,
+            &ctx(PhaseKind::Idle, SlackLevel::Normal),
+            61_000_000_000,
+            true,
+        );
+        assert_eq!(allocation.memory_min_bytes, None);
     }
 }

@@ -11,7 +11,8 @@ use super::types::{
     ResourceProfile,
 };
 
-const COMPLETED_INVOCATION_RETENTION_NS: u64 = 5_000_000_000;
+const MIN_COMPLETED_INVOCATION_RETENTION_NS: u64 = 5_000_000_000;
+const MAX_COMPLETED_INVOCATION_RETENTION_NS: u64 = 60_000_000_000;
 
 /// Thread-safe central store of all active invocation metadata.
 /// Shared via Arc<RwLock<...>> between the event bridge (writer) and the
@@ -48,9 +49,18 @@ impl InvocationRegistry {
 
         match self.by_id.get_mut(&meta.id) {
             Some(state) => {
+                let was_completed = state.completed_at_ns.is_some();
                 state.meta = meta;
                 state.completed_at_ns = None;
                 state.profile = profile;
+                state.cold_load_penalty_ns = state
+                    .profile
+                    .as_ref()
+                    .and_then(|profile| profile.cold_load_penalty_ns)
+                    .or(state.cold_load_penalty_ns);
+                if was_completed {
+                    state.invocation_count = state.invocation_count.saturating_add(1);
+                }
             }
             None => {
                 self.by_id
@@ -82,6 +92,7 @@ impl InvocationRegistry {
         if let Some(id) = self.by_tgid.get(&tgid).copied() {
             if let Some(state) = self.by_id.get_mut(&id) {
                 state.completed_at_ns = Some(now_ns);
+                state.last_completed_ns = Some(now_ns);
             }
         }
     }
@@ -173,7 +184,7 @@ impl InvocationRegistry {
         let mut pruned_tgids = Vec::new();
         self.by_id.retain(|_, state| {
             let completed_expired = state.completed_at_ns.is_some_and(|completed_at_ns| {
-                now_ns.saturating_sub(completed_at_ns) >= COMPLETED_INVOCATION_RETENTION_NS
+                now_ns.saturating_sub(completed_at_ns) >= completed_retention_ns(state)
             });
             if completed_expired || state.meta.created_at_ns < cutoff {
                 pruned_tgids.push(state.meta.tgid);
@@ -193,6 +204,17 @@ impl InvocationRegistry {
             None
         }
     }
+}
+
+fn completed_retention_ns(state: &InvocationState) -> u64 {
+    state
+        .cold_load_penalty_ns
+        .map(|penalty| penalty.saturating_mul(15))
+        .unwrap_or(MIN_COMPLETED_INVOCATION_RETENTION_NS)
+        .clamp(
+            MIN_COMPLETED_INVOCATION_RETENTION_NS,
+            MAX_COMPLETED_INVOCATION_RETENTION_NS,
+        )
 }
 
 impl Default for InvocationRegistry {
@@ -374,12 +396,45 @@ mod tests {
         );
 
         reg.prune(
-            10_000 + COMPLETED_INVOCATION_RETENTION_NS - 1,
+            10_000 + MIN_COMPLETED_INVOCATION_RETENTION_NS - 1,
             60_000_000_000,
         );
         assert!(reg.lookup_tgid_meta(100).is_some());
 
-        reg.prune(10_000 + COMPLETED_INVOCATION_RETENTION_NS, 60_000_000_000);
+        reg.prune(
+            10_000 + MIN_COMPLETED_INVOCATION_RETENTION_NS,
+            60_000_000_000,
+        );
         assert!(reg.lookup_tgid_meta(100).is_none());
+    }
+
+    #[test]
+    fn warm_profile_extends_completed_retention_and_counts_reuse() {
+        let mut reg = InvocationRegistry::new();
+        let meta = test_meta(1, 100, 5000, SloClass::LatencyCritical, true);
+        reg.upsert_with_profile(
+            meta.clone(),
+            Some(ResourceProfile {
+                cold_load_penalty_ns: Some(2_000_000_000),
+                ..ResourceProfile::default()
+            }),
+        );
+        reg.mark_completed_by_tgid(100, 10_000);
+
+        reg.prune(
+            10_000 + MIN_COMPLETED_INVOCATION_RETENTION_NS,
+            60_000_000_000,
+        );
+        assert!(reg.lookup_tgid_meta(100).is_some());
+        assert_eq!(
+            reg.lookup_tgid_state(100).unwrap().last_completed_ns,
+            Some(10_000)
+        );
+
+        reg.upsert(meta);
+        let state = reg.lookup_tgid_state(100).unwrap();
+        assert_eq!(state.invocation_count, 2);
+        assert_eq!(state.cold_load_penalty_ns, Some(2_000_000_000));
+        assert_eq!(state.completed_at_ns, None);
     }
 }

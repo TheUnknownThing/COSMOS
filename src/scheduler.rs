@@ -32,6 +32,7 @@ pub struct SchedulerOptions {
     pub cgroup_actuator_enabled: bool,
     pub network_actuator_enabled: bool,
     pub phase_prediction_enabled: bool,
+    pub warm_value_enabled: bool,
 }
 
 impl Default for SchedulerOptions {
@@ -40,6 +41,7 @@ impl Default for SchedulerOptions {
             cgroup_actuator_enabled: true,
             network_actuator_enabled: true,
             phase_prediction_enabled: true,
+            warm_value_enabled: true,
         }
     }
 }
@@ -74,9 +76,10 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             stats_server,
             prune_counter: 0,
             init_page_faults: 0,
-            coordinator: CoordinationEngine::with_phase_prediction(
+            coordinator: CoordinationEngine::with_options(
                 Duration::from_millis(100),
                 options.phase_prediction_enabled,
+                options.warm_value_enabled,
             ),
             actuator: ResourceActuator::with_enabled(
                 options.cgroup_actuator_enabled,

@@ -542,19 +542,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cosmos-bench-profiler"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "libc",
- "scx_stats",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "cosmos-benchmark-workload"
 version = "0.1.0"
 
