@@ -5,6 +5,5 @@ pub mod reader;
 pub mod resolver;
 pub mod writer;
 
-pub use reader::CgroupReader;
 pub use resolver::CgroupResolver;
 pub use writer::CgroupWriter;

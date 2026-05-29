@@ -178,8 +178,15 @@ fn resolve_slo_class(timeout_ms: u64, explicit: Option<u32>) -> u32 {
     }
 }
 
-fn compute_estimated_duration_ns(timeout_ms: u64, estimated_duration_ms: Option<u64>) -> u64 {
-    estimated_duration_ms.unwrap_or(timeout_ms) * 1_000_000
+fn compute_estimated_duration_ns(
+    timeout_ms: u64,
+    estimated_duration_ms: Option<u64>,
+    profile_hints: Option<&ProfileHints>,
+) -> u64 {
+    estimated_duration_ms
+        .map(|value| value.saturating_mul(1_000_000))
+        .or_else(|| profile_hints.and_then(|hints| hints.estimated_duration_ns))
+        .unwrap_or_else(|| timeout_ms.saturating_mul(1_000_000))
 }
 
 fn monotonic_now_ns() -> u64 {
@@ -204,8 +211,11 @@ impl BridgeState {
         let tgid = docker_inspect_pid(&ev.container_id)?;
         let tgids = container_tgids(tgid);
         let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
-        let estimated_duration_ns =
-            compute_estimated_duration_ns(ev.timeout_ms, ev.estimated_duration_ms);
+        let estimated_duration_ns = compute_estimated_duration_ns(
+            ev.timeout_ms,
+            ev.estimated_duration_ms,
+            ev.profile_hints.as_ref(),
+        );
         let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
         let invocation_id = hash_activation_id(&ev.activation_id);
 
@@ -292,8 +302,11 @@ impl BridgeState {
 
 fn handle_local_start(ev: &LocalStartEvent) -> Result<()> {
     let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
-    let estimated_duration_ns =
-        compute_estimated_duration_ns(ev.timeout_ms, ev.estimated_duration_ms);
+    let estimated_duration_ns = compute_estimated_duration_ns(
+        ev.timeout_ms,
+        ev.estimated_duration_ms,
+        ev.profile_hints.as_ref(),
+    );
     let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
     let invocation_id = hash_activation_id(&ev.activation_id);
 

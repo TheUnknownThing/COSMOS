@@ -27,6 +27,8 @@ pub struct ProfileHints {
     #[serde(default)]
     pub phase_sequence: Option<Vec<PhaseSequenceEntry>>,
     #[serde(default)]
+    pub estimated_duration_ns: Option<u64>,
+    #[serde(default)]
     pub cold_load_penalty_ns: Option<u64>,
 }
 
@@ -39,6 +41,7 @@ impl ProfileHints {
             && self.io_bandwidth_bytes_per_sec.is_none()
             && self.network_bandwidth_bytes_per_sec.is_none()
             && self.phase_sequence.is_none()
+            && self.estimated_duration_ns.is_none()
             && self.cold_load_penalty_ns.is_none()
     }
 
@@ -63,6 +66,9 @@ impl ProfileHints {
         }
         if override_hints.phase_sequence.is_some() {
             self.phase_sequence = override_hints.phase_sequence.clone();
+        }
+        if override_hints.estimated_duration_ns.is_some() {
+            self.estimated_duration_ns = override_hints.estimated_duration_ns;
         }
         if override_hints.cold_load_penalty_ns.is_some() {
             self.cold_load_penalty_ns = override_hints.cold_load_penalty_ns;

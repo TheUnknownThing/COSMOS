@@ -1,0 +1,17 @@
+[package]
+name = "cosmos-offline"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "Offline runtime trace analyzer for COSMOS"
+
+[[bin]]
+name = "cosmos-offline"
+path = "main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env", "unicode", "wrap_help"] }
+cosmos-metadata-model = { path = "../../cosmos-metadata-model" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
