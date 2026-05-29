@@ -8,3 +8,6 @@
 /intf.h
 
 *.ignore.md
+
+# Local benchmark runtime output.
+/.sebs-runtime/

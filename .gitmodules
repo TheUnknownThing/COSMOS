@@ -4,3 +4,4 @@
 [submodule "benchmarks/third_party/AzurePublicDataset"]
 	path = benchmarks/third_party/AzurePublicDataset
 	url = https://github.com/Azure/AzurePublicDataset.git
+	ignore = untracked
