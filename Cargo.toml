@@ -44,5 +44,8 @@ aya = { version = "0.13.1", default-features = false }
 scx_cargo = { path = "rust/scx_cargo", version = "1.1.0" }
 scx_rustland_core = { path = "rust/scx_rustland_core", version = "2.4.11" }
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 enable_backtrace = []

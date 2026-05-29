@@ -10,6 +10,7 @@ mod bpf;
 use bpf::*;
 
 mod metadata;
+mod runtime_trace;
 mod stats;
 
 mod actuator;
@@ -39,6 +40,7 @@ use policy::cosmos::CosmosPolicy;
 use policy::sfs::SfsPolicy;
 use policy::SchedulingPolicy;
 use registry::{InvocationRegistry, RegistryHandle};
+use runtime_trace::TraceCollectorConfig;
 use scheduler::Scheduler;
 
 pub const SCHEDULER_NAME: &str = "COSMOS";
@@ -182,6 +184,14 @@ struct Opts {
     /// Static profile catalog JSON loaded once at startup.
     #[clap(long)]
     profile_catalog: Option<std::path::PathBuf>,
+
+    /// Optional root directory for scheduler-side runtime trace collection.
+    #[clap(long)]
+    trace_root: Option<std::path::PathBuf>,
+
+    /// Sampling interval in milliseconds for the runtime trace collector.
+    #[clap(long, default_value = "100")]
+    trace_sample_ms: u64,
 
     /// Show descriptions for statistics.
     #[clap(long)]
@@ -343,8 +353,16 @@ fn main() -> Result<()> {
     let sfs_opts: SfsOpts = (&opts).into();
     let registry: RegistryHandle = Arc::new(RwLock::new(InvocationRegistry::new()));
     let profile_catalog = load_profile_catalog(opts.profile_catalog.as_deref())?;
-    let _metadata_handle =
-        spawn_metadata_listener(registry.clone(), opts.metadata_port, profile_catalog);
+    let trace_collector = opts.trace_root.clone().map(|root| TraceCollectorConfig {
+        root,
+        sample_interval: Duration::from_millis(opts.trace_sample_ms),
+    });
+    let _metadata_handle = spawn_metadata_listener(
+        registry.clone(),
+        opts.metadata_port,
+        profile_catalog,
+        trace_collector,
+    );
 
     loop {
         let stats_server = StatsServer::new(stats::server_data()).launch()?;

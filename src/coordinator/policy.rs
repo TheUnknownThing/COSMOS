@@ -40,19 +40,12 @@ fn io_weight(
         SlackLevel::Normal => 0,
         SlackLevel::Relaxed => -150,
     };
-    let phase_bias: i64 = match phase_ctx.phase {
-        PhaseKind::IoBound => 250,
-        PhaseKind::Mixed => 100,
-        PhaseKind::MemoryBound => -50,
-        PhaseKind::Idle => -250,
-        PhaseKind::CpuBound | PhaseKind::Unknown => 0,
-    };
     let class_bias: i64 = match meta.slo_class {
         SloClass::LatencyCritical => 100,
         SloClass::Standard | SloClass::None => 0,
         SloClass::Batch => -250,
     };
-    ((base as i64) + slack_bias + phase_bias + class_bias).clamp(10, 1000) as u64
+    ((base as i64) + slack_bias + class_bias).clamp(10, 1000) as u64
 }
 
 fn network_priority(meta: &InvocationMeta, phase_ctx: &PhaseSlackContext) -> u32 {
@@ -62,15 +55,10 @@ fn network_priority(meta: &InvocationMeta, phase_ctx: &PhaseSlackContext) -> u32
         SlackLevel::Normal => 4,
         SlackLevel::Relaxed => 6,
     };
-    let phase_adjusted = match phase_ctx.phase {
-        PhaseKind::IoBound | PhaseKind::Mixed => base.saturating_sub(1),
-        PhaseKind::Idle => base.saturating_add(1),
-        PhaseKind::CpuBound | PhaseKind::MemoryBound | PhaseKind::Unknown => base,
-    };
     match meta.slo_class {
-        SloClass::LatencyCritical => phase_adjusted.min(2),
-        SloClass::Batch => phase_adjusted.max(6),
-        SloClass::Standard | SloClass::None => phase_adjusted,
+        SloClass::LatencyCritical => base.min(2),
+        SloClass::Batch => base.max(6),
+        SloClass::Standard | SloClass::None => base,
     }
     .clamp(1, 7)
 }
@@ -84,9 +72,6 @@ fn apply_memory_profile(
     if let Some(working_set) = working_set.filter(|v| *v > 0) {
         allocation.memory_min_bytes = match phase_ctx.slack_level {
             SlackLevel::Critical | SlackLevel::Tight => Some(working_set),
-            SlackLevel::Normal if phase_ctx.phase == PhaseKind::MemoryBound => {
-                Some(working_set.saturating_div(2).max(1))
-            }
             _ => None,
         };
     }
@@ -123,14 +108,6 @@ fn apply_io_profile(
     if should_limit {
         allocation.io_max_read_bps = Some(bps);
         allocation.io_max_write_bps = Some(bps);
-    }
-    if phase_ctx.phase == PhaseKind::IoBound {
-        allocation.io_latency_target_us = Some(match phase_ctx.slack_level {
-            SlackLevel::Critical => 1_000,
-            SlackLevel::Tight => 2_500,
-            SlackLevel::Normal => 5_000,
-            SlackLevel::Relaxed => 10_000,
-        });
     }
 }
 
@@ -180,7 +157,7 @@ mod tests {
             None,
             &ctx(PhaseKind::IoBound, SlackLevel::Critical),
         );
-        assert_eq!(allocation.io_weight, Some(1000));
+        assert_eq!(allocation.io_weight, Some(900));
         assert_eq!(allocation.network_priority, Some(1));
     }
 
@@ -199,6 +176,7 @@ mod tests {
         assert_eq!(allocation.io_max_read_bps, Some(10_000_000));
         assert_eq!(allocation.network_bandwidth_bytes_per_sec, Some(20_000_000));
         assert_eq!(allocation.network_priority, Some(7));
+        assert_eq!(allocation.io_latency_target_us, None);
     }
 
     #[test]

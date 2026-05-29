@@ -539,6 +539,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simplelog",
+ "tempfile",
 ]
 
 [[package]]
@@ -547,6 +548,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cosmos-metadata-model",
  "libc",
  "scx_stats",
  "serde",

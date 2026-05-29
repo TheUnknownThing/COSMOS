@@ -54,48 +54,27 @@ pub fn compute_slack(meta: &InvocationMeta, now_ns: u64) -> SlackLevel {
 
 pub fn compute_phase_slack_context(
     meta: &InvocationMeta,
-    phase: PhaseKind,
     now_ns: u64,
     previous: &PhaseSlackContext,
-    phase_sampled: bool,
 ) -> PhaseSlackContext {
     let slack_level = compute_slack(meta, now_ns);
     PhaseSlackContext {
-        phase,
+        phase: PhaseKind::Unknown,
         slack_level,
-        cpu_priority_modifier: cpu_priority_modifier(phase, slack_level),
-        needs_cpu: needs_cpu(phase),
-        last_phase_update_ns: if phase_sampled {
-            now_ns
-        } else {
-            previous.last_phase_update_ns
-        },
+        cpu_priority_modifier: cpu_priority_modifier(slack_level),
+        needs_cpu: true,
+        last_phase_update_ns: previous.last_phase_update_ns,
     }
 }
 
-fn needs_cpu(phase: PhaseKind) -> bool {
-    matches!(
-        phase,
-        PhaseKind::CpuBound | PhaseKind::Mixed | PhaseKind::Unknown
-    )
-}
-
-fn cpu_priority_modifier(phase: PhaseKind, slack: SlackLevel) -> i64 {
+fn cpu_priority_modifier(slack: SlackLevel) -> i64 {
     let slack_ms = match slack {
         SlackLevel::Critical => 30,
         SlackLevel::Tight => 12,
         SlackLevel::Normal => 0,
         SlackLevel::Relaxed => -4,
     };
-    let phase_ms = match phase {
-        PhaseKind::CpuBound => 8,
-        PhaseKind::Mixed => 4,
-        PhaseKind::Unknown => 0,
-        PhaseKind::MemoryBound => -8,
-        PhaseKind::IoBound => -10,
-        PhaseKind::Idle => -12,
-    };
-    (slack_ms + phase_ms) * NS_PER_MS
+    slack_ms * NS_PER_MS
 }
 
 #[cfg(test)]
@@ -132,17 +111,18 @@ mod tests {
     }
 
     #[test]
-    fn context_marks_non_cpu_phases() {
+    fn context_keeps_unknown_phase_and_preserves_timestamp() {
         let m = meta(0, 1_000_000, 0);
         let ctx = compute_phase_slack_context(
             &m,
-            PhaseKind::IoBound,
             500_000,
-            &PhaseSlackContext::default(),
-            true,
+            &PhaseSlackContext {
+                last_phase_update_ns: 123,
+                ..PhaseSlackContext::default()
+            },
         );
-        assert!(!ctx.needs_cpu);
-        assert!(ctx.cpu_priority_modifier < 0);
-        assert_eq!(ctx.last_phase_update_ns, 500_000);
+        assert!(ctx.needs_cpu);
+        assert_eq!(ctx.phase, PhaseKind::Unknown);
+        assert_eq!(ctx.last_phase_update_ns, 123);
     }
 }
