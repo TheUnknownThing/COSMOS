@@ -34,6 +34,7 @@ class ReplayInvocation:
     deadline_us: int
     slo_class: int
     profile_hints: dict[str, Any]
+    payload: dict[str, Any] | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,6 +84,24 @@ def parse_args() -> argparse.Namespace:
             "the wsk process so scheduler metadata records profile fields."
         ),
     )
+    parser.add_argument(
+        "--metadata-target",
+        choices=("wsk", "openwhisk-container"),
+        default="openwhisk-container",
+        help=(
+            "Target for COSMOS metadata. openwhisk-container tags the action "
+            "container process tree; wsk tags only the client process."
+        ),
+    )
+    parser.add_argument(
+        "--container-name-map",
+        action="append",
+        default=[],
+        help=(
+            "Mapping key=value for OpenWhisk action container names or IDs. "
+            "Key may be profile_id, kernel/workload, action, or '*'."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -106,6 +125,10 @@ def parse_action_map(raw_items: list[str]) -> dict[str, str]:
             raise SystemExit(f"--action-map must be key=value: {raw}")
         mapping[key] = value
     return mapping
+
+
+def action_container_name(action: str) -> str:
+    return "wsk0_*_" + re.sub(r"[^A-Za-z0-9]", "", action).lower()
 
 
 def load_replay(path: Path, action_map: dict[str, str], limit: int | None) -> list[ReplayInvocation]:
@@ -133,6 +156,11 @@ def load_replay(path: Path, action_map: dict[str, str], limit: int | None) -> li
         )
         deadline_us = int(item.get("deadline_us") or max(target_duration_ms * 2000, 5000))
         function_id = str(item.get("function_id") or item.get("function_hash") or workload)
+        payload = item.get("sebs_payload")
+        if payload is None:
+            payload = item.get("payload")
+        if payload is not None and not isinstance(payload, dict):
+            raise ValueError(f"payload must be an object for invocation {idx}: {item}")
         result.append(
             ReplayInvocation(
                 event_id=str(item.get("event_id") or f"replay-{idx:08d}"),
@@ -146,6 +174,7 @@ def load_replay(path: Path, action_map: dict[str, str], limit: int | None) -> li
                 deadline_us=deadline_us,
                 slo_class=int(item.get("slo_class", 1)),
                 profile_hints=dict(item.get("profile_hints") or {}),
+                payload=payload,
             )
         )
     result.sort(key=lambda item: (item.at_ms, item.invocation_id))
@@ -153,6 +182,8 @@ def load_replay(path: Path, action_map: dict[str, str], limit: int | None) -> li
 
 
 def make_payload(invocation: ReplayInvocation) -> dict[str, Any]:
+    if invocation.payload is not None:
+        return invocation.payload
     return {
         "event_id": invocation.event_id,
         "invocation_id": invocation.invocation_id,
@@ -277,28 +308,58 @@ def send_event_bridge_event(port: int, event: dict[str, Any]) -> str:
     return raw.decode("utf-8", errors="replace").strip()
 
 
-def metadata_start_event(invocation: ReplayInvocation, activation_id: str, tgid: int) -> dict[str, Any]:
-    event = {
-        "type": "local_start",
+def metadata_fields(invocation: ReplayInvocation, activation_id: str) -> dict[str, Any]:
+    fields: dict[str, Any] = {
         "activation_id": activation_id,
-        "tgid": tgid,
         "timeout_ms": max(1, invocation.deadline_us // 1000),
         "estimated_duration_ms": invocation.target_duration_ms,
         "slo_class": invocation.slo_class,
         "action_name": invocation.action,
-        "kind": "openwhisk-wsk",
         "cold_start": False,
         "profile_id": invocation.profile_id,
     }
     if invocation.profile_hints:
-        event["profile_hints"] = invocation.profile_hints
-    return event
+        fields["profile_hints"] = invocation.profile_hints
+    return fields
+
+
+def metadata_start_event(invocation: ReplayInvocation, activation_id: str, tgid: int) -> dict[str, Any]:
+    return {
+        "type": "local_start",
+        **metadata_fields(invocation, activation_id),
+        "tgid": tgid,
+        "kind": "openwhisk-wsk",
+    }
+
+
+def container_metadata_start_event(
+    invocation: ReplayInvocation,
+    activation_id: str,
+    container_id: str,
+) -> dict[str, Any]:
+    return {
+        "type": "start",
+        **metadata_fields(invocation, activation_id),
+        "container_id": container_id,
+        "kind": "openwhisk-container",
+    }
+
+
+def resolve_container_ref(invocation: ReplayInvocation, container_map: dict[str, str]) -> str:
+    explicit = (
+        container_map.get(invocation.profile_id)
+        or container_map.get(invocation.workload)
+        or container_map.get(invocation.action)
+        or container_map.get("*")
+    )
+    return explicit or action_container_name(invocation.action)
 
 
 def run_invocation(
     args: argparse.Namespace,
     invocation: ReplayInvocation,
     run_dir: Path,
+    container_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     scheduled_ns = now_ns()
     payload_path = run_dir / "payloads" / f"{invocation.invocation_id}.json"
@@ -348,12 +409,29 @@ def run_invocation(
         )
         activation_guess = f"{invocation.event_id}-{process.pid}"
         metadata_status = ""
+        metadata_end_event: dict[str, Any] | None = None
         if args.event_bridge_port:
             try:
-                metadata_status = send_event_bridge_event(
-                    args.event_bridge_port,
-                    metadata_start_event(invocation, activation_guess, process.pid),
-                )
+                if args.metadata_target == "openwhisk-container":
+                    container_id = resolve_container_ref(invocation, container_map or {})
+                    start_event = container_metadata_start_event(
+                        invocation, activation_guess, container_id
+                    )
+                    metadata_end_event = {
+                        "type": "end",
+                        "activation_id": activation_guess,
+                        "container_id": container_id,
+                    }
+                else:
+                    start_event = metadata_start_event(
+                        invocation, activation_guess, process.pid
+                    )
+                    metadata_end_event = {
+                        "type": "local_end",
+                        "activation_id": activation_guess,
+                        "tgid": process.pid,
+                    }
+                metadata_status = send_event_bridge_event(args.event_bridge_port, start_event)
             except Exception as exc:
                 metadata_status = f"start-error:{type(exc).__name__}:{exc}"
         try:
@@ -408,14 +486,9 @@ def run_invocation(
         completion_ns = now_ns()
     if args.event_bridge_port:
         try:
-            end_status = send_event_bridge_event(
-                args.event_bridge_port,
-                {
-                    "type": "local_end",
-                    "activation_id": activation_guess,
-                    "tgid": process.pid,
-                },
-            )
+            if metadata_end_event is None:
+                raise RuntimeError("missing metadata end event")
+            end_status = send_event_bridge_event(args.event_bridge_port, metadata_end_event)
             metadata_status = f"{metadata_status};end:{end_status}"
         except Exception as exc:
             metadata_status = f"{metadata_status};end-error:{type(exc).__name__}:{exc}"
@@ -562,6 +635,7 @@ def calibration_invocation(
         deadline_us=max(target_ms * 3_000, 10_000),
         slo_class=1,
         profile_hints={},
+        payload=None,
     )
 
 
@@ -650,6 +724,7 @@ def main() -> int:
         raise SystemExit(f"wsk executable not found: {args.wsk}")
 
     action_map = parse_action_map(args.action_map)
+    container_map = parse_action_map(args.container_name_map)
     run_dir = args.run_dir or args.out_dir / f"openwhisk-azure-{wall_ns()}-{os.getpid()}"
     if args.calibrate:
         return run_calibration(args, action_map, run_dir)
@@ -673,6 +748,7 @@ def main() -> int:
         "replay": str(args.replay),
         "count": len(invocations),
         "action_map": action_map,
+        "container_name_map": container_map,
         "wsk": args.wsk,
         "wsk_arg": args.wsk_arg,
         "blocking": args.blocking,
@@ -683,6 +759,7 @@ def main() -> int:
         "activation_poll_timeout_s": args.activation_poll_timeout_s,
         "dry_run": args.dry_run,
         "event_bridge_port": args.event_bridge_port,
+        "metadata_target": args.metadata_target,
     }
     (run_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -700,7 +777,7 @@ def main() -> int:
         sleep_ns = target_ns - now_ns()
         if sleep_ns > 0:
             time.sleep(sleep_ns / 1_000_000_000)
-        result = run_invocation(args, invocation, run_dir)
+        result = run_invocation(args, invocation, run_dir, container_map)
         with write_lock:
             if not result.get("ok"):
                 failures += 1

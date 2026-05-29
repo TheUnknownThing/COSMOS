@@ -12,6 +12,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_HARNESS_DIR = REPO_ROOT / "benchmarks" / "local_harness"
 AZURE_TRACE_DIR = REPO_ROOT / "benchmarks" / "azure_trace"
 
+if str(AZURE_TRACE_DIR) not in sys.path:
+    sys.path.insert(0, str(AZURE_TRACE_DIR))
+
 
 def load_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -24,11 +27,21 @@ def load_module(name: str, path: Path):
 
 measure_latency = load_module("measure_latency", LOCAL_HARNESS_DIR / "measure_latency.py")
 harness = load_module("harness", LOCAL_HARNESS_DIR / "harness.py")
-azure_builder = load_module(
-    "build_azure_trace_benchmark", AZURE_TRACE_DIR / "build_azure_trace_benchmark.py"
+azure_replay_common = load_module(
+    "azure_replay_common", AZURE_TRACE_DIR / "azure_replay_common.py"
 )
 openwhisk_replay = load_module(
     "run_openwhisk_azure_replay", AZURE_TRACE_DIR / "run_openwhisk_azure_replay.py"
+)
+workload_classifier_2019 = load_module(
+    "workload_classifier_2019", AZURE_TRACE_DIR / "workload_classifier_2019.py"
+)
+azure_2019_synthetic = load_module(
+    "build_azure_trace_2019_synthetic",
+    AZURE_TRACE_DIR / "build_azure_trace_2019_synthetic.py",
+)
+azure_2019_sebs = load_module(
+    "build_azure_trace_2019_sebs", AZURE_TRACE_DIR / "build_azure_trace_2019_sebs.py"
 )
 
 
@@ -156,7 +169,7 @@ class Phase6HarnessTests(unittest.TestCase):
         self.assertIn("503.graph-bfs", harness.WORKLOADS["graph_bfs"].inspired_by)
 
     def test_azure_2021_row_derives_start_and_function_id(self) -> None:
-        event = azure_builder.parse_2021_event(
+        event = azure_replay_common.parse_2021_event(
             {
                 "app": "app-a",
                 "func": "func-b",
@@ -202,6 +215,387 @@ class Phase6HarnessTests(unittest.TestCase):
         self.assertEqual(invocations[0].action, "ow_pipeline")
         self.assertEqual(invocations[0].target_duration_ms, 321)
         self.assertEqual(invocations[0].profile_hints["cpu_intensity"], 0.5)
+
+    def _write_2019_fixture(self, root: Path) -> None:
+        with (root / "invocations_per_function_md.anon.d01.csv").open(
+            "w", encoding="utf-8", newline=""
+        ) as fh:
+            writer = csv.DictWriter(
+                fh,
+                fieldnames=[
+                    "HashOwner",
+                    "HashApp",
+                    "HashFunction",
+                    "Trigger",
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(
+                [
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-http",
+                        "HashFunction": "fn-http",
+                        "Trigger": "http",
+                        "1": "3",
+                        "2": "2",
+                        "3": "1",
+                        "4": "0",
+                    },
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-storage",
+                        "HashFunction": "fn-storage",
+                        "Trigger": "storage",
+                        "1": "0",
+                        "2": "4",
+                        "3": "0",
+                        "4": "4",
+                    },
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-memory",
+                        "HashFunction": "fn-memory",
+                        "Trigger": "queue",
+                        "1": "10",
+                        "2": "0",
+                        "3": "15",
+                        "4": "0",
+                    },
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-timer",
+                        "HashFunction": "fn-timer",
+                        "Trigger": "timer",
+                        "1": "1",
+                        "2": "0",
+                        "3": "1",
+                        "4": "0",
+                    },
+                ]
+            )
+
+        with (root / "function_durations_percentiles.anon.d01.csv").open(
+            "w", encoding="utf-8", newline=""
+        ) as fh:
+            writer = csv.DictWriter(
+                fh,
+                fieldnames=[
+                    "HashOwner",
+                    "HashApp",
+                    "HashFunction",
+                    "Average",
+                    "Count",
+                    "Minimum",
+                    "Maximum",
+                    "percentile_Average_50",
+                    "percentile_Average_75",
+                    "percentile_Average_99",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(
+                [
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-http",
+                        "HashFunction": "fn-http",
+                        "Average": "160",
+                        "Count": "6",
+                        "Minimum": "80",
+                        "Maximum": "300",
+                        "percentile_Average_50": "150",
+                        "percentile_Average_75": "180",
+                        "percentile_Average_99": "250",
+                    },
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-storage",
+                        "HashFunction": "fn-storage",
+                        "Average": "900",
+                        "Count": "8",
+                        "Minimum": "300",
+                        "Maximum": "1600",
+                        "percentile_Average_50": "850",
+                        "percentile_Average_75": "1000",
+                        "percentile_Average_99": "1500",
+                    },
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-memory",
+                        "HashFunction": "fn-memory",
+                        "Average": "300",
+                        "Count": "25",
+                        "Minimum": "100",
+                        "Maximum": "700",
+                        "percentile_Average_50": "300",
+                        "percentile_Average_75": "500",
+                        "percentile_Average_99": "700",
+                    },
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-timer",
+                        "HashFunction": "fn-timer",
+                        "Average": "25",
+                        "Count": "2",
+                        "Minimum": "20",
+                        "Maximum": "40",
+                        "percentile_Average_50": "25",
+                        "percentile_Average_75": "30",
+                        "percentile_Average_99": "40",
+                    },
+                ]
+            )
+
+        with (root / "app_memory_percentiles.anon.d01.csv").open(
+            "w", encoding="utf-8", newline=""
+        ) as fh:
+            writer = csv.DictWriter(
+                fh,
+                fieldnames=[
+                    "HashOwner",
+                    "HashApp",
+                    "SampleCount",
+                    "AverageAllocatedMb",
+                    "AverageAllocatedMb_pct50",
+                    "AverageAllocatedMb_pct75",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(
+                [
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-http",
+                        "SampleCount": "10",
+                        "AverageAllocatedMb": "256",
+                        "AverageAllocatedMb_pct50": "256",
+                        "AverageAllocatedMb_pct75": "300",
+                    },
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-storage",
+                        "SampleCount": "10",
+                        "AverageAllocatedMb": "384",
+                        "AverageAllocatedMb_pct50": "384",
+                        "AverageAllocatedMb_pct75": "512",
+                    },
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-memory",
+                        "SampleCount": "10",
+                        "AverageAllocatedMb": "1536",
+                        "AverageAllocatedMb_pct50": "1536",
+                        "AverageAllocatedMb_pct75": "1800",
+                    },
+                    {
+                        "HashOwner": "owner",
+                        "HashApp": "app-timer",
+                        "SampleCount": "10",
+                        "AverageAllocatedMb": "128",
+                        "AverageAllocatedMb_pct50": "128",
+                        "AverageAllocatedMb_pct75": "160",
+                    },
+                ]
+            )
+
+    def test_2019_classifier_requires_all_file_families(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(workload_classifier_2019.Missing2019DataError):
+                workload_classifier_2019.load_classified_profiles(Path(tmp))
+
+    def test_2019_classifier_infers_multiple_workload_families(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_2019_fixture(root)
+            profiles = workload_classifier_2019.load_classified_profiles(root)
+
+        by_function = {profile.features.function_id: profile for profile in profiles}
+        self.assertEqual(by_function["app-http:fn-http"].family, "network_service")
+        self.assertEqual(by_function["app-storage:fn-storage"].family, "storage_io")
+        self.assertEqual(by_function["app-memory:fn-memory"].family, "memory_heavy")
+        self.assertEqual(by_function["app-timer:fn-timer"].family, "timer_control")
+        self.assertGreater(by_function["app-memory:fn-memory"].confidence, 0.40)
+
+    def test_2019_synthetic_builder_refuses_without_2019_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trace = root / "trace.csv"
+            trace.write_text(
+                "app,func,end_timestamp,duration\napp,fn,1.5,0.5\n",
+                encoding="utf-8",
+            )
+            output = root / "out"
+            with self.assertRaises(SystemExit) as ctx:
+                azure_2019_synthetic.main(
+                    [
+                        "--trace-2021",
+                        str(trace),
+                        "--dataset-2019-dir",
+                        str(root / "missing-2019"),
+                        "--output-dir",
+                        str(output),
+                    ]
+                )
+            self.assertNotEqual(ctx.exception.code, 0)
+            self.assertFalse((output / "replay.json").exists())
+
+    def test_2019_synthetic_builder_maps_classifier_to_synthetic_kernels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset_2019 = root / "dataset2019"
+            dataset_2019.mkdir()
+            self._write_2019_fixture(dataset_2019)
+            trace = root / "trace.csv"
+            trace.write_text(
+                "\n".join(
+                    [
+                        "app,func,end_timestamp,duration",
+                        "app21-a,fn,1.150,0.150",
+                        "app21-b,fn,2.850,0.850",
+                        "app21-c,fn,3.300,0.300",
+                        "app21-d,fn,4.025,0.025",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            output = root / "out"
+
+            rc = azure_2019_synthetic.main(
+                [
+                    "--trace-2021",
+                    str(trace),
+                    "--dataset-2019-dir",
+                    str(dataset_2019),
+                    "--output-dir",
+                    str(output),
+                    "--scale",
+                    "2",
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            replay = json.loads((output / "replay.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                replay["schema"], "cosmos.azure.2019-classified-synthetic-replay"
+            )
+            workloads = {item["workload"] for item in replay["invocations"]}
+            families = {item["workload_family"] for item in replay["invocations"]}
+            self.assertIn("network_heavy", workloads)
+            self.assertIn("io_mixed", workloads)
+            self.assertIn("memory_heavy", workloads)
+            self.assertIn("cpu_burst", workloads)
+            self.assertIn("network_service", families)
+            self.assertEqual(replay["invocations"][0]["at_ms"], 0.0)
+            self.assertEqual(replay["invocations"][1]["duration_ms"], 850)
+
+    def test_2019_sebs_builder_refuses_without_2019_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trace = root / "trace.csv"
+            trace.write_text(
+                "app,func,end_timestamp,duration\napp,fn,1.5,0.5\n",
+                encoding="utf-8",
+            )
+            output = root / "out"
+            with self.assertRaises(SystemExit) as ctx:
+                azure_2019_sebs.main(
+                    [
+                        "--trace-2021",
+                        str(trace),
+                        "--dataset-2019-dir",
+                        str(root / "missing-2019"),
+                        "--output-dir",
+                        str(output),
+                    ]
+                )
+            self.assertNotEqual(ctx.exception.code, 0)
+            self.assertFalse((output / "replay.json").exists())
+
+    def test_2019_sebs_builder_maps_classifier_to_sebs_benchmarks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset_2019 = root / "dataset2019"
+            dataset_2019.mkdir()
+            self._write_2019_fixture(dataset_2019)
+            trace = root / "trace.csv"
+            trace.write_text(
+                "\n".join(
+                    [
+                        "app,func,end_timestamp,duration",
+                        "app21-a,fn,1.150,0.150",
+                        "app21-b,fn,2.850,0.850",
+                        "app21-c,fn,3.300,0.300",
+                        "app21-d,fn,4.025,0.025",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            output = root / "out"
+
+            rc = azure_2019_sebs.main(
+                [
+                    "--trace-2021",
+                    str(trace),
+                    "--dataset-2019-dir",
+                    str(dataset_2019),
+                    "--output-dir",
+                    str(output),
+                    "--runtime",
+                    "python",
+                    "--scale",
+                    "2",
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            replay = json.loads((output / "replay.json").read_text(encoding="utf-8"))
+            profiles = json.loads((output / "profiles.json").read_text(encoding="utf-8"))
+            self.assertEqual(replay["schema"], "cosmos.azure.2019-classified-sebs-replay")
+            workloads = {item["workload"] for item in replay["invocations"]}
+            self.assertIn("110.dynamic-html", workloads)
+            self.assertIn("210.thumbnailer", workloads)
+            self.assertIn("411.image-recognition", workloads)
+            self.assertIn("010.sleep", workloads)
+            self.assertEqual(replay["invocations"][0]["sebs"]["runtime"], "python")
+            self.assertIn("sebs_payload", replay["invocations"][0])
+            self.assertEqual(replay["invocations"][1]["duration_ms"], 850)
+            self.assertIn("family_to_sebs_candidates", profiles)
+            self.assertIn("sebs_benchmark_counts", replay["classifier_summary"])
+
+    def test_openwhisk_replay_uses_explicit_payload_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            replay = Path(tmp) / "replay.json"
+            replay.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "invocations": [
+                            {
+                                "event_id": "az2021-1",
+                                "invocation_id": 7,
+                                "at_ms": 12.5,
+                                "function_id": "app:func",
+                                "profile_id": "azp_000001",
+                                "workload": "010.sleep",
+                                "target_duration_ms": 321,
+                                "deadline_us": 642000,
+                                "slo_class": 1,
+                                "sebs_payload": {"sleep": 1},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            invocation = openwhisk_replay.load_replay(replay, {}, None)[0]
+            self.assertEqual(openwhisk_replay.make_payload(invocation), {"sleep": 1})
 
     def test_openwhisk_activation_parser_accepts_wsk_prefixed_json(self) -> None:
         stdout = (
