@@ -39,7 +39,7 @@ use policy::cosmos::CosmosPolicy;
 use policy::sfs::SfsPolicy;
 use policy::SchedulingPolicy;
 use registry::{InvocationRegistry, RegistryHandle};
-use scheduler::Scheduler;
+use scheduler::{Scheduler, SchedulerOptions};
 
 pub const SCHEDULER_NAME: &str = "COSMOS";
 
@@ -182,6 +182,18 @@ struct Opts {
     /// Static profile catalog JSON loaded once at startup.
     #[clap(long)]
     profile_catalog: Option<std::path::PathBuf>,
+
+    /// Disable cgroup resource control writes for ablation runs.
+    #[clap(long, action = clap::ArgAction::SetTrue)]
+    disable_cgroup_actuator: bool,
+
+    /// Disable network tc policy updates for ablation runs.
+    #[clap(long, action = clap::ArgAction::SetTrue)]
+    disable_network_actuator: bool,
+
+    /// Disable profile-driven phase prediction and use sampled phases only.
+    #[clap(long, action = clap::ArgAction::SetTrue)]
+    disable_phase_prediction: bool,
 
     /// Show descriptions for statistics.
     #[clap(long)]
@@ -384,7 +396,6 @@ fn main() -> Result<()> {
                 let mut policy = CosmosPolicy::new(&cosmos_opts).with_registry(registry.clone());
                 if auto_disable_small {
                     policy.pools_enabled = false;
-                    policy.deadline_scoring_enabled = false;
                 }
                 RuntimePolicy::Cosmos(policy)
             }
@@ -395,7 +406,17 @@ fn main() -> Result<()> {
 
         let adapter = ScxAdapter::new(bpf)?;
 
-        let mut sched = Scheduler::new(registry.clone(), adapter, policy, stats_server);
+        let mut sched = Scheduler::new_with_options(
+            registry.clone(),
+            adapter,
+            policy,
+            stats_server,
+            SchedulerOptions {
+                cgroup_actuator_enabled: !opts.disable_cgroup_actuator,
+                network_actuator_enabled: !opts.disable_network_actuator,
+                phase_prediction_enabled: !opts.disable_phase_prediction,
+            },
+        );
 
         if !sched.run()?.should_restart() {
             break;

@@ -399,21 +399,33 @@ fn flow_policy(allocation: &ResourceAllocation) -> Option<FlowPolicy> {
 }
 
 pub struct ResourceActuator {
-    cgroup: CgroupActuator,
-    network: NetworkActuator,
+    cgroup: Option<CgroupActuator>,
+    network: Option<NetworkActuator>,
 }
 
 impl ResourceActuator {
     pub fn new() -> Self {
+        Self::with_enabled(true, true)
+    }
+
+    pub fn with_enabled(cgroup_enabled: bool, network_enabled: bool) -> Self {
         Self {
-            cgroup: CgroupActuator::new(),
-            network: NetworkActuator::from_env(),
+            cgroup: cgroup_enabled.then(CgroupActuator::new),
+            network: network_enabled.then(NetworkActuator::from_env),
         }
     }
 
     pub fn apply_from_registry(&mut self, registry: &InvocationRegistry) -> ActuatorStats {
-        let cgroup = self.cgroup.apply_from_registry(registry);
-        let network = self.network.apply_from_registry(registry);
+        let cgroup = self
+            .cgroup
+            .as_mut()
+            .map(|actuator| actuator.apply_from_registry(registry))
+            .unwrap_or_default();
+        let network = self
+            .network
+            .as_mut()
+            .map(|actuator| actuator.apply_from_registry(registry))
+            .unwrap_or_default();
         ActuatorStats {
             cgroup_applied: cgroup.cgroup_applied,
             cgroup_resets: cgroup.cgroup_resets,

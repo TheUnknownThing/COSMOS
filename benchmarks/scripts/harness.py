@@ -28,11 +28,15 @@ RESULTS_ROOT = SCRIPT_DIR / "results"
 DEFAULT_STATS_SOCKET = Path("/var/run/scx/root/stats")
 DEFAULT_EVENT_BRIDGE_PORT = 9731
 DEFAULT_PROFILE_CATALOG = REPO_ROOT / "benchmarks" / "configs" / "profile_catalog.json"
+DEFAULT_CGROUP_POLICY_ROOT = Path("/sys/fs/cgroup/cosmos-policy")
 DEFAULT_SLO_MIN_SLACK_US = 5_000
 DEFAULT_WORKLOAD_DURATION_MS = 250
 SCHEDULER_STATS_READY_TIMEOUT_S = 30.0
 EVENT_BRIDGE_EVENT_TIMEOUT_S = 10.0
 TIME_BIN = Path("/usr/bin/time")
+CARGO_BIN = Path(os.environ.get("CARGO", "/root/.cargo/bin/cargo"))
+if not CARGO_BIN.exists():
+    CARGO_BIN = Path("cargo")
 BPFTOOL_BIN = Path("/usr/sbin/bpftool")
 if not BPFTOOL_BIN.exists():
     BPFTOOL_BIN = Path("/usr/bin/bpftool")
@@ -42,6 +46,7 @@ DEBUG_BPF_MAP = os.environ.get("COSMOS_BENCH_DEBUG_BPF_MAP") == "1"
 GATE_SCRIPT = 'IFS= read -r _ <&"$COSMOS_START_FD"; exec "$@"'
 STOP_SCRIPT = 'kill -STOP $$; exec "$@"'
 INLINE_PROFILE_HINTS = os.environ.get("COSMOS_BENCH_INLINE_PROFILE_HINTS") == "1"
+BENCH_CGROUPS_ENABLED = os.environ.get("COSMOS_BENCH_CGROUPS", "1") != "0"
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,17 @@ class StagedInvocation:
     metadata_tgid: int
     metadata_tgids: list[int]
     metadata_key_visible: bool | None
+    slo_class: int
+    cgroup_path: Path | None
+
+
+@dataclass(frozen=True)
+class MixedWorkloadSpec:
+    workload: str
+    count: int
+    duration_ms: int | None = None
+    deadline_us: int | None = None
+    slo_class: int | None = None
 
 
 def default_deadline_us_for_duration(duration_ms: int) -> int:
@@ -143,6 +159,17 @@ WORKLOADS: dict[str, WorkloadSpec] = {
         runner=BENCHMARK_WORKLOAD_BIN,
         inspired_by=("120.uploader",),
         description="loopback TCP transfer workload for network wait and copy pressure",
+    ),
+    "pipeline": WorkloadSpec(
+        name="pipeline",
+        default_duration_ms=DEFAULT_WORKLOAD_DURATION_MS,
+        default_deadline_us=default_deadline_us_for_duration(
+            DEFAULT_WORKLOAD_DURATION_MS
+        ),
+        default_slo_class=1,
+        runner=BENCHMARK_WORKLOAD_BIN,
+        inspired_by=("120.uploader", "311.compression", "220.video-processing"),
+        description="three-stage loopback fetch, CPU compute, and synchronous upload pipeline",
     ),
     "compression_mixed": WorkloadSpec(
         name="compression_mixed",
@@ -247,11 +274,29 @@ WORKLOAD_PROFILE_HINTS: dict[str, dict[str, int | float]] = {
         "network_bandwidth_bytes_per_sec": 128 * 1024 * 1024,
         "io_weight": 300,
     },
+    "pipeline": {
+        "cpu_intensity": 0.50,
+        "memory_bytes": 96 * 1024 * 1024,
+        "working_set_bytes": 48 * 1024 * 1024,
+        "io_weight": 650,
+        "io_bandwidth_bytes_per_sec": 96 * 1024 * 1024,
+        "network_bandwidth_bytes_per_sec": 96 * 1024 * 1024,
+        "phase_sequence": [
+            {"kind": "IoBound", "duration_pct": 33},
+            {"kind": "CpuBound", "duration_pct": 34},
+            {"kind": "IoBound", "duration_pct": 33},
+        ],
+    },
     "compression_mixed": {
         "cpu_intensity": 0.75,
         "memory_bytes": 128 * 1024 * 1024,
         "working_set_bytes": 64 * 1024 * 1024,
         "io_weight": 600,
+        "phase_sequence": [
+            {"kind": "MemoryBound", "duration_pct": 20},
+            {"kind": "CpuBound", "duration_pct": 60},
+            {"kind": "IoBound", "duration_pct": 20},
+        ],
     },
     "graph_bfs": {
         "cpu_intensity": 0.55,
@@ -338,6 +383,58 @@ def descendant_pids(pid: int) -> list[int]:
         ordered.append(current)
         queue.extend(child_pids(current))
     return ordered
+
+
+def benchmark_cgroup_root() -> Path:
+    return Path(os.environ.get("COSMOS_CGROUP_POLICY_ROOT", DEFAULT_CGROUP_POLICY_ROOT))
+
+
+def create_benchmark_cgroup(output_json: Path, invocation_id: int) -> Path | None:
+    if not BENCH_CGROUPS_ENABLED:
+        return None
+    root = benchmark_cgroup_root()
+    root.mkdir(parents=True, exist_ok=True)
+    run_id = output_json.parent.parent.name
+    cgroup = root / f"bench-{run_id}-{invocation_id}"
+    cgroup.mkdir(exist_ok=True)
+    return cgroup
+
+
+def assign_pids_to_cgroup(cgroup: Path | None, pids: Iterable[int]) -> None:
+    if cgroup is None:
+        return
+    procs = cgroup / "cgroup.procs"
+    for pid in pids:
+        try:
+            procs.write_text(f"{pid}\n", encoding="utf-8")
+        except ProcessLookupError:
+            continue
+
+
+def cleanup_benchmark_cgroups(run_dir: Path) -> None:
+    root = benchmark_cgroup_root()
+    invocations_dir = run_dir / "invocations"
+    if not invocations_dir.exists():
+        return
+    for path in sorted(invocations_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        cgroup_path = payload.get("cgroup_path")
+        if not cgroup_path:
+            continue
+        cgroup = Path(cgroup_path)
+        try:
+            resolved_root = root.resolve()
+            resolved_cgroup = cgroup.resolve()
+        except OSError:
+            continue
+        if resolved_cgroup != resolved_root and resolved_cgroup.is_relative_to(resolved_root):
+            try:
+                cgroup.rmdir()
+            except OSError:
+                pass
 
 
 def wait_for_process_stopped(pid: int, timeout_s: float = 2.0) -> int:
@@ -456,7 +553,7 @@ def ensure_release_build() -> None:
         return
     subprocess.run(
         [
-            "cargo",
+            str(CARGO_BIN),
             "build",
             "--release",
             "--manifest-path",
@@ -479,7 +576,7 @@ def ensure_event_bridge_build() -> None:
     ):
         return
     subprocess.run(
-        ["cargo", "build", "--release", "-p", "cosmos-event-bridge"],
+        [str(CARGO_BIN), "build", "--release", "-p", "cosmos-event-bridge"],
         check=True,
         cwd=REPO_ROOT,
     )
@@ -495,7 +592,7 @@ def ensure_benchmark_workload_build() -> None:
     ):
         return
     subprocess.run(
-        ["cargo", "build", "--release", "-p", "cosmos-benchmark-workload"],
+        [str(CARGO_BIN), "build", "--release", "-p", "cosmos-benchmark-workload"],
         check=True,
         cwd=REPO_ROOT,
     )
@@ -599,12 +696,14 @@ def run_workload_invocation(
             else None
         ),
         "deadline_us": deadline_us,
+        "slo_class": effective_slo_class,
         "workload": workload,
         "config": config,
         "stderr_path": str(stderr_path),
         "metadata_tgid": metadata_tgid,
         "metadata_tgids": metadata_tgids,
         "metadata_key_visible": metadata_key_visible,
+        "cgroup_path": None,
     }
     output_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return returncode
@@ -636,6 +735,8 @@ def stage_metadata_bridge_invocation(
         )
         metadata_tgid = wait_for_process_stopped(process.pid)
         metadata_tgids = list(dict.fromkeys([process.pid, metadata_tgid]))
+        cgroup_path = create_benchmark_cgroup(output_json, invocation_id)
+        assign_pids_to_cgroup(cgroup_path, metadata_tgids)
         for tgid in metadata_tgids:
             send_event_bridge_event(
                 metadata_bridge_port,
@@ -670,6 +771,8 @@ def stage_metadata_bridge_invocation(
             metadata_tgid=metadata_tgid,
             metadata_tgids=metadata_tgids,
             metadata_key_visible=metadata_key_visible,
+            slo_class=effective_slo_class,
+            cgroup_path=cgroup_path,
         )
     except Exception:
         stop_process(process, signal.SIGKILL)
@@ -709,12 +812,14 @@ def complete_metadata_bridge_invocation(
         )
         / 1_000_000.0,
         "deadline_us": staged.deadline_us,
+        "slo_class": staged.slo_class,
         "workload": staged.workload,
         "config": staged.config,
         "stderr_path": str(staged.output_json.with_suffix(".stderr")),
         "metadata_tgid": staged.metadata_tgid,
         "metadata_tgids": staged.metadata_tgids,
         "metadata_key_visible": staged.metadata_key_visible,
+        "cgroup_path": str(staged.cgroup_path) if staged.cgroup_path is not None else None,
     }
     staged.output_json.write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8"
@@ -783,47 +888,109 @@ def run_metadata_bridge_invocations(
         raise
 
 
-def parse_mix_spec(mix_str: str) -> list[tuple[str, int]]:
-    """Parse 'cpu_burst:50,sleep_short:50' into list of (workload, count) pairs."""
-    specs: list[tuple[str, int]] = []
-    for part in mix_str.split(","):
+def parse_duration_us(value: str) -> int:
+    normalized = value.strip().lower()
+    if normalized in {"inf", "infinite", "infinity"}:
+        return 24 * 60 * 60 * 1_000_000
+    for suffix, multiplier in (
+        ("us", 1),
+        ("ms", 1_000),
+        ("s", 1_000_000),
+    ):
+        if normalized.endswith(suffix):
+            return int(float(normalized[: -len(suffix)]) * multiplier)
+    return int(normalized)
+
+
+def split_mix_parts(mix_str: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for idx, char in enumerate(mix_str):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            parts.append(mix_str[start:idx])
+            start = idx + 1
+    parts.append(mix_str[start:])
+    return parts
+
+
+def parse_mix_spec(mix_str: str) -> list[MixedWorkloadSpec]:
+    """Parse 'cpu_burst:8(slo=0),cpu_burst:16(slo=2)' into workload specs."""
+    specs: list[MixedWorkloadSpec] = []
+    for part in split_mix_parts(mix_str):
         part = part.strip()
         if not part:
             continue
+        options: dict[str, str] = {}
+        if part.endswith(")") and "(" in part:
+            part, raw_options = part[:-1].split("(", 1)
+            for item in raw_options.split(";"):
+                for option in item.split(","):
+                    option = option.strip()
+                    if not option:
+                        continue
+                    key, value = option.split("=", 1)
+                    options[key.strip()] = value.strip()
         workload, count = part.rsplit(":", 1)
-        specs.append((workload.strip(), int(count.strip())))
+        duration_ms = options.get("duration_ms")
+        deadline = (
+            options.get("deadline_us")
+            or options.get("deadline")
+            or options.get("timeout_us")
+        )
+        deadline_ms = options.get("deadline_ms") or options.get("timeout_ms")
+        if deadline is None and deadline_ms is not None:
+            deadline = f"{deadline_ms}ms"
+        slo_class = options.get("slo_class") or options.get("slo")
+        specs.append(
+            MixedWorkloadSpec(
+                workload=workload.strip(),
+                count=int(count.strip()),
+                duration_ms=int(duration_ms) if duration_ms is not None else None,
+                deadline_us=parse_duration_us(deadline) if deadline is not None else None,
+                slo_class=int(slo_class) if slo_class is not None else None,
+            )
+        )
     return specs
 
 
 def run_mixed_metadata_bridge_invocations(
     run_dir: Path,
-    mix_specs: list[tuple[str, int]],
+    mix_specs: list[MixedWorkloadSpec],
     deadline_us: int,
     config: str,
     metadata_bridge_port: int,
     slo_class: int | None = None,
 ) -> int:
-    total = sum(count for _, count in mix_specs)
+    total = sum(spec.count for spec in mix_specs)
     staged_invocations: list[StagedInvocation] = []
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=total) as executor:
             futures: list[concurrent.futures.Future[StagedInvocation]] = []
             inv_id = 1
-            for workload, count in mix_specs:
-                spec = workload_spec(workload)
-                duration_ms = spec.default_duration_ms
-                for _ in range(count):
+            for mix in mix_specs:
+                spec = workload_spec(mix.workload)
+                duration_ms = mix.duration_ms or spec.default_duration_ms
+                invocation_deadline_us = mix.deadline_us or deadline_us
+                invocation_slo_class = (
+                    mix.slo_class if mix.slo_class is not None else slo_class
+                )
+                for _ in range(mix.count):
                     futures.append(
                         executor.submit(
                             stage_metadata_bridge_invocation,
                             run_dir / "invocations" / f"{inv_id}.json",
-                            workload,
+                            mix.workload,
                             duration_ms,
-                            deadline_us,
+                            invocation_deadline_us,
                             inv_id,
                             config,
                             metadata_bridge_port,
-                            slo_class,
+                            invocation_slo_class,
                         )
                     )
                     inv_id += 1
@@ -857,34 +1024,38 @@ def run_mixed_metadata_bridge_invocations(
 
 def run_mixed_direct_invocations(
     run_dir: Path,
-    mix_specs: list[tuple[str, int]],
+    mix_specs: list[MixedWorkloadSpec],
     deadline_us: int,
     use_metadata: bool,
     config: str,
     metadata_bridge_port: int | None = None,
     slo_class: int | None = None,
 ) -> int:
-    total = sum(count for _, count in mix_specs)
+    total = sum(spec.count for spec in mix_specs)
     failures = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=total) as executor:
         futures: list[concurrent.futures.Future[int]] = []
         inv_id = 1
-        for workload, count in mix_specs:
-            spec = workload_spec(workload)
-            duration_ms = spec.default_duration_ms
-            for _ in range(count):
+        for mix in mix_specs:
+            spec = workload_spec(mix.workload)
+            duration_ms = mix.duration_ms or spec.default_duration_ms
+            invocation_deadline_us = mix.deadline_us or deadline_us
+            invocation_slo_class = (
+                mix.slo_class if mix.slo_class is not None else slo_class
+            )
+            for _ in range(mix.count):
                 futures.append(
                     executor.submit(
                         run_workload_invocation,
                         run_dir / "invocations" / f"{inv_id}.json",
-                        workload,
+                        mix.workload,
                         duration_ms,
-                        deadline_us,
+                        invocation_deadline_us,
                         inv_id,
                         use_metadata,
                         config,
                         metadata_bridge_port,
-                        slo_class,
+                        invocation_slo_class,
                     )
                 )
                 inv_id += 1
@@ -946,12 +1117,14 @@ def write_client_latency_csv(run_dir: Path) -> None:
                 "metadata_ready_monotonic_ns",
                 "metadata_setup_ms",
                 "deadline_us",
+                "slo_class",
                 "workload",
                 "config",
                 "stderr_path",
                 "metadata_tgid",
                 "metadata_tgids",
                 "metadata_key_visible",
+                "cgroup_path",
             ],
         )
         writer.writeheader()

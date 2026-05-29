@@ -25,11 +25,47 @@
       "network_bandwidth_bytes_per_sec": 134217728,
       "io_weight": 300
     },
+    "pipeline": {
+      "cpu_intensity": 0.5,
+      "memory_bytes": 100663296,
+      "working_set_bytes": 50331648,
+      "io_weight": 650,
+      "io_bandwidth_bytes_per_sec": 100663296,
+      "network_bandwidth_bytes_per_sec": 100663296,
+      "phase_sequence": [
+        {
+          "kind": "IoBound",
+          "duration_pct": 33
+        },
+        {
+          "kind": "CpuBound",
+          "duration_pct": 34
+        },
+        {
+          "kind": "IoBound",
+          "duration_pct": 33
+        }
+      ]
+    },
     "compression_mixed": {
       "cpu_intensity": 0.75,
       "memory_bytes": 134217728,
       "working_set_bytes": 67108864,
-      "io_weight": 600
+      "io_weight": 600,
+      "phase_sequence": [
+        {
+          "kind": "MemoryBound",
+          "duration_pct": 20
+        },
+        {
+          "kind": "CpuBound",
+          "duration_pct": 60
+        },
+        {
+          "kind": "IoBound",
+          "duration_pct": 20
+        }
+      ]
     },
     "graph_bfs": {
       "cpu_intensity": 0.55,

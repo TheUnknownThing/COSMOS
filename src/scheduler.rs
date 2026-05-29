@@ -27,12 +27,45 @@ pub struct Scheduler<P: SchedulingPolicy, A: CpuAdapter> {
     actuator: ResourceActuator,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchedulerOptions {
+    pub cgroup_actuator_enabled: bool,
+    pub network_actuator_enabled: bool,
+    pub phase_prediction_enabled: bool,
+}
+
+impl Default for SchedulerOptions {
+    fn default() -> Self {
+        Self {
+            cgroup_actuator_enabled: true,
+            network_actuator_enabled: true,
+            phase_prediction_enabled: true,
+        }
+    }
+}
+
 impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
     pub fn new(
         registry: RegistryHandle,
         adapter: A,
         policy: P,
         stats_server: StatsServer<(), Metrics>,
+    ) -> Self {
+        Self::new_with_options(
+            registry,
+            adapter,
+            policy,
+            stats_server,
+            SchedulerOptions::default(),
+        )
+    }
+
+    pub fn new_with_options(
+        registry: RegistryHandle,
+        adapter: A,
+        policy: P,
+        stats_server: StatsServer<(), Metrics>,
+        options: SchedulerOptions,
     ) -> Self {
         Self {
             registry,
@@ -41,8 +74,14 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             stats_server,
             prune_counter: 0,
             init_page_faults: 0,
-            coordinator: CoordinationEngine::new(Duration::from_millis(100)),
-            actuator: ResourceActuator::new(),
+            coordinator: CoordinationEngine::with_phase_prediction(
+                Duration::from_millis(100),
+                options.phase_prediction_enabled,
+            ),
+            actuator: ResourceActuator::with_enabled(
+                options.cgroup_actuator_enabled,
+                options.network_actuator_enabled,
+            ),
         }
     }
     pub fn run(&mut self) -> Result<UserExitInfo> {

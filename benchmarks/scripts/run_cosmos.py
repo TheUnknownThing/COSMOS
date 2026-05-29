@@ -63,6 +63,44 @@ def cosmos_config(config: str, deadline_us: int, duration_ms: int) -> tuple[list
             "metadata-full",
             True,
         )
+    if config == "cosmos-slack-only":
+        return (
+            [
+                "--slo-target-us",
+                str(slo_target_us),
+                "--disable-cgroup-actuator",
+                "--disable-network-actuator",
+                "--disable-phase-prediction",
+            ],
+            "metadata-slack-only",
+            True,
+        )
+    if config == "cosmos-slack+xres":
+        return (
+            [
+                "--slo-target-us",
+                str(slo_target_us),
+                "--disable-phase-prediction",
+            ],
+            "metadata-slack-xres",
+            True,
+        )
+    if config == "cosmos-no-phase-predict":
+        return (
+            [
+                "--slo-target-us",
+                str(slo_target_us),
+                "--disable-phase-prediction",
+            ],
+            "metadata-no-phase-predict",
+            True,
+        )
+    if config == "cosmos-phase-predict":
+        return (
+            ["--slo-target-us", str(slo_target_us)],
+            "metadata-phase-predict",
+            True,
+        )
     if config == "sfs":
         return (
             ["--policy", "sfs"],
@@ -77,7 +115,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default="cosmos-full",
-        choices=["cosmos-heuristic", "cosmos-metadata", "cosmos-pooled", "cosmos-full", "sfs"],
+        choices=[
+            "cosmos-heuristic",
+            "cosmos-metadata",
+            "cosmos-pooled",
+            "cosmos-full",
+            "cosmos-slack-only",
+            "cosmos-slack+xres",
+            "cosmos-no-phase-predict",
+            "cosmos-phase-predict",
+            "sfs",
+        ],
     )
     parser.add_argument("--workload", required=True)
     parser.add_argument("--concurrency", type=int, default=1)
@@ -114,10 +162,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     is_mixed = "," in args.workload
     if is_mixed:
+        mix_specs = harness.parse_mix_spec(args.workload)
+        concurrency = sum(spec.count for spec in mix_specs)
         duration_ms = args.duration_ms or harness.DEFAULT_WORKLOAD_DURATION_MS
         deadline_us = args.deadline_us or (duration_ms * 2 * 1000)
     else:
         spec = harness.workload_spec(args.workload)
+        concurrency = args.concurrency
         duration_ms = args.duration_ms or spec.default_duration_ms
         deadline_us = harness.resolve_deadline_us(spec, duration_ms, args.deadline_us)
     scheduler_flags, metadata_mode, use_metadata = cosmos_config(
@@ -134,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         run_dir,
         args.config,
         args.workload,
-        args.concurrency,
+        concurrency,
         duration_ms,
         deadline_us,
         metadata_mode,
@@ -178,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         failures = harness.run_invocations(
             run_dir,
             args.workload,
-            args.concurrency,
+            concurrency,
             duration_ms,
             deadline_us,
             use_metadata,
@@ -192,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         harness.stop_process(scheduler, signal.SIGINT)
 
     harness.finalize_run(run_dir, config_root)
+    harness.cleanup_benchmark_cgroups(run_dir)
     print(run_dir)
     return 1 if failures else 0
 

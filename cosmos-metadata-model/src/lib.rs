@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 
 pub type ProfileId = String;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhaseSequenceEntry {
+    pub kind: String,
+    pub duration_pct: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProfileHints {
     #[serde(default)]
@@ -18,6 +24,8 @@ pub struct ProfileHints {
     pub io_bandwidth_bytes_per_sec: Option<u64>,
     #[serde(default)]
     pub network_bandwidth_bytes_per_sec: Option<u64>,
+    #[serde(default)]
+    pub phase_sequence: Option<Vec<PhaseSequenceEntry>>,
 }
 
 impl ProfileHints {
@@ -28,6 +36,7 @@ impl ProfileHints {
             && self.io_weight.is_none()
             && self.io_bandwidth_bytes_per_sec.is_none()
             && self.network_bandwidth_bytes_per_sec.is_none()
+            && self.phase_sequence.is_none()
     }
 
     pub fn overlay(&mut self, override_hints: &Self) {
@@ -48,6 +57,9 @@ impl ProfileHints {
         }
         if override_hints.network_bandwidth_bytes_per_sec.is_some() {
             self.network_bandwidth_bytes_per_sec = override_hints.network_bandwidth_bytes_per_sec;
+        }
+        if override_hints.phase_sequence.is_some() {
+            self.phase_sequence = override_hints.phase_sequence.clone();
         }
     }
 

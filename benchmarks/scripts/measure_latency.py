@@ -78,6 +78,8 @@ def load_client_rows(run_dir: Path) -> list[dict[str, Any]]:
         for row in reader:
             row["duration_ms"] = float(row["duration_ms"])
             row["deadline_us"] = int(row["deadline_us"])
+            if row.get("slo_class") not in (None, ""):
+                row["slo_class"] = int(row["slo_class"])
             row["exit_code"] = int(row["exit_code"])
             row["invocation_id"] = int(row["invocation_id"])
             rows.append(row)
@@ -257,7 +259,9 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
     failures = len(rows) - len(ok_rows)
     deadline_ms = manifest["deadline_us"] / 1000.0 if manifest["deadline_us"] else 0.0
     client_slo_violations = sum(
-        1 for row in ok_rows if deadline_ms and row["duration_ms"] > deadline_ms
+        1
+        for row in ok_rows
+        if row["deadline_us"] and row["duration_ms"] > row["deadline_us"] / 1000.0
     )
 
     scheduler_last = scheduler_samples[-1]["stats"] if scheduler_samples else {}
@@ -346,7 +350,9 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
             durs = data["durations"]
             ok = data["ok_rows"]
             wl_violations = sum(
-                1 for row in ok if deadline_ms and row["duration_ms"] > deadline_ms
+                1
+                for row in ok
+                if row["deadline_us"] and row["duration_ms"] > row["deadline_us"] / 1000.0
             )
             summary["per_workload"][wl] = {
                 "count": len(durs),
@@ -359,6 +365,39 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
                 "p95_ms": percentile(durs, 0.95),
                 "p99_ms": percentile(durs, 0.99),
                 "client_slo_violations": wl_violations,
+            }
+
+    per_slo_class: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        if "slo_class" not in row:
+            continue
+        slo = int(row["slo_class"])
+        if slo not in per_slo_class:
+            per_slo_class[slo] = {"durations": [], "ok_rows": []}
+        per_slo_class[slo]["durations"].append(row["duration_ms"])
+        if row["status"] == "ok":
+            per_slo_class[slo]["ok_rows"].append(row)
+    if per_slo_class:
+        summary["per_slo_class"] = {}
+        for slo, data in sorted(per_slo_class.items()):
+            durs = data["durations"]
+            ok = data["ok_rows"]
+            slo_violations = sum(
+                1
+                for row in ok
+                if row["deadline_us"] and row["duration_ms"] > row["deadline_us"] / 1000.0
+            )
+            summary["per_slo_class"][str(slo)] = {
+                "count": len(durs),
+                "successes": len(ok),
+                "failures": len(durs) - len(ok),
+                "min_ms": min(durs) if durs else 0.0,
+                "max_ms": max(durs) if durs else 0.0,
+                "mean_ms": sum(durs) / len(durs) if durs else 0.0,
+                "p50_ms": percentile(durs, 0.50),
+                "p95_ms": percentile(durs, 0.95),
+                "p99_ms": percentile(durs, 0.99),
+                "client_slo_violations": slo_violations,
             }
 
     (run_dir / "summary.json").write_text(

@@ -24,10 +24,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     is_mixed = "," in args.workload
     if is_mixed:
+        mix_specs = harness.parse_mix_spec(args.workload)
+        concurrency = sum(spec.count for spec in mix_specs)
         duration_ms = args.duration_ms or harness.DEFAULT_WORKLOAD_DURATION_MS
         deadline_us = args.deadline_us or (duration_ms * 2 * 1000)
     else:
         spec = harness.workload_spec(args.workload)
+        concurrency = args.concurrency
         duration_ms = args.duration_ms or spec.default_duration_ms
         deadline_us = harness.resolve_deadline_us(spec, duration_ms, args.deadline_us)
     config_root = args.out_dir or harness.default_results_dir(args.config)
@@ -38,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         run_dir,
         args.config,
         args.workload,
-        args.concurrency,
+        concurrency,
         duration_ms,
         deadline_us,
         "disabled",
@@ -48,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     failures = harness.run_invocations(
         run_dir,
         args.workload,
-        args.concurrency,
+        concurrency,
         duration_ms,
         deadline_us,
         False,

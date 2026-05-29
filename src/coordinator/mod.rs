@@ -13,7 +13,7 @@ use crate::registry::{InvocationRegistry, InvocationState, PhaseKind, PhaseSlack
 
 use self::policy::compute_allocation;
 use self::slack::compute_phase_slack_context;
-pub use phase_tracker::PhaseTracker;
+pub use phase_tracker::{PhaseTracker, PredictivePhaseTracker};
 
 #[derive(Debug, Clone)]
 pub struct PhaseUpdate {
@@ -42,12 +42,23 @@ pub struct CoordinationTickStats {
 
 pub struct CoordinationEngine {
     phase: PhaseCoordinator,
+    predictor: PredictivePhaseTracker,
+    phase_prediction_enabled: bool,
 }
 
 impl CoordinationEngine {
     pub fn new(sample_interval: Duration) -> Self {
+        Self::with_phase_prediction(sample_interval, true)
+    }
+
+    pub fn with_phase_prediction(
+        sample_interval: Duration,
+        phase_prediction_enabled: bool,
+    ) -> Self {
         Self {
             phase: PhaseCoordinator::new(sample_interval),
+            predictor: PredictivePhaseTracker::new(),
+            phase_prediction_enabled,
         }
     }
 
@@ -90,15 +101,20 @@ impl CoordinationEngine {
                 continue;
             }
             let sampled = sampled_phase_by_invocation.get(&(state.meta.tgid, state.meta.id));
-            let phase = sampled
+            let observed_phase = sampled
                 .map(|update| update.phase_ctx.phase)
                 .unwrap_or(state.phase_ctx.phase);
+            let predicted_phase = self
+                .phase_prediction_enabled
+                .then(|| self.predictor.predict(&state, now_ns))
+                .flatten();
+            let phase = predicted_phase.unwrap_or(observed_phase);
             let phase_ctx = compute_phase_slack_context(
                 &state.meta,
                 phase,
                 now_ns,
                 &state.phase_ctx,
-                sampled.is_some(),
+                sampled.is_some() || predicted_phase.is_some(),
             );
             let allocation = compute_allocation(&state.meta, state.profile.as_ref(), &phase_ctx);
 
@@ -280,6 +296,82 @@ mod tests {
         assert_eq!(state.phase_ctx.phase, PhaseKind::Unknown);
         assert_eq!(state.allocation.memory_min_bytes, Some(64 * 1024 * 1024));
         assert!(state.allocation.memory_high_bytes.unwrap() > 128 * 1024 * 1024);
+    }
+
+    #[test]
+    fn coordination_tick_prefers_profile_phase_prediction() {
+        let now = 50_000_000;
+        let mut registry = InvocationRegistry::new();
+        registry.upsert_with_profile(
+            InvocationMeta {
+                id: 1,
+                tgid: 101,
+                deadline_ns: 200_000_000,
+                estimated_duration_ns: 100_000_000,
+                slo_class: SloClass::LatencyCritical,
+                is_cold_start: false,
+                profile_id: Some("pipeline".to_string()),
+                created_at_ns: 0,
+            },
+            Some(ResourceProfile {
+                phase_sequence: Some(vec![
+                    cosmos_metadata_model::PhaseSequenceEntry {
+                        kind: "IoBound".to_string(),
+                        duration_pct: 30,
+                    },
+                    cosmos_metadata_model::PhaseSequenceEntry {
+                        kind: "CpuBound".to_string(),
+                        duration_pct: 50,
+                    },
+                    cosmos_metadata_model::PhaseSequenceEntry {
+                        kind: "IoBound".to_string(),
+                        duration_pct: 20,
+                    },
+                ]),
+                ..ResourceProfile::default()
+            }),
+        );
+
+        let mut engine =
+            CoordinationEngine::with_phase_prediction(Duration::from_millis(100), true);
+        let stats = engine.tick(&mut registry, now);
+        let state = registry.lookup_tgid_state(101).unwrap();
+
+        assert_eq!(stats.phase_ctx_updates, 1);
+        assert_eq!(state.phase_ctx.phase, PhaseKind::CpuBound);
+        assert!(state.phase_ctx.cpu_priority_modifier > 0);
+    }
+
+    #[test]
+    fn coordination_tick_can_disable_profile_phase_prediction() {
+        let now = 50_000_000;
+        let mut registry = InvocationRegistry::new();
+        registry.upsert_with_profile(
+            InvocationMeta {
+                id: 1,
+                tgid: 101,
+                deadline_ns: 200_000_000,
+                estimated_duration_ns: 100_000_000,
+                slo_class: SloClass::LatencyCritical,
+                is_cold_start: false,
+                profile_id: Some("pipeline".to_string()),
+                created_at_ns: 0,
+            },
+            Some(ResourceProfile {
+                phase_sequence: Some(vec![cosmos_metadata_model::PhaseSequenceEntry {
+                    kind: "CpuBound".to_string(),
+                    duration_pct: 100,
+                }]),
+                ..ResourceProfile::default()
+            }),
+        );
+
+        let mut engine =
+            CoordinationEngine::with_phase_prediction(Duration::from_millis(100), false);
+        engine.tick(&mut registry, now);
+        let state = registry.lookup_tgid_state(101).unwrap();
+
+        assert_eq!(state.phase_ctx.phase, PhaseKind::Unknown);
     }
 
     fn remove_test_cgroup(path: &PathBuf) {

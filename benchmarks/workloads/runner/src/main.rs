@@ -45,6 +45,7 @@ fn run() -> AppResult<()> {
         "io_mixed" => run_io_mixed(target),
         "memory_heavy" => run_memory_heavy(target),
         "network_heavy" => run_network_heavy(target),
+        "pipeline" => run_pipeline(target),
         "compression_mixed" => run_compression_mixed(target),
         "graph_bfs" => run_graph_bfs(target),
         other => Err(format!("unknown workload: {other}")),
@@ -166,6 +167,22 @@ fn estimate_total_iters(target: Duration, sample_elapsed: Duration, sample_iters
     total_iters.max(sample_iters as u128).min(u64::MAX as u128) as u64
 }
 
+fn split_pipeline_duration(target: Duration) -> (Duration, Duration, Duration) {
+    let total_ns = target.as_nanos();
+    let fetch_ns = total_ns / 3;
+    let compute_ns = total_ns / 3;
+    let upload_ns = total_ns.saturating_sub(fetch_ns).saturating_sub(compute_ns);
+    (
+        duration_from_nanos(fetch_ns),
+        duration_from_nanos(compute_ns),
+        duration_from_nanos(upload_ns),
+    )
+}
+
+fn duration_from_nanos(nanos: u128) -> Duration {
+    Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
+}
+
 fn run_cpu_burst(target: Duration) -> AppResult<()> {
     let mut job = CpuBurstJob::new(128);
     execute_calibrated_cpu_time(target, || {
@@ -198,6 +215,26 @@ fn run_network_heavy(target: Duration) -> AppResult<()> {
     let mut job = NetworkHeavyJob::new(256 * 1024)?;
     let result = execute_calibrated_wall_time(target, || job.run_once());
     job.shutdown();
+    result
+}
+
+fn run_pipeline(target: Duration) -> AppResult<()> {
+    let (fetch_duration, compute_duration, upload_duration) = split_pipeline_duration(target);
+    let mut network = NetworkHeavyJob::new(128 * 1024)?;
+    let mut compute = CpuBurstJob::new(96);
+    let mut upload = IoMixedJob::new()?;
+
+    let result = (|| {
+        execute_calibrated_wall_time(fetch_duration, || network.run_once())?;
+        execute_calibrated_cpu_time(compute_duration, || {
+            compute.run_once();
+            Ok(())
+        })?;
+        execute_calibrated_wall_time(upload_duration, || upload.run_once())
+    })();
+
+    network.shutdown();
+    upload.cleanup();
     result
 }
 
