@@ -10,7 +10,6 @@ license = "GPL-2.0-only"
 members = [
     ".",
     "cosmos-metadata-model",
-    "benchmarks/profiler",
     "benchmarks/workloads/runner",
     "rust/scx_cargo",
     "rust/scx_rustland_core",

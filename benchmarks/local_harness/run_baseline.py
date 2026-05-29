@@ -12,7 +12,8 @@ import harness
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a lightweight CFS baseline benchmark.")
     parser.add_argument("--config", default="cfs-default")
-    parser.add_argument("--workload", required=True)
+    parser.add_argument("--workload")
+    parser.add_argument("--replay-plan", type=Path)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--duration-ms", type=int)
     parser.add_argument("--deadline-us", type=int)
@@ -22,13 +23,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    is_mixed = "," in args.workload
+    if args.replay_plan is None and not args.workload:
+        raise SystemExit("--workload is required unless --replay-plan is provided")
+    if args.replay_plan is not None:
+        replay_specs = harness.load_replay_plan(args.replay_plan)
+        concurrency = len(replay_specs)
+        duration_ms = args.duration_ms or harness.DEFAULT_WORKLOAD_DURATION_MS
+        deadline_us = args.deadline_us or harness.default_deadline_us_for_duration(duration_ms)
+        workload_label = f"azure-replay:{args.replay_plan.name}"
+    else:
+        workload_label = args.workload
+
+    is_mixed = args.replay_plan is None and "," in args.workload
     if is_mixed:
         mix_specs = harness.parse_mix_spec(args.workload)
         concurrency = sum(spec.count for spec in mix_specs)
         duration_ms = args.duration_ms or harness.DEFAULT_WORKLOAD_DURATION_MS
         deadline_us = args.deadline_us or (duration_ms * 2 * 1000)
-    else:
+    elif args.replay_plan is None:
         spec = harness.workload_spec(args.workload)
         concurrency = args.concurrency
         duration_ms = args.duration_ms or spec.default_duration_ms
@@ -40,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     harness.write_manifest(
         run_dir,
         args.config,
-        args.workload,
+        workload_label,
         concurrency,
         duration_ms,
         deadline_us,
@@ -48,15 +60,23 @@ def main(argv: list[str] | None = None) -> int:
         [],
     )
     (run_dir / "scheduler_stats.jsonl").write_text("", encoding="utf-8")
-    failures = harness.run_invocations(
-        run_dir,
-        args.workload,
-        concurrency,
-        duration_ms,
-        deadline_us,
-        False,
-        args.config,
-    )
+    if args.replay_plan is not None:
+        failures = harness.run_replay_invocations(
+            run_dir,
+            args.replay_plan,
+            False,
+            args.config,
+        )
+    else:
+        failures = harness.run_invocations(
+            run_dir,
+            args.workload,
+            concurrency,
+            duration_ms,
+            deadline_us,
+            False,
+            args.config,
+        )
     harness.finalize_run(run_dir, config_root)
     print(run_dir)
     return 1 if failures else 0

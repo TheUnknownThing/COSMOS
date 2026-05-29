@@ -9,7 +9,8 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS_DIR = REPO_ROOT / "benchmarks" / "scripts"
+LOCAL_HARNESS_DIR = REPO_ROOT / "benchmarks" / "local_harness"
+AZURE_TRACE_DIR = REPO_ROOT / "benchmarks" / "azure_trace"
 
 
 def load_module(name: str, path: Path):
@@ -21,9 +22,14 @@ def load_module(name: str, path: Path):
     return module
 
 
-measure_latency = load_module("measure_latency", SCRIPTS_DIR / "measure_latency.py")
-compare = load_module("compare", SCRIPTS_DIR / "compare.py")
-harness = load_module("harness", SCRIPTS_DIR / "harness.py")
+measure_latency = load_module("measure_latency", LOCAL_HARNESS_DIR / "measure_latency.py")
+harness = load_module("harness", LOCAL_HARNESS_DIR / "harness.py")
+azure_builder = load_module(
+    "build_azure_trace_benchmark", AZURE_TRACE_DIR / "build_azure_trace_benchmark.py"
+)
+openwhisk_replay = load_module(
+    "run_openwhisk_azure_replay", AZURE_TRACE_DIR / "run_openwhisk_azure_replay.py"
+)
 
 
 class Phase6HarnessTests(unittest.TestCase):
@@ -148,6 +154,64 @@ class Phase6HarnessTests(unittest.TestCase):
         self.assertIn("graph_bfs", harness.WORKLOADS)
         self.assertIn("120.uploader", harness.WORKLOADS["network_heavy"].inspired_by)
         self.assertIn("503.graph-bfs", harness.WORKLOADS["graph_bfs"].inspired_by)
+
+    def test_azure_2021_row_derives_start_and_function_id(self) -> None:
+        event = azure_builder.parse_2021_event(
+            {
+                "app": "app-a",
+                "func": "func-b",
+                "end_timestamp": "10.250",
+                "duration": "0.125",
+            }
+        )
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.function_id, "app-a:func-b")
+        self.assertEqual(event.duration_ms, 125)
+        self.assertEqual(event.source_start_ms, 10125.0)
+
+    def test_openwhisk_replay_loader_maps_profiles_to_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            replay = Path(tmp) / "replay.json"
+            replay.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "invocations": [
+                            {
+                                "event_id": "az2021-1",
+                                "invocation_id": 7,
+                                "at_ms": 12.5,
+                                "function_id": "app:func",
+                                "profile_id": "azp_000001",
+                                "workload": "pipeline",
+                                "target_duration_ms": 321,
+                                "deadline_us": 642000,
+                                "slo_class": 1,
+                                "profile_hints": {"cpu_intensity": 0.5},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            invocations = openwhisk_replay.load_replay(
+                replay, {"azp_000001": "ow_pipeline"}, None
+            )
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0].action, "ow_pipeline")
+        self.assertEqual(invocations[0].target_duration_ms, 321)
+        self.assertEqual(invocations[0].profile_hints["cpu_intensity"], 0.5)
+
+    def test_openwhisk_activation_parser_accepts_wsk_prefixed_json(self) -> None:
+        stdout = (
+            "ok: invoked /_/ow_pipeline with id 567159c9a3664b69b159c9a3663b694d\n"
+            '{"activationId":"567159c9a3664b69b159c9a3663b694d"}\n'
+        )
+        self.assertEqual(
+            openwhisk_replay.parse_activation_id(stdout),
+            "567159c9a3664b69b159c9a3663b694d",
+        )
 
     def test_default_deadlines_include_workload_runtime_headroom(self) -> None:
         for spec in harness.WORKLOADS.values():
@@ -306,36 +370,6 @@ class Phase6HarnessTests(unittest.TestCase):
             self.assertEqual(
                 summary["load"]["rule"], "total_compute_ms < deadline_ms * cpu_cores"
             )
-
-    def test_compare_resolves_latest_summary_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            baseline_dir = root / "cfs-default" / "20260524T000000Z"
-            baseline_dir.mkdir(parents=True)
-            (baseline_dir / "summary.json").write_text(
-                json.dumps(
-                    {
-                        "config": "cfs-default",
-                        "workload": "cpu_burst",
-                        "concurrency": 1,
-                        "latency": {
-                            "p50_ms": 1,
-                            "p95_ms": 1,
-                            "p99_ms": 1,
-                            "mean_ms": 1,
-                            "client_slo_violations": 0,
-                        },
-                        "scheduler": {"last": {}},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            latest = root / "cfs-default" / "latest"
-            latest.symlink_to("20260524T000000Z")
-
-            resolved = compare.resolve_summary_path(root / "cfs-default")
-            self.assertEqual(resolved, baseline_dir / "summary.json")
-
 
 if __name__ == "__main__":
     unittest.main()

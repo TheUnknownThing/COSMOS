@@ -84,30 +84,56 @@ resource allocations from the invocation registry.
 
 ## Benchmarks
 
-Seven synthetic workloads via `cosmos-benchmark-workload`:
-`cpu_burst`, `sleep_short`, `io_mixed`, `memory_heavy`, `network_heavy`,
-`compression_mixed`, `graph_bfs`.
+Active benchmark tooling lives under two explicit paths:
 
-Six configs: `cfs-default`, `cosmos-heuristic`, `cosmos-metadata`,
-`cosmos-pooled`, `cosmos-full`, `sfs`.
+- `benchmarks/azure_trace/` builds Azure-derived replay plans and replays them
+  against OpenWhisk actions.
+- `benchmarks/local_harness/` runs local CFS, COSMOS, and SFS-style scheduler
+  experiments with the same workload kernels.
+
+The local harness supports these synthetic workload shapes via
+`cosmos-benchmark-workload`: `cpu_burst`, `sleep_short`, `io_mixed`,
+`memory_heavy`, `network_heavy`, `compression_mixed`, `graph_bfs`.
+
+Supported local configs: `cfs-default`, `cosmos-heuristic`,
+`cosmos-metadata`, `cosmos-pooled`, `cosmos-full`, `sfs`.
 
 ```sh
 # Build everything
 cargo build --release --workspace
 
 # CFS baseline
-sudo python3 benchmarks/scripts/burst_benchmark.py \
+sudo python3 benchmarks/local_harness/burst_benchmark.py \
     --config cfs-default --workload cpu_burst --concurrency 100 \
     --duration-ms 5000 --out-dir results/
 
 # COSMOS full
-sudo python3 benchmarks/scripts/burst_benchmark.py \
+sudo python3 benchmarks/local_harness/burst_benchmark.py \
     --config cosmos-full --workload cpu_burst --concurrency 100 \
     --duration-ms 5000 --out-dir results/ \
     --scheduler-bin target/release/cosmos
+```
 
-# Compare
-python3 benchmarks/scripts/compare.py results/<cfs>/summary.json results/<cosmos>/summary.json
+Build an Azure replay plan:
+
+```sh
+python3 benchmarks/azure_trace/build_azure_trace_benchmark.py \
+    --trace-2021 benchmarks/third_party/AzurePublicDataset/data/AzureFunctionsInvocationTraceForTwoWeeksJan2021.rar \
+    --window-ms 5400000 \
+    --scale 45 \
+    --output-dir /tmp/cosmos-azure-90m
+```
+
+Replay it through OpenWhisk:
+
+```sh
+python3 benchmarks/azure_trace/run_openwhisk_azure_replay.py \
+    --replay /tmp/cosmos-azure-90m/replay.json \
+    --action-map cpu_burst=ow_cpu_burst \
+    --action-map pipeline=ow_pipeline \
+    --action-map memory_heavy=ow_memory_heavy \
+    --action-map io_mixed=ow_io_mixed \
+    --action-map network_heavy=ow_network_heavy
 ```
 
 ### Results (V1, 48-core CloudLab, cpu_burst @ 100 concurrency)
@@ -134,9 +160,10 @@ COSMOS eliminated two-thirds of SLO violations while cutting mean latency 14%.
 ├── intf.h             # Shared BPF/user-space structs
 ├── cosmos-event-bridge/  # OpenWhisk/local events → scheduler metadata TCP
 ├── benchmarks/
-│   ├── scripts/          # Python harness (burst_benchmark.py, compare.py)
+│   ├── azure_trace/      # Azure trace builder + OpenWhisk replay driver
+│   ├── local_harness/    # CFS/COSMOS/SFS local benchmark harness
 │   ├── workloads/runner/ # Rust workload binary (7 synthetic workloads)
-│   └── profiler/         # Deep-trace profiling harness
+│   └── third_party/AzurePublicDataset/ # Azure trace submodule
 ├── scheds/include/    # Vendored sched-ext BPF headers
 └── test_ssh.ignore.md # Testbed setup & operations guide
 ```

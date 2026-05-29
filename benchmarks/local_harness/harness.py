@@ -87,6 +87,17 @@ class MixedWorkloadSpec:
     slo_class: int | None = None
 
 
+@dataclass(frozen=True)
+class ReplayInvocationSpec:
+    invocation_id: int
+    at_ms: float
+    function_hash: str
+    workload: str
+    duration_ms: int
+    deadline_us: int
+    slo_class: int
+
+
 def default_deadline_us_for_duration(duration_ms: int) -> int:
     duration_us = duration_ms * 1_000
     return duration_us + max(duration_us, DEFAULT_SLO_MIN_SLACK_US)
@@ -207,7 +218,9 @@ def workload_spec(name: str) -> WorkloadSpec:
         raise KeyError(f"unknown workload: {name}") from exc
 
 
-def workload_command(workload: str, duration_ms: int) -> list[str]:
+def workload_command(
+    workload: str, duration_ms: int, warm_hold_ms: int = 0
+) -> list[str]:
     spec = workload_spec(workload)
     command = [
         str(spec.runner),
@@ -216,6 +229,8 @@ def workload_command(workload: str, duration_ms: int) -> list[str]:
         "--duration-ms",
         str(duration_ms),
     ]
+    if warm_hold_ms > 0:
+        command.extend(["--warm-hold-ms", str(warm_hold_ms)])
     if TIME_BIN.exists():
         return [
             str(TIME_BIN),
@@ -267,6 +282,7 @@ WORKLOAD_PROFILE_HINTS: dict[str, dict[str, int | float]] = {
         "cpu_intensity": 0.45,
         "memory_bytes": 256 * 1024 * 1024,
         "working_set_bytes": 128 * 1024 * 1024,
+        "cold_load_penalty_ns": 2_000_000_000,
         "io_weight": 350,
     },
     "network_heavy": {
@@ -278,6 +294,7 @@ WORKLOAD_PROFILE_HINTS: dict[str, dict[str, int | float]] = {
         "cpu_intensity": 0.50,
         "memory_bytes": 96 * 1024 * 1024,
         "working_set_bytes": 48 * 1024 * 1024,
+        "cold_load_penalty_ns": 750_000_000,
         "io_weight": 650,
         "io_bandwidth_bytes_per_sec": 96 * 1024 * 1024,
         "network_bandwidth_bytes_per_sec": 96 * 1024 * 1024,
@@ -291,6 +308,7 @@ WORKLOAD_PROFILE_HINTS: dict[str, dict[str, int | float]] = {
         "cpu_intensity": 0.75,
         "memory_bytes": 128 * 1024 * 1024,
         "working_set_bytes": 64 * 1024 * 1024,
+        "cold_load_penalty_ns": 1_000_000_000,
         "io_weight": 600,
         "phase_sequence": [
             {"kind": "MemoryBound", "duration_pct": 20},
@@ -302,6 +320,7 @@ WORKLOAD_PROFILE_HINTS: dict[str, dict[str, int | float]] = {
         "cpu_intensity": 0.55,
         "memory_bytes": 192 * 1024 * 1024,
         "working_set_bytes": 96 * 1024 * 1024,
+        "cold_load_penalty_ns": 1_500_000_000,
         "io_weight": 300,
     },
 }
@@ -537,11 +556,21 @@ def ensure_release_build() -> None:
     sources = [
         REPO_ROOT / "src" / "main.rs",
         REPO_ROOT / "src" / "bpf.rs",
+        REPO_ROOT / "src" / "actuator" / "mod.rs",
+        REPO_ROOT / "src" / "coordinator" / "mod.rs",
+        REPO_ROOT / "src" / "coordinator" / "phase_tracker.rs",
+        REPO_ROOT / "src" / "coordinator" / "policy.rs",
+        REPO_ROOT / "src" / "coordinator" / "slack.rs",
+        REPO_ROOT / "src" / "metadata.rs",
         REPO_ROOT / "src" / "policy" / "cosmos_pool.rs",
         REPO_ROOT / "src" / "policy" / "cosmos.rs",
         REPO_ROOT / "src" / "policy" / "sfs.rs",
         REPO_ROOT / "src" / "policy" / "mod.rs",
+        REPO_ROOT / "src" / "registry" / "store.rs",
+        REPO_ROOT / "src" / "registry" / "types.rs",
+        REPO_ROOT / "src" / "scheduler.rs",
         REPO_ROOT / "src" / "stats.rs",
+        REPO_ROOT / "cosmos-metadata-model" / "src" / "lib.rs",
         REPO_ROOT / "rust" / "scx_rustland_core" / "assets" / "bpf.rs",
         REPO_ROOT / "rust" / "scx_rustland_core" / "assets" / "bpf" / "main.bpf.c",
         REPO_ROOT / "rust" / "scx_rustland_core" / "assets" / "bpf" / "intf.h",
@@ -718,9 +747,12 @@ def stage_metadata_bridge_invocation(
     config: str,
     metadata_bridge_port: int,
     slo_class: int | None = None,
+    warm_hold_ms: int = 0,
 ) -> StagedInvocation:
     stderr_path = output_json.with_suffix(".stderr")
-    command = stopped_workload_command(workload_command(workload, duration_ms))
+    command = stopped_workload_command(
+        workload_command(workload, duration_ms, warm_hold_ms)
+    )
     spec = workload_spec(workload)
     launch_start_ns = time.monotonic_ns()
     stderr_file = stderr_path.open("w", encoding="utf-8")
@@ -958,6 +990,100 @@ def parse_mix_spec(mix_str: str) -> list[MixedWorkloadSpec]:
     return specs
 
 
+def load_replay_plan(path: Path) -> list[ReplayInvocationSpec]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    invocations = raw.get("invocations")
+    if not isinstance(invocations, list):
+        raise ValueError(f"replay plan {path} must contain an invocations array")
+    specs: list[ReplayInvocationSpec] = []
+    for idx, item in enumerate(invocations, start=1):
+        workload = str(item["workload"])
+        workload_spec(workload)
+        duration_ms = int(item.get("duration_ms") or DEFAULT_WORKLOAD_DURATION_MS)
+        deadline_us = int(
+            item.get("deadline_us") or default_deadline_us_for_duration(duration_ms)
+        )
+        specs.append(
+            ReplayInvocationSpec(
+                invocation_id=int(item.get("invocation_id") or idx),
+                at_ms=float(item.get("at_ms") or 0.0),
+                function_hash=str(item.get("function_hash") or workload),
+                workload=workload,
+                duration_ms=duration_ms,
+                deadline_us=deadline_us,
+                slo_class=int(item.get("slo_class", workload_spec(workload).default_slo_class)),
+            )
+        )
+    specs.sort(key=lambda spec: (spec.at_ms, spec.invocation_id))
+    return specs
+
+
+def run_replay_invocations(
+    run_dir: Path,
+    replay_plan: Path,
+    use_metadata: bool,
+    config: str,
+    metadata_bridge_port: int | None = None,
+) -> int:
+    run_dir.joinpath("invocations").mkdir(parents=True, exist_ok=True)
+    ensure_benchmark_workload_build()
+    if use_metadata and metadata_bridge_port is None:
+        raise RuntimeError("metadata replay requires a running event bridge")
+
+    specs = load_replay_plan(replay_plan)
+    (run_dir / "replay_plan_used.json").write_text(
+        replay_plan.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    if not specs:
+        write_client_latency_csv(run_dir)
+        return 0
+
+    base_ns = time.monotonic_ns()
+
+    def run_one(spec: ReplayInvocationSpec) -> int:
+        target_ns = base_ns + int(max(0.0, spec.at_ms) * 1_000_000)
+        sleep_ns = target_ns - time.monotonic_ns()
+        if sleep_ns > 0:
+            time.sleep(sleep_ns / 1_000_000_000)
+        output_json = run_dir / "invocations" / f"{spec.invocation_id}.json"
+        if use_metadata:
+            staged = stage_metadata_bridge_invocation(
+                output_json,
+                spec.workload,
+                spec.duration_ms,
+                spec.deadline_us,
+                spec.invocation_id,
+                config,
+                metadata_bridge_port,
+                spec.slo_class,
+            )
+            start_ns = time.monotonic_ns()
+            os.kill(staged.metadata_tgid, signal.SIGCONT)
+            return complete_metadata_bridge_invocation(
+                staged, start_ns, metadata_bridge_port
+            )
+        return run_workload_invocation(
+            output_json,
+            spec.workload,
+            spec.duration_ms,
+            spec.deadline_us,
+            spec.invocation_id,
+            False,
+            config,
+            None,
+            spec.slo_class,
+        )
+
+    failures = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(specs)) as executor:
+        futures = [executor.submit(run_one, spec) for spec in specs]
+        for future in concurrent.futures.as_completed(futures):
+            if future.result() != 0:
+                failures += 1
+    write_client_latency_csv(run_dir)
+    return failures
+
+
 def run_mixed_metadata_bridge_invocations(
     run_dir: Path,
     mix_specs: list[MixedWorkloadSpec],
@@ -1088,7 +1214,7 @@ def write_manifest(
         "slo_class_override": slo_class,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    if "," not in workload:
+    if "," not in workload and workload in WORKLOADS:
         spec = workload_spec(workload)
         payload["workload_description"] = spec.description
         payload["inspired_by_sebs"] = list(spec.inspired_by)

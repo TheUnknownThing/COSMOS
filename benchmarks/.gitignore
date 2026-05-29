@@ -1,4 +1,6 @@
 runs/
 scripts/results/
+azure_trace/results/
+local_harness/results/
 profile_db.json
 __pycache__/
