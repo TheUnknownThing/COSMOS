@@ -32,6 +32,8 @@ class ReplayInvocation:
     action: str
     target_duration_ms: int
     deadline_us: int
+    deadline_source: str
+    isolated_warm_p99_ms: float | None
     slo_class: int
     profile_hints: dict[str, Any]
     payload: dict[str, Any] | None = None
@@ -75,6 +77,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--calibration-repetitions", type=int, default=3)
     parser.add_argument("--calibration-output", type=Path)
+    parser.add_argument(
+        "--slo-calibration",
+        type=Path,
+        help=(
+            "Calibration JSON from --calibrate. When present, replay deadlines "
+            "are k * isolated warm p99 for the mapped OpenWhisk action."
+        ),
+    )
+    parser.add_argument(
+        "--slo-deadline-multiplier",
+        type=float,
+        default=1.0,
+        help="k in deadline = k * isolated_warm_p99[action].",
+    )
     parser.add_argument(
         "--event-bridge-port",
         type=int,
@@ -131,7 +147,55 @@ def action_container_name(action: str) -> str:
     return "wsk0_*_" + re.sub(r"[^A-Za-z0-9]", "", action).lower()
 
 
-def load_replay(path: Path, action_map: dict[str, str], limit: int | None) -> list[ReplayInvocation]:
+def calibration_latencies_by_action(path: Path) -> dict[str, float]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    precalculated = raw.get("isolated_warm_p99_ms_by_action")
+    if isinstance(precalculated, dict):
+        parsed: dict[str, float] = {}
+        for action, value in precalculated.items():
+            try:
+                parsed[str(action)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        if parsed:
+            return parsed
+    actions = raw.get("actions")
+    if not isinstance(actions, dict):
+        raise ValueError(f"{path} must contain an actions object")
+    result: dict[str, float] = {}
+    for workload_key, action_record in actions.items():
+        if not isinstance(action_record, dict):
+            continue
+        action = str(action_record.get("action") or workload_key)
+        latencies: list[float] = []
+        targets = action_record.get("targets")
+        if not isinstance(targets, dict):
+            continue
+        for target_record in targets.values():
+            if not isinstance(target_record, dict):
+                continue
+            for item in target_record.get("results") or []:
+                if not isinstance(item, dict) or not item.get("ok"):
+                    continue
+                try:
+                    latencies.append(float(item["latency_ms"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        warm_latencies = latencies[1:] if len(latencies) > 1 else latencies
+        p99 = percentile(warm_latencies, 0.99)
+        if p99 is not None:
+            result[action] = p99
+            result[str(workload_key)] = p99
+    return result
+
+
+def load_replay(
+    path: Path,
+    action_map: dict[str, str],
+    limit: int | None,
+    slo_calibration_ms: dict[str, float] | None = None,
+    slo_deadline_multiplier: float = 1.0,
+) -> list[ReplayInvocation]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     invocations = raw.get("invocations")
     if not isinstance(invocations, list):
@@ -154,8 +218,22 @@ def load_replay(path: Path, action_map: dict[str, str], limit: int | None) -> li
         target_duration_ms = int(
             item.get("target_duration_ms") or item.get("duration_ms") or 250
         )
-        deadline_us = int(item.get("deadline_us") or max(target_duration_ms * 2000, 5000))
         function_id = str(item.get("function_id") or item.get("function_hash") or workload)
+        isolated_warm_p99_ms = None
+        deadline_source = str(item.get("deadline_source") or "replay")
+        calibrated = None
+        if slo_calibration_ms:
+            calibrated = (
+                slo_calibration_ms.get(action)
+                or slo_calibration_ms.get(profile_id)
+                or slo_calibration_ms.get(workload)
+            )
+        if calibrated is not None:
+            isolated_warm_p99_ms = float(calibrated)
+            deadline_us = max(1, int(round(isolated_warm_p99_ms * slo_deadline_multiplier * 1000.0)))
+            deadline_source = f"isolated-warm-p99*k:{slo_deadline_multiplier:g}"
+        else:
+            deadline_us = int(item.get("deadline_us") or max(target_duration_ms * 2000, 5000))
         payload = item.get("sebs_payload")
         if payload is None:
             payload = item.get("payload")
@@ -172,6 +250,8 @@ def load_replay(path: Path, action_map: dict[str, str], limit: int | None) -> li
                 action=action,
                 target_duration_ms=target_duration_ms,
                 deadline_us=deadline_us,
+                deadline_source=deadline_source,
+                isolated_warm_p99_ms=isolated_warm_p99_ms,
                 slo_class=int(item.get("slo_class", 1)),
                 profile_hints=dict(item.get("profile_hints") or {}),
                 payload=payload,
@@ -192,6 +272,8 @@ def make_payload(invocation: ReplayInvocation) -> dict[str, Any]:
         "kernel": invocation.workload,
         "target_duration_ms": invocation.target_duration_ms,
         "deadline_us": invocation.deadline_us,
+        "deadline_source": invocation.deadline_source,
+        "isolated_warm_p99_ms": invocation.isolated_warm_p99_ms,
         "slo_class": invocation.slo_class,
         "profile_hints": invocation.profile_hints,
     }
@@ -381,6 +463,8 @@ def run_invocation(
             "scheduled_at_ms": invocation.at_ms,
             "target_duration_ms": invocation.target_duration_ms,
             "deadline_us": invocation.deadline_us,
+            "deadline_source": invocation.deadline_source,
+            "isolated_warm_p99_ms": invocation.isolated_warm_p99_ms,
             "slo_class": invocation.slo_class,
             "scheduled_monotonic_ns": scheduled_ns,
             "submit_monotonic_ns": scheduled_ns,
@@ -454,6 +538,8 @@ def run_invocation(
                 "scheduled_at_ms": invocation.at_ms,
                 "target_duration_ms": invocation.target_duration_ms,
                 "deadline_us": invocation.deadline_us,
+                "deadline_source": invocation.deadline_source,
+                "isolated_warm_p99_ms": invocation.isolated_warm_p99_ms,
                 "slo_class": invocation.slo_class,
                 "scheduled_monotonic_ns": scheduled_ns,
                 "submit_monotonic_ns": submit_ns,
@@ -504,6 +590,8 @@ def run_invocation(
         "scheduled_at_ms": invocation.at_ms,
         "target_duration_ms": invocation.target_duration_ms,
         "deadline_us": invocation.deadline_us,
+        "deadline_source": invocation.deadline_source,
+        "isolated_warm_p99_ms": invocation.isolated_warm_p99_ms,
         "slo_class": invocation.slo_class,
         "scheduled_monotonic_ns": scheduled_ns,
         "submit_monotonic_ns": submit_ns,
@@ -545,7 +633,11 @@ def write_latency_header(path: Path) -> None:
                 "scheduled_at_ms",
                 "target_duration_ms",
                 "deadline_us",
+                "deadline_source",
+                "isolated_warm_p99_ms",
                 "slo_class",
+                "slo_met",
+                "normalized_slowdown",
                 "scheduled_monotonic_ns",
                 "submit_monotonic_ns",
                 "completion_monotonic_ns",
@@ -563,6 +655,7 @@ def write_latency_header(path: Path) -> None:
 
 
 def append_latency(path: Path, result: dict[str, Any]) -> None:
+    annotate_slo_metrics(result)
     fieldnames = [
         "event_id",
         "invocation_id",
@@ -574,7 +667,11 @@ def append_latency(path: Path, result: dict[str, Any]) -> None:
         "scheduled_at_ms",
         "target_duration_ms",
         "deadline_us",
+        "deadline_source",
+        "isolated_warm_p99_ms",
         "slo_class",
+        "slo_met",
+        "normalized_slowdown",
         "scheduled_monotonic_ns",
         "submit_monotonic_ns",
         "completion_monotonic_ns",
@@ -610,9 +707,83 @@ def summarize_latencies(results: list[dict[str, Any]]) -> dict[str, Any]:
         "successes": len(latencies),
         "p50_ms": percentile(latencies, 0.50),
         "p90_ms": percentile(latencies, 0.90),
+        "p99_ms": percentile(latencies, 0.99),
         "min_ms": min(latencies) if latencies else None,
         "max_ms": max(latencies) if latencies else None,
     }
+
+
+def annotate_slo_metrics(result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        latency_ms = float(result.get("latency_ms", 0.0))
+        deadline_us = float(result.get("deadline_us", 0.0))
+        target_duration_ms = float(result.get("target_duration_ms", 0.0))
+    except (TypeError, ValueError):
+        result["slo_met"] = False
+        result["normalized_slowdown"] = None
+        return result
+    deadline_ms = deadline_us / 1000.0
+    ok = bool(result.get("ok"))
+    result["slo_met"] = ok and deadline_ms > 0 and latency_ms <= deadline_ms
+    result["normalized_slowdown"] = (
+        latency_ms / target_duration_ms if ok and target_duration_ms > 0 else None
+    )
+    return result
+
+
+def summarize_replay_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    ok_results = [item for item in results if item.get("ok")]
+    slo_met = [item for item in ok_results if item.get("slo_met")]
+    slowdowns = [
+        float(item["normalized_slowdown"])
+        for item in ok_results
+        if item.get("normalized_slowdown") is not None
+    ]
+    submit_times = [int(item["submit_monotonic_ns"]) for item in results if item.get("submit_monotonic_ns")]
+    completion_times = [
+        int(item["completion_monotonic_ns"])
+        for item in results
+        if item.get("completion_monotonic_ns")
+    ]
+    elapsed_s = None
+    if submit_times and completion_times:
+        elapsed_s = max(0.0, (max(completion_times) - min(submit_times)) / 1_000_000_000.0)
+    return {
+        "attempts": len(results),
+        "successes": len(ok_results),
+        "slo_successes": len(slo_met),
+        "slo_goodput_invocations": len(slo_met),
+        "slo_goodput_per_s": (len(slo_met) / elapsed_s) if elapsed_s and elapsed_s > 0 else None,
+        "slo_success_rate": (len(slo_met) / len(results)) if results else None,
+        "normalized_slowdown": {
+            "p50": percentile(slowdowns, 0.50),
+            "p90": percentile(slowdowns, 0.90),
+            "p99": percentile(slowdowns, 0.99),
+            "mean": (sum(slowdowns) / len(slowdowns)) if slowdowns else None,
+        },
+        "elapsed_s": elapsed_s,
+    }
+
+
+def isolated_warm_p99_from_records(records: dict[str, Any]) -> dict[str, float]:
+    output: dict[str, float] = {}
+    for workload_key, action_record in records.items():
+        action = str(action_record.get("action") or workload_key)
+        latencies: list[float] = []
+        targets = action_record.get("targets") or {}
+        for target_record in targets.values():
+            for item in target_record.get("results") or []:
+                if not item.get("ok"):
+                    continue
+                try:
+                    latencies.append(float(item["latency_ms"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        warm_latencies = latencies[1:] if len(latencies) > 1 else latencies
+        p99 = percentile(warm_latencies, 0.99)
+        if p99 is not None:
+            output[action] = p99
+    return output
 
 
 def calibration_invocation(
@@ -633,6 +804,8 @@ def calibration_invocation(
         action=action,
         target_duration_ms=target_ms,
         deadline_us=max(target_ms * 3_000, 10_000),
+        deadline_source="calibration",
+        isolated_warm_p99_ms=None,
         slo_class=1,
         profile_hints={},
         payload=None,
@@ -679,6 +852,7 @@ def run_calibration(
                     action, workload, target_ms, repetition, sequence
                 )
                 result = run_invocation(args, invocation, run_dir)
+                annotate_slo_metrics(result)
                 result["calibration_target_ms"] = target_ms
                 target_results.append(result)
                 append_latency(latency_csv, result)
@@ -698,6 +872,7 @@ def run_calibration(
         "dry_run": args.dry_run,
         "repetitions": args.calibration_repetitions,
         "targets_ms": targets,
+        "isolated_warm_p99_ms_by_action": isolated_warm_p99_from_records(records),
         "actions": records,
     }
     output = args.calibration_output or run_dir / "calibration.json"
@@ -720,6 +895,8 @@ def main() -> int:
     args = parse_args()
     if args.limit is not None and args.limit <= 0:
         raise SystemExit("--limit must be positive")
+    if args.slo_deadline_multiplier <= 0:
+        raise SystemExit("--slo-deadline-multiplier must be positive")
     if not args.dry_run and shutil.which(args.wsk) is None:
         raise SystemExit(f"wsk executable not found: {args.wsk}")
 
@@ -731,7 +908,18 @@ def main() -> int:
 
     if args.replay is None:
         raise SystemExit("--replay is required unless --calibrate is set")
-    invocations = load_replay(args.replay, action_map, args.limit)
+    slo_calibration_ms = (
+        calibration_latencies_by_action(args.slo_calibration)
+        if args.slo_calibration is not None
+        else None
+    )
+    invocations = load_replay(
+        args.replay,
+        action_map,
+        args.limit,
+        slo_calibration_ms,
+        args.slo_deadline_multiplier,
+    )
     if not invocations:
         raise SystemExit("replay contained no invocations")
 
@@ -758,6 +946,9 @@ def main() -> int:
         "poll_accepted": args.poll_accepted,
         "activation_poll_timeout_s": args.activation_poll_timeout_s,
         "dry_run": args.dry_run,
+        "slo_calibration": str(args.slo_calibration) if args.slo_calibration else None,
+        "slo_deadline_multiplier": args.slo_deadline_multiplier,
+        "calibrated_deadline_actions": sorted(slo_calibration_ms or {}),
         "event_bridge_port": args.event_bridge_port,
         "metadata_target": args.metadata_target,
     }
@@ -770,6 +961,7 @@ def main() -> int:
     failures = 0
     base_ns = now_ns()
     threads: list[threading.Thread] = []
+    results: list[dict[str, Any]] = []
 
     def worker(invocation: ReplayInvocation) -> None:
         nonlocal failures
@@ -778,9 +970,11 @@ def main() -> int:
         if sleep_ns > 0:
             time.sleep(sleep_ns / 1_000_000_000)
         result = run_invocation(args, invocation, run_dir, container_map)
+        annotate_slo_metrics(result)
         with write_lock:
             if not result.get("ok"):
                 failures += 1
+            results.append(result)
             with (run_dir / "requests.jsonl").open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
             append_latency(latency_csv, result)
@@ -802,6 +996,7 @@ def main() -> int:
         "failures": failures,
         "ok": failures == 0,
         "run_dir": str(run_dir),
+        "slo": summarize_replay_results(results),
     }
     (run_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",

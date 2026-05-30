@@ -38,6 +38,7 @@ T = TypeVar("T")
 @dataclass(frozen=True)
 class FunctionFeatures:
     function_id: str
+    owner: str
     app: str
     func: str
     trigger: str
@@ -45,9 +46,16 @@ class FunctionFeatures:
     active_minutes: int
     burstiness: float
     periodicity_score: float
+    duration_p25_ms: float
     median_duration_ms: float
+    duration_p75_ms: float
     p90_duration_ms: float
+    duration_p99_ms: float
+    duration_max_ms: float
     memory_mb: float
+    memory_p75_mb: float
+    memory_p95_mb: float
+    memory_p99_mb: float
     app_function_count: int
 
 
@@ -232,9 +240,11 @@ def load_invocation_features(
                 }
             rows_seen += 1
             app = first_present(row, ("HashApp", "app"))
+            owner = first_present(row, ("HashOwner", "owner"))
             func = first_present(row, ("HashFunction", "func"))
             if app is None or func is None:
                 continue
+            owner = str(owner or "")
             app = str(app)
             func = str(func)
             function_id = f"{app}:{func}"
@@ -250,6 +260,7 @@ def load_invocation_features(
                 function_id,
                 {
                     "app": app,
+                    "owner": owner,
                     "func": func,
                     "trigger_counts": Counter(),
                     "minute_counts": [],
@@ -282,35 +293,29 @@ def load_duration_features(
             if allowed_functions is not None and function_id not in allowed_functions:
                 continue
             count = max(1, int(parse_float(row.get("Count")) or 1))
-            median = parse_float(
-                first_present(
-                    row,
-                    ("percentile_Average_50", "Average", "percentile_Average_75"),
-                )
-            )
-            p90 = parse_float(
-                first_present(
-                    row,
-                    (
-                        "percentile_Average_99",
-                        "percentile_Average_75",
-                        "Maximum",
-                        "Average",
-                    ),
-                )
-            )
-            if median is not None and median > 0:
-                values[function_id]["median"].append((median, count))
-            if p90 is not None and p90 > 0:
-                values[function_id]["p90"].append((p90, count))
+            fields = {
+                "p25": ("percentile_Average_25", "percentile_Average_50", "Average"),
+                "median": ("percentile_Average_50", "Average", "percentile_Average_75"),
+                "p75": ("percentile_Average_75", "percentile_Average_50", "Average"),
+                "p99": ("percentile_Average_99", "percentile_Average_75", "Maximum", "Average"),
+                "max": ("Maximum", "percentile_Average_100", "percentile_Average_99", "Average"),
+            }
+            for key, candidates in fields.items():
+                value = parse_float(first_present(row, candidates))
+                if value is not None and value > 0:
+                    values[function_id][key].append((value, count))
             if remaining is not None and function_id in remaining and values[function_id]:
                 remaining.discard(function_id)
         if remaining is not None and not remaining:
             break
     return {
         function_id: {
+            "duration_p25_ms": weighted_percentile(data.get("p25", data.get("median", [])), 0.25),
             "median_duration_ms": weighted_percentile(data.get("median", []), 0.50),
-            "p90_duration_ms": weighted_percentile(data.get("p90", data.get("median", [])), 0.90),
+            "duration_p75_ms": weighted_percentile(data.get("p75", data.get("median", [])), 0.75),
+            "p90_duration_ms": weighted_percentile(data.get("p99", data.get("median", [])), 0.90),
+            "duration_p99_ms": weighted_percentile(data.get("p99", data.get("median", [])), 0.99),
+            "duration_max_ms": weighted_percentile(data.get("max", data.get("p99", [])), 1.0),
         }
         for function_id, data in values.items()
     }
@@ -318,8 +323,8 @@ def load_duration_features(
 
 def load_memory_features(
     paths: list[Path], allowed_apps: set[str] | None = None
-) -> dict[str, float]:
-    app_values: dict[str, list[tuple[float, int]]] = defaultdict(list)
+) -> dict[str, dict[str, float]]:
+    app_values: dict[str, dict[str, list[tuple[float, int]]]] = defaultdict(lambda: defaultdict(list))
     remaining = set(allowed_apps) if allowed_apps is not None else None
     for path in paths:
         for row in open_csv_rows(path):
@@ -331,24 +336,34 @@ def load_memory_features(
             app = str(app)
             if allowed_apps is not None and app not in allowed_apps:
                 continue
-            mb = parse_float(
-                first_present(
-                    row,
-                    (
-                        "AverageAllocatedMb_pct50",
-                        "AverageAllocatedMb",
-                        "AverageAllocatedMb_pct75",
-                    ),
-                )
-            )
             sample_count = max(1, int(parse_float(row.get("SampleCount")) or 1))
-            if mb is not None and mb > 0:
-                app_values[app].append((mb, sample_count))
+            fields = {
+                "p50": ("AverageAllocatedMb_pct50", "AverageAllocatedMb", "AverageAllocatedMb_pct75"),
+                "p75": ("AverageAllocatedMb_pct75", "AverageAllocatedMb_pct50", "AverageAllocatedMb"),
+                "p95": ("AverageAllocatedMb_pct95", "AverageAllocatedMb_pct99", "AverageAllocatedMb_pct75"),
+                "p99": ("AverageAllocatedMb_pct99", "AverageAllocatedMb_pct95", "AverageAllocatedMb_pct75"),
+            }
+            found = False
+            for key, candidates in fields.items():
+                mb = parse_float(first_present(row, candidates))
+                if mb is not None and mb > 0:
+                    app_values[app][key].append((mb, sample_count))
+                    found = True
+            if found:
                 if remaining is not None:
                     remaining.discard(app)
         if remaining is not None and not remaining:
             break
-    return {app: weighted_percentile(values, 0.50) for app, values in app_values.items() if values}
+    return {
+        app: {
+            "memory_mb": weighted_percentile(values.get("p50", []), 0.50),
+            "memory_p75_mb": weighted_percentile(values.get("p75", values.get("p50", [])), 0.75),
+            "memory_p95_mb": weighted_percentile(values.get("p95", values.get("p75", [])), 0.95),
+            "memory_p99_mb": weighted_percentile(values.get("p99", values.get("p95", [])), 0.99),
+        }
+        for app, values in app_values.items()
+        if values
+    }
 
 
 def build_feature_catalog(
@@ -380,6 +395,7 @@ def build_feature_catalog(
         catalog.append(
             FunctionFeatures(
                 function_id=function_id,
+                owner=str(invocation["owner"]),
                 app=app,
                 func=str(invocation["func"]),
                 trigger=trigger,
@@ -387,9 +403,16 @@ def build_feature_catalog(
                 active_minutes=len(active_counts),
                 burstiness=coefficient_of_variation(active_counts),
                 periodicity_score=periodicity_score(minute_counts),
+                duration_p25_ms=float(duration["duration_p25_ms"]),
                 median_duration_ms=float(duration["median_duration_ms"]),
+                duration_p75_ms=float(duration["duration_p75_ms"]),
                 p90_duration_ms=float(duration["p90_duration_ms"]),
-                memory_mb=float(memory),
+                duration_p99_ms=float(duration["duration_p99_ms"]),
+                duration_max_ms=float(duration["duration_max_ms"]),
+                memory_mb=float(memory["memory_mb"]),
+                memory_p75_mb=float(memory["memory_p75_mb"]),
+                memory_p95_mb=float(memory["memory_p95_mb"]),
+                memory_p99_mb=float(memory["memory_p99_mb"]),
                 app_function_count=app_function_counts.get(app, 1),
             )
         )

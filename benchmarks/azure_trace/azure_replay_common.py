@@ -28,6 +28,7 @@ class TraceEvent:
     app: str
     func: str
     duration_ms: int
+    owner: str = ""
 
 
 @dataclass

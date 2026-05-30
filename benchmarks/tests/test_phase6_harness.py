@@ -43,6 +43,9 @@ azure_2019_synthetic = load_module(
 azure_2019_sebs = load_module(
     "build_azure_trace_2019_sebs", AZURE_TRACE_DIR / "build_azure_trace_2019_sebs.py"
 )
+azure_2019_direct = load_module(
+    "build_azure_trace_2019_direct", AZURE_TRACE_DIR / "build_azure_trace_2019_direct.py"
+)
 
 
 class Phase6HarnessTests(unittest.TestCase):
@@ -363,6 +366,8 @@ class Phase6HarnessTests(unittest.TestCase):
                     "AverageAllocatedMb",
                     "AverageAllocatedMb_pct50",
                     "AverageAllocatedMb_pct75",
+                    "AverageAllocatedMb_pct95",
+                    "AverageAllocatedMb_pct99",
                 ],
             )
             writer.writeheader()
@@ -375,6 +380,8 @@ class Phase6HarnessTests(unittest.TestCase):
                         "AverageAllocatedMb": "256",
                         "AverageAllocatedMb_pct50": "256",
                         "AverageAllocatedMb_pct75": "300",
+                        "AverageAllocatedMb_pct95": "350",
+                        "AverageAllocatedMb_pct99": "400",
                     },
                     {
                         "HashOwner": "owner",
@@ -383,6 +390,8 @@ class Phase6HarnessTests(unittest.TestCase):
                         "AverageAllocatedMb": "384",
                         "AverageAllocatedMb_pct50": "384",
                         "AverageAllocatedMb_pct75": "512",
+                        "AverageAllocatedMb_pct95": "700",
+                        "AverageAllocatedMb_pct99": "800",
                     },
                     {
                         "HashOwner": "owner",
@@ -391,6 +400,8 @@ class Phase6HarnessTests(unittest.TestCase):
                         "AverageAllocatedMb": "1536",
                         "AverageAllocatedMb_pct50": "1536",
                         "AverageAllocatedMb_pct75": "1800",
+                        "AverageAllocatedMb_pct95": "1900",
+                        "AverageAllocatedMb_pct99": "2000",
                     },
                     {
                         "HashOwner": "owner",
@@ -399,6 +410,8 @@ class Phase6HarnessTests(unittest.TestCase):
                         "AverageAllocatedMb": "128",
                         "AverageAllocatedMb_pct50": "128",
                         "AverageAllocatedMb_pct75": "160",
+                        "AverageAllocatedMb_pct95": "180",
+                        "AverageAllocatedMb_pct99": "200",
                     },
                 ]
             )
@@ -420,6 +433,13 @@ class Phase6HarnessTests(unittest.TestCase):
         self.assertEqual(by_function["app-memory:fn-memory"].family, "memory_heavy")
         self.assertEqual(by_function["app-timer:fn-timer"].family, "timer_control")
         self.assertGreater(by_function["app-memory:fn-memory"].confidence, 0.40)
+        self.assertEqual(by_function["app-http:fn-http"].features.owner, "owner")
+        self.assertEqual(by_function["app-http:fn-http"].features.duration_p25_ms, 150)
+        self.assertEqual(by_function["app-http:fn-http"].features.duration_p75_ms, 180)
+        self.assertEqual(by_function["app-http:fn-http"].features.duration_p99_ms, 250)
+        self.assertEqual(by_function["app-http:fn-http"].features.duration_max_ms, 300)
+        self.assertEqual(by_function["app-http:fn-http"].features.memory_p95_mb, 350)
+        self.assertEqual(by_function["app-http:fn-http"].features.memory_p99_mb, 400)
 
     def test_2019_synthetic_builder_refuses_without_2019_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -566,8 +586,44 @@ class Phase6HarnessTests(unittest.TestCase):
             self.assertEqual(replay["invocations"][0]["sebs"]["runtime"], "python")
             self.assertIn("sebs_payload", replay["invocations"][0])
             self.assertEqual(replay["invocations"][1]["duration_ms"], 850)
+            self.assertEqual(replay["invocations"][0]["hash_owner"], "owner")
+            self.assertIn("duration_p99_ms", replay["invocations"][0])
+            self.assertIn("memory_p95_mb", replay["invocations"][0])
             self.assertIn("family_to_sebs_candidates", profiles)
             self.assertIn("sebs_benchmark_counts", replay["classifier_summary"])
+
+    def test_2019_direct_builder_uses_minute_trace_arrivals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset_2019 = root / "dataset2019"
+            dataset_2019.mkdir()
+            self._write_2019_fixture(dataset_2019)
+            output = root / "direct"
+
+            rc = azure_2019_direct.main(
+                [
+                    "--dataset-2019-dir",
+                    str(dataset_2019),
+                    "--output-dir",
+                    str(output),
+                    "--arrival-mode",
+                    "evenly-spaced",
+                    "--dataset-2019-invocation-row-limit",
+                    "1",
+                    "--limit",
+                    "3",
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            replay = json.loads((output / "replay.json").read_text(encoding="utf-8"))
+            self.assertEqual(replay["schema"], "cosmos.azure.2019-direct-synthetic-replay")
+            self.assertEqual(replay["window"]["arrival_mode"], "evenly-spaced")
+            self.assertEqual([item["at_ms"] for item in replay["invocations"]], [10000.0, 30000.0, 50000.0])
+            self.assertEqual(replay["invocations"][0]["hash_owner"], "owner")
+            self.assertEqual(replay["invocations"][0]["app_group"], "owner:app-http")
+            self.assertIn("duration_p25_ms", replay["invocations"][0])
+            self.assertIn("memory_p99_mb", replay["invocations"][0])
 
     def test_openwhisk_replay_uses_explicit_payload_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -596,6 +652,60 @@ class Phase6HarnessTests(unittest.TestCase):
             )
             invocation = openwhisk_replay.load_replay(replay, {}, None)[0]
             self.assertEqual(openwhisk_replay.make_payload(invocation), {"sleep": 1})
+
+    def test_openwhisk_replay_calibrates_deadline_and_reports_slo_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calibration = root / "calibration.json"
+            calibration.write_text(
+                json.dumps({"isolated_warm_p99_ms_by_action": {"ow_cpu": 123.4}}),
+                encoding="utf-8",
+            )
+            replay = root / "replay.json"
+            replay.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "invocations": [
+                            {
+                                "event_id": "az2019-1",
+                                "invocation_id": 1,
+                                "at_ms": 0,
+                                "function_id": "app:func",
+                                "profile_id": "azp_000001",
+                                "workload": "cpu_burst",
+                                "target_duration_ms": 50,
+                                "deadline_us": 50000,
+                                "slo_class": 1,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            slo = openwhisk_replay.calibration_latencies_by_action(calibration)
+            invocation = openwhisk_replay.load_replay(
+                replay, {"cpu_burst": "ow_cpu"}, None, slo, 2.0
+            )[0]
+            self.assertEqual(invocation.deadline_us, 246800)
+            self.assertEqual(invocation.deadline_source, "isolated-warm-p99*k:2")
+
+            result = openwhisk_replay.annotate_slo_metrics(
+                {
+                    "ok": True,
+                    "latency_ms": 200.0,
+                    "deadline_us": invocation.deadline_us,
+                    "target_duration_ms": invocation.target_duration_ms,
+                    "submit_monotonic_ns": 100,
+                    "completion_monotonic_ns": 200_000_100,
+                }
+            )
+            self.assertTrue(result["slo_met"])
+            self.assertEqual(result["normalized_slowdown"], 4.0)
+            summary = openwhisk_replay.summarize_replay_results([result])
+            self.assertEqual(summary["slo_goodput_invocations"], 1)
+            self.assertEqual(summary["normalized_slowdown"]["p50"], 4.0)
 
     def test_openwhisk_activation_parser_accepts_wsk_prefixed_json(self) -> None:
         stdout = (
