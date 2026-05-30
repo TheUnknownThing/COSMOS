@@ -555,26 +555,24 @@ static void dispatch_task(const struct dispatched_task_ctx *task)
 	if (task->cpu == RL_CPU_ANY) {
 		scx_bpf_dsq_insert_vtime(p, SHARED_DSQ,
 					 task->slice_ns, task->vtime, task->flags);
-		kick_task_cpu(p, prev_cpu);
-		goto out_release;
-	}
-
-	/*
-	 * Dispatch the task to the target CPU selected by the
-	 * user-space scheduler.
-	 *
-	 * However, if the target CPU is not valid (due to affinity
-	 * constraints), keep the task on the previously used CPU,
-	 * overriding the user-space scheduler decision.
-	 */
-	if (!bpf_cpumask_test_cpu(task->cpu, p->cpus_ptr)) {
-		cpu = prev_cpu;
-		__sync_fetch_and_add(&nr_bounce_dispatches, 1);
 	} else {
-		__sync_fetch_and_add(&nr_user_dispatches, 1);
+		/*
+		 * Dispatch the task to the target CPU selected by the
+		 * user-space scheduler.
+		 *
+		 * However, if the target CPU is not valid (due to affinity
+		 * constraints), keep the task on the previously used CPU,
+		 * overriding the user-space scheduler decision.
+		 */
+		if (!bpf_cpumask_test_cpu(task->cpu, p->cpus_ptr)) {
+			cpu = prev_cpu;
+			__sync_fetch_and_add(&nr_bounce_dispatches, 1);
+		} else {
+			__sync_fetch_and_add(&nr_user_dispatches, 1);
+		}
+		scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(cpu),
+					 task->slice_ns, task->vtime, task->flags);
 	}
-	scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(cpu),
-				 task->slice_ns, task->vtime, task->flags);
 
 	/*
 	 * If the task was dequeued while still in the user-space
@@ -590,9 +588,12 @@ static void dispatch_task(const struct dispatched_task_ctx *task)
 	}
 
 	/*
-	 * CPU selected by the user-space scheduler is valid, kick it.
+	 * Wake up a CPU to consume the dispatched task.
 	 */
-	scx_bpf_kick_cpu(cpu, SCX_KICK_IDLE);
+	if (task->cpu == RL_CPU_ANY)
+		kick_task_cpu(p, prev_cpu);
+	else
+		scx_bpf_kick_cpu(cpu, SCX_KICK_IDLE);
 
 out_release:
 	bpf_task_release(p);
