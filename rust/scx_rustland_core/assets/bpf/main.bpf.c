@@ -259,6 +259,14 @@ struct {
 #define USERSCHED_TIMER_NS	NSEC_PER_SEC
 
 /*
+ * The stats/control plane is invisible to BPF, so BPF-visible queued work is
+ * not the only reason the user-space scheduler has to run. Let it run at a
+ * bounded low frequency even when no tasks are queued so health checks and
+ * control messages cannot deadlock behind SCHED_DSQ gating.
+ */
+#define USERSCHED_IDLE_RUN_NS	(NSEC_PER_SEC / 100)
+
+/*
  * Return true if the target task @p is the user-space scheduler.
  */
 static inline bool is_usersched_task(const struct task_struct *p)
@@ -319,6 +327,30 @@ static void set_usersched_needed(void)
 static bool test_and_clear_usersched_needed(void)
 {
 	return __sync_fetch_and_and(&usersched_needed, 0) == 1;
+}
+
+/*
+ * Mark the user-space scheduler runnable and kick its current CPU.
+ *
+ * Tasks queued only in @queued are not attached to any DSQ yet. If the enqueue
+ * path does not also wake the scheduler/dispatch path, an otherwise idle CPU
+ * can leave those tasks runnable with slice=0 until the sched_ext watchdog
+ * reports a runnable-task stall.
+ */
+static void kick_usersched(void)
+{
+	struct task_struct *p;
+
+	set_usersched_needed();
+
+	p = bpf_task_from_pid(usersched_pid);
+	if (p) {
+		scx_bpf_kick_cpu(scx_bpf_task_cpu(p), SCX_KICK_PREEMPT);
+		bpf_task_release(p);
+		return;
+	}
+
+	scx_bpf_kick_cpu(bpf_get_smp_processor_id(), SCX_KICK_PREEMPT);
 }
 
 /*
@@ -608,6 +640,33 @@ static bool can_direct_dispatch(s32 cpu)
 	       !scx_bpf_dsq_nr_queued(cpu_to_dsq(cpu));
 }
 
+static bool try_direct_idle_dispatch(struct task_struct *p, s32 *prev_cpu, u64 enq_flags)
+{
+	s32 cpu;
+
+	if (!builtin_idle)
+		return false;
+
+	cpu = pick_idle_cpu(p, *prev_cpu, 0);
+	if (cpu < 0)
+		return false;
+
+	*prev_cpu = cpu;
+
+	if (!can_direct_dispatch(cpu))
+		return false;
+
+	if (!bpf_cpumask_test_cpu(cpu, p->cpus_ptr))
+		return false;
+
+	scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(cpu),
+				 slice_ns, p->scx.dsq_vtime, enq_flags);
+	__sync_fetch_and_add(&nr_kernel_dispatches, 1);
+	scx_bpf_kick_cpu(cpu, SCX_KICK_IDLE);
+
+	return true;
+}
+
 s32 BPF_STRUCT_OPS(rustland_select_cpu, struct task_struct *p, s32 prev_cpu,
 		   u64 wake_flags)
 {
@@ -780,8 +839,14 @@ static void queue_task_to_userspace(struct task_struct *p, s32 prev_cpu, u64 enq
 	struct task_ctx *tctx;
 
 	tctx = try_lookup_task_ctx(p);
-	if (!tctx)
+	if (!tctx) {
+		sched_congested(p);
+		scx_bpf_dsq_insert_vtime(p, SHARED_DSQ,
+					 slice_ns, p->scx.dsq_vtime, enq_flags);
+		__sync_fetch_and_add(&nr_kernel_dispatches, 1);
+		kick_task_cpu(p, prev_cpu);
 		return;
+	}
 
 	/*
 	 * Allocate a new entry in the ring buffer.
@@ -796,6 +861,7 @@ static void queue_task_to_userspace(struct task_struct *p, s32 prev_cpu, u64 enq
 		scx_bpf_dsq_insert_vtime(p, SHARED_DSQ,
 					 slice_ns, p->scx.dsq_vtime, enq_flags);
 		__sync_fetch_and_add(&nr_kernel_dispatches, 1);
+		kick_task_cpu(p, prev_cpu);
 		return;
 	}
 
@@ -807,6 +873,8 @@ static void queue_task_to_userspace(struct task_struct *p, s32 prev_cpu, u64 enq
 	get_task_info(task, p, tctx, enq_flags, prev_cpu);
 	bpf_ringbuf_submit(task, 0);
 	__sync_fetch_and_add(&nr_queued, 1);
+	kick_usersched();
+	kick_task_cpu(p, prev_cpu);
 }
 
 /*
@@ -826,7 +894,8 @@ void BPF_STRUCT_OPS(rustland_enqueue, struct task_struct *p, u64 enq_flags)
 	 */
 	if (is_usersched_task(p)) {
 		scx_bpf_dsq_insert(p, SCHED_DSQ, slice_ns, enq_flags);
-		goto out_kick;
+		scx_bpf_kick_cpu(prev_cpu, SCX_KICK_PREEMPT);
+		return;
 	}
 
 	/*
@@ -861,6 +930,8 @@ void BPF_STRUCT_OPS(rustland_enqueue, struct task_struct *p, u64 enq_flags)
 	 * queued to the user-space scheduler.
 	 */
 	if (!(builtin_idle && is_wakeup)) {
+		if (try_direct_idle_dispatch(p, &prev_cpu, enq_flags))
+			return;
 		queue_task_to_userspace(p, prev_cpu, enq_flags);
 		goto out_kick;
 	}
@@ -960,9 +1031,16 @@ void BPF_STRUCT_OPS(rustland_dispatch, s32 cpu, struct task_struct *prev)
 	 * Dispatch the user-space scheduler if there's any pending action
 	 * to do.
 	 */
-	if (usersched_has_pending_tasks() &&
-	    scx_bpf_dsq_move_to_local(SCHED_DSQ, 0))
-		return;
+	{
+		bool run_usersched = usersched_has_pending_tasks();
+
+		if (!run_usersched &&
+		    time_delta(scx_bpf_now(), usersched_last_run_at) >= USERSCHED_IDLE_RUN_NS)
+			run_usersched = true;
+
+		if (run_usersched && scx_bpf_dsq_move_to_local(SCHED_DSQ, 0))
+			return;
+	}
 
 	/*
 	 * Consume a task from the per-CPU DSQ.
@@ -1077,7 +1155,6 @@ void BPF_STRUCT_OPS(rustland_enable, struct task_struct *p)
  */
 static int usersched_timer_fn(void *map, int *key, struct bpf_timer *timer)
 {
-	struct task_struct *p;
 	int err = 0;
 
 	/*
@@ -1085,12 +1162,7 @@ static int usersched_timer_fn(void *map, int *key, struct bpf_timer *timer)
 	 * more than USERSCHED_TIMER_NS.
 	 */
 	if (time_delta(scx_bpf_now(), usersched_last_run_at) >= USERSCHED_TIMER_NS) {
-		p = bpf_task_from_pid(usersched_pid);
-		if (p) {
-			set_usersched_needed();
-			scx_bpf_kick_cpu(scx_bpf_task_cpu(p), SCX_KICK_IDLE);
-			bpf_task_release(p);
-		}
+		kick_usersched();
 	}
 
 	/* Re-arm the timer */

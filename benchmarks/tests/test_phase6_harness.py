@@ -11,6 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_HARNESS_DIR = REPO_ROOT / "benchmarks" / "local_harness"
 AZURE_TRACE_DIR = REPO_ROOT / "benchmarks" / "azure_trace"
+SCRIPTS_DIR = REPO_ROOT / "benchmarks" / "scripts"
 
 if str(AZURE_TRACE_DIR) not in sys.path:
     sys.path.insert(0, str(AZURE_TRACE_DIR))
@@ -45,6 +46,9 @@ azure_2019_sebs = load_module(
 )
 azure_2019_direct = load_module(
     "build_azure_trace_2019_direct", AZURE_TRACE_DIR / "build_azure_trace_2019_direct.py"
+)
+orchestrate_benchmarks = load_module(
+    "orchestrate_benchmarks", SCRIPTS_DIR / "orchestrate_benchmarks.py"
 )
 
 
@@ -619,11 +623,45 @@ class Phase6HarnessTests(unittest.TestCase):
             replay = json.loads((output / "replay.json").read_text(encoding="utf-8"))
             self.assertEqual(replay["schema"], "cosmos.azure.2019-direct-synthetic-replay")
             self.assertEqual(replay["window"]["arrival_mode"], "evenly-spaced")
+            self.assertEqual(replay["window"]["workload_mix_mode"], "trace")
+            self.assertEqual(replay["window"]["deadline_mode"], "duration-headroom")
             self.assertEqual([item["at_ms"] for item in replay["invocations"]], [10000.0, 30000.0, 50000.0])
             self.assertEqual(replay["invocations"][0]["hash_owner"], "owner")
             self.assertEqual(replay["invocations"][0]["app_group"], "owner:app-http")
             self.assertIn("duration_p25_ms", replay["invocations"][0])
             self.assertIn("memory_p99_mb", replay["invocations"][0])
+
+    def test_2019_direct_builder_can_balance_workload_mix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset_2019 = root / "dataset2019"
+            dataset_2019.mkdir()
+            self._write_2019_fixture(dataset_2019)
+            output = root / "direct-balanced"
+
+            rc = azure_2019_direct.main(
+                [
+                    "--dataset-2019-dir",
+                    str(dataset_2019),
+                    "--output-dir",
+                    str(output),
+                    "--arrival-mode",
+                    "evenly-spaced",
+                    "--workload-mix-mode",
+                    "balanced",
+                    "--deadline-mode",
+                    "target-duration-aware",
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            replay = json.loads((output / "replay.json").read_text(encoding="utf-8"))
+            counts = replay["classifier_summary"]["workload_counts"]
+            self.assertGreater(len(counts), 1)
+            self.assertEqual(len(set(counts.values())), 1)
+            self.assertEqual(replay["window"]["workload_mix_mode"], "balanced")
+            self.assertEqual(replay["window"]["deadline_mode"], "target-duration-aware")
+            self.assertEqual(replay["invocations"][0]["deadline_source"], "target-duration-aware")
 
     def test_openwhisk_replay_uses_explicit_payload_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -706,6 +744,11 @@ class Phase6HarnessTests(unittest.TestCase):
             summary = openwhisk_replay.summarize_replay_results([result])
             self.assertEqual(summary["slo_goodput_invocations"], 1)
             self.assertEqual(summary["normalized_slowdown"]["p50"], 4.0)
+            self.assertIn("per_workload", summary)
+            self.assertIn("action_mix", summary)
+            self.assertEqual(
+                summary["target_duration_vs_deadline"]["impossible_deadline_count"], 0
+            )
 
     def test_openwhisk_activation_parser_accepts_wsk_prefixed_json(self) -> None:
         stdout = (
@@ -792,6 +835,7 @@ class Phase6HarnessTests(unittest.TestCase):
                         "end_monotonic_ns",
                         "duration_ms",
                         "deadline_us",
+                        "slo_class",
                         "workload",
                         "config",
                         "stderr_path",
@@ -808,6 +852,7 @@ class Phase6HarnessTests(unittest.TestCase):
                             "end_monotonic_ns": 5_000_000,
                             "duration_ms": 5.0,
                             "deadline_us": 10000,
+                            "slo_class": 0,
                             "workload": "cpu_burst",
                             "config": "cosmos-full",
                             "stderr_path": "/tmp/1.stderr",
@@ -820,6 +865,7 @@ class Phase6HarnessTests(unittest.TestCase):
                             "end_monotonic_ns": 12_000_000,
                             "duration_ms": 12.0,
                             "deadline_us": 10000,
+                            "slo_class": 2,
                             "workload": "cpu_burst",
                             "config": "cosmos-full",
                             "stderr_path": "/tmp/2.stderr",
@@ -832,6 +878,7 @@ class Phase6HarnessTests(unittest.TestCase):
                             "end_monotonic_ns": 8_000_000,
                             "duration_ms": 8.0,
                             "deadline_us": 10000,
+                            "slo_class": 2,
                             "workload": "cpu_burst",
                             "config": "cosmos-full",
                             "stderr_path": "/tmp/3.stderr",
@@ -867,6 +914,12 @@ class Phase6HarnessTests(unittest.TestCase):
             summary = measure_latency.summarize_run(run_dir)
             self.assertEqual(summary["latency"]["count"], 3)
             self.assertEqual(summary["latency"]["client_slo_violations"], 1)
+            self.assertEqual(summary["per_slo_class"]["0"]["p50_ms"], 5.0)
+            self.assertEqual(summary["per_slo_class"]["2"]["client_slo_violations"], 1)
+            self.assertEqual(
+                summary["per_slo_class"]["2"]["batch_slowdown_vs_latency_critical"],
+                2.0,
+            )
             self.assertEqual(summary["scheduler"]["peak"]["nr_queued"], 3)
             self.assertEqual(summary["scheduler"]["last"]["nr_slo_violations"], 2)
             self.assertIn("compute", summary)
@@ -874,6 +927,160 @@ class Phase6HarnessTests(unittest.TestCase):
             self.assertEqual(
                 summary["load"]["rule"], "total_compute_ms < deadline_ms * cpu_cores"
             )
+
+    def test_orchestrator_aggregates_report_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            direct = root / "azure-2019-direct-balanced"
+            direct.mkdir(parents=True)
+            (direct / "replay.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "cosmos.azure.2019-direct-synthetic-replay",
+                        "window": {
+                            "arrival_mode": "evenly-spaced",
+                            "workload_mix_mode": "balanced",
+                            "deadline_mode": "duration-headroom",
+                        },
+                        "invocations": [
+                            {"at_ms": 0, "workload": "cpu_burst"},
+                            {"at_ms": 1000, "workload": "network_heavy"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            openwhisk = root / "openwhisk-azure-2019-direct-balanced-bounded-2"
+            openwhisk.mkdir()
+            (openwhisk / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "count": 2,
+                        "failures": 0,
+                        "ok": True,
+                        "slo": {
+                            "successes": 2,
+                            "slo_success_rate": 0.5,
+                            "slo_goodput_per_s": 1.0,
+                            "arrival": {
+                                "average_arrival_rate_per_s": 2.0,
+                                "peak_1s_arrival_rate": 2,
+                            },
+                            "submit_lag_ms": {"p99": 3.0},
+                            "post_submit_latency_ms": {"p99": 4.0},
+                            "target_duration_vs_deadline": {
+                                "impossible_deadline_count": 1
+                            },
+                            "action_mix": {"ow_cpu_burst": 2},
+                            "per_workload": {
+                                "cpu_burst": {
+                                    "attempts": 2,
+                                    "successes": 2,
+                                    "slo_success_rate": 0.5,
+                                    "slo_goodput_per_s": 1.0,
+                                    "latency_ms": {"p99": 4.0},
+                                }
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            for config, p99 in (("cfs-default", 100.0), ("cosmos-full", 80.0)):
+                run = root / "local_harness" / config / "cpu_burst" / "c64" / "run"
+                run.mkdir(parents=True)
+                (run / "summary.json").write_text(
+                    json.dumps(
+                        {
+                            "config": config,
+                            "workload": "cpu_burst",
+                            "concurrency": 64,
+                            "duration_ms": 250,
+                            "deadline_us": 500000,
+                            "latency": {
+                                "count": 64,
+                                "successes": 64,
+                                "failures": 0,
+                                "p50_ms": 50.0,
+                                "p95_ms": 75.0,
+                                "p99_ms": p99,
+                                "mean_ms": 60.0,
+                                "client_slo_violations": 0,
+                            },
+                            "load": {"load_ratio": 0.5},
+                            "scheduler": {"total": {"nr_slo_boosted": 1}},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            cosched_csv = root / "local_harness" / "coscheduling_summary.csv"
+            cosched_csv.parent.mkdir(parents=True, exist_ok=True)
+            with cosched_csv.open("w", encoding="utf-8", newline="") as fh:
+                writer = csv.DictWriter(
+                    fh,
+                    fieldnames=[
+                        "scenario",
+                        "config",
+                        "slo_class",
+                        "p99_ms",
+                        "slo_violations",
+                        "goodput_per_s",
+                        "batch_slowdown_vs_latency_critical",
+                        "scheduler_stall_signals",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "scenario": "lc-cpu_vs_batch-cpu_c96",
+                        "config": "cosmos-full",
+                        "slo_class": "2",
+                        "p99_ms": "200",
+                        "slo_violations": "0",
+                        "goodput_per_s": "10",
+                        "batch_slowdown_vs_latency_critical": "2.5",
+                        "scheduler_stall_signals": "0",
+                    }
+                )
+
+            orchestrator = orchestrate_benchmarks.BenchmarkOrchestrator(
+                root,
+                skip_remote=False,
+                skip_local=False,
+                openwhisk_limit=2,
+            )
+            try:
+                aggregate = orchestrator.aggregate_results(
+                    {"azure-2019-direct-balanced": direct},
+                    None,
+                )
+                orchestrator.generate_report(aggregate)
+            finally:
+                orchestrator.log_fp.close()
+
+            self.assertIn("openwhisk", aggregate)
+            self.assertEqual(
+                aggregate["replay_artifacts"]["azure-2019-direct-balanced"][
+                    "workload_mix_mode"
+                ],
+                "balanced",
+            )
+            self.assertEqual(
+                aggregate["local_harness"]["comparison_table"][0][
+                    "full_vs_cfs_p99_pct"
+                ],
+                -20.0,
+            )
+            self.assertTrue((root / "local_harness_aggregate.csv").exists())
+            report = (root / "COMPREHENSIVE_REPORT.md").read_text(encoding="utf-8")
+            self.assertIn("Azure/OpenWhisk Results", report)
+            self.assertIn("OpenWhisk Per-Workload SLO", report)
+            self.assertIn("Mixed Co-Scheduling", report)
+            self.assertIn("Batch slowdown", report)
+            self.assertIn("Pool latency", report)
+            self.assertIn("SLO boosts", report)
 
 if __name__ == "__main__":
     unittest.main()

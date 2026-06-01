@@ -1,0 +1,1585 @@
+{
+  "created_at": "2026-06-01T08:55:31.890128+00:00",
+  "measurements": {
+    "upstream-sebs-calibrated": {
+      "anchors": {
+        "010.sleep": {
+          "buckets": {
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 1000.132,
+                "min": 1000.132,
+                "p50": 1000.132,
+                "p90": 1000.132,
+                "p95": 1000.132,
+                "p99": 1000.132
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1424.243,
+                "min": 1405.315,
+                "p50": 1414.779,
+                "p90": 1422.3502,
+                "p95": 1423.2966,
+                "p99": 1424.0537199999999
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 1014.802,
+                "min": 1014.802,
+                "p50": 1014.802,
+                "p90": 1014.802,
+                "p95": 1014.802,
+                "p99": 1014.802
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-010.sleep-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 1014.802,
+                  "min": 1014.802,
+                  "p50": 1014.802,
+                  "p90": 1014.802,
+                  "p95": 1014.802,
+                  "p99": 1014.802
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 14.670000000000073,
+                  "min": 14.670000000000073,
+                  "p50": 14.670000000000073,
+                  "p90": 14.670000000000073,
+                  "p95": 14.670000000000073,
+                  "p99": 14.670000000000073
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-010.sleep-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "010.sleep",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/010.sleep-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 1014.802,
+              "warm_sample_count": 1
+            }
+          },
+          "resource_class": "balanced",
+          "semantic_source": "upstream-sebs"
+        },
+        "040.server-reply": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 0.269,
+                "min": 0.269,
+                "p50": 0.269,
+                "p90": 0.269,
+                "p95": 0.269,
+                "p99": 0.269
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 428.382,
+                "min": 415.56,
+                "p50": 421.971,
+                "p90": 427.0998,
+                "p95": 427.7409,
+                "p99": 428.25378
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 12.472,
+                "min": 12.472,
+                "p50": 12.472,
+                "p90": 12.472,
+                "p95": 12.472,
+                "p99": 12.472
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-040.server-reply-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 12.472,
+                  "min": 12.472,
+                  "p50": 12.472,
+                  "p90": 12.472,
+                  "p95": 12.472,
+                  "p99": 12.472
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 12.203,
+                  "min": 12.203,
+                  "p50": 12.203,
+                  "p90": 12.203,
+                  "p95": 12.203,
+                  "p99": 12.203
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-040.server-reply-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "http",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "040.server-reply",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/040.server-reply-test-python-http/experiments.json",
+              "supported": true,
+              "target_duration_ms": 12.472,
+              "warm_sample_count": 1
+            }
+          },
+          "resource_class": "network",
+          "semantic_source": "upstream-sebs"
+        },
+        "110.dynamic-html": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 5,
+                "max": 1.808,
+                "min": 1.611,
+                "p50": 1.696,
+                "p90": 1.7952,
+                "p95": 1.8016,
+                "p99": 1.8067199999999999
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 0,
+                "max": null,
+                "min": null,
+                "p50": null,
+                "p90": null,
+                "p95": null,
+                "p99": null
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 5,
+                "max": 31.782,
+                "min": 23.806,
+                "p50": 25.137,
+                "p90": 29.222,
+                "p95": 30.502000000000002,
+                "p99": 31.526
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-110.dynamic-html-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 5,
+                  "max": 31.782,
+                  "min": 23.806,
+                  "p50": 25.137,
+                  "p90": 29.222,
+                  "p95": 30.502000000000002,
+                  "p99": 31.526
+                },
+                "submit_lag_ms": {
+                  "count": 5,
+                  "max": 30.006,
+                  "min": 22.195,
+                  "p50": 23.329,
+                  "p90": 27.4996,
+                  "p95": 28.7528,
+                  "p99": 29.75536
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-110.dynamic-html-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "110.dynamic-html",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/110.dynamic-html-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 25.137,
+              "warm_sample_count": 5
+            },
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 2,
+                "max": 117.08,
+                "min": 116.863,
+                "p50": 116.97149999999999,
+                "p90": 117.0583,
+                "p95": 117.06915000000001,
+                "p99": 117.07783
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 1,
+                "max": 1917.613,
+                "min": 1917.613,
+                "p50": 1917.613,
+                "p90": 1917.613,
+                "p95": 1917.613,
+                "p99": 1917.613
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "large",
+              "isolated_warm_ms": {
+                "count": 2,
+                "max": 478.114,
+                "min": 448.653,
+                "p50": 463.3835,
+                "p90": 475.1679,
+                "p95": 476.64095,
+                "p99": 477.81939
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-110.dynamic-html-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 2,
+                  "max": 478.114,
+                  "min": 448.653,
+                  "p50": 463.3835,
+                  "p90": 475.1679,
+                  "p95": 476.64095,
+                  "p99": 477.81939
+                },
+                "submit_lag_ms": {
+                  "count": 2,
+                  "max": 361.251,
+                  "min": 331.57300000000004,
+                  "p50": 346.41200000000003,
+                  "p90": 358.2832,
+                  "p95": 359.7671,
+                  "p99": 360.95422
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-110.dynamic-html-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "http-raisedlimit",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "110.dynamic-html",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/110.dynamic-html-large-python-http-raisedlimit/experiments.json",
+              "supported": true,
+              "target_duration_ms": 463.3835,
+              "warm_sample_count": 2
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "120.uploader": {
+          "buckets": {
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 757.752,
+                "min": 757.752,
+                "p50": 757.752,
+                "p90": 757.752,
+                "p95": 757.752,
+                "p99": 757.752
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1370.329,
+                "min": 1322.016,
+                "p50": 1346.1725000000001,
+                "p90": 1365.4977,
+                "p95": 1367.91335,
+                "p99": 1369.84587
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "large",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 770.77,
+                "min": 770.77,
+                "p50": 770.77,
+                "p90": 770.77,
+                "p95": 770.77,
+                "p99": 770.77
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-120.uploader-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 770.77,
+                  "min": 770.77,
+                  "p50": 770.77,
+                  "p90": 770.77,
+                  "p95": 770.77,
+                  "p99": 770.77
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 13.018000000000029,
+                  "min": 13.018000000000029,
+                  "p50": 13.018000000000029,
+                  "p90": 13.018000000000029,
+                  "p95": 13.018000000000029,
+                  "p99": 13.018000000000029
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-120.uploader-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "http-mem2048",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "120.uploader",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/120.uploader-large-python-http-mem2048/experiments.json",
+              "supported": true,
+              "target_duration_ms": 770.77,
+              "warm_sample_count": 1
+            },
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 4,
+                "max": 80.92,
+                "min": 75.379,
+                "p50": 75.8825,
+                "p90": 79.5439,
+                "p95": 80.23195,
+                "p99": 80.78239
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 1,
+                "max": 736.425,
+                "min": 736.425,
+                "p50": 736.425,
+                "p90": 736.425,
+                "p95": 736.425,
+                "p99": 736.425
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 4,
+                "max": 101.964,
+                "min": 95.658,
+                "p50": 97.5875,
+                "p90": 100.88730000000001,
+                "p95": 101.42565,
+                "p99": 101.85633
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-120.uploader-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 4,
+                  "max": 101.964,
+                  "min": 95.658,
+                  "p50": 97.5875,
+                  "p90": 100.88730000000001,
+                  "p95": 101.42565,
+                  "p99": 101.85633
+                },
+                "submit_lag_ms": {
+                  "count": 4,
+                  "max": 22.042,
+                  "min": 20.226,
+                  "p50": 21.232499999999995,
+                  "p90": 21.8557,
+                  "p95": 21.94885,
+                  "p99": 22.023370000000003
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-120.uploader-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "120.uploader",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/120.uploader-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 97.5875,
+              "warm_sample_count": 4
+            }
+          },
+          "resource_class": "io",
+          "semantic_source": "upstream-sebs"
+        },
+        "210.thumbnailer": {
+          "buckets": {
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 5,
+                "max": 37.66,
+                "min": 36.288,
+                "p50": 36.569,
+                "p90": 37.453599999999994,
+                "p95": 37.556799999999996,
+                "p99": 37.639359999999996
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 0,
+                "max": null,
+                "min": null,
+                "p50": null,
+                "p90": null,
+                "p95": null,
+                "p99": null
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 5,
+                "max": 58.774,
+                "min": 52.135,
+                "p50": 55.244,
+                "p90": 57.82000000000001,
+                "p95": 58.297,
+                "p99": 58.6786
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-210.thumbnailer-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 5,
+                  "max": 58.774,
+                  "min": 52.135,
+                  "p50": 55.244,
+                  "p90": 57.82000000000001,
+                  "p95": 58.297,
+                  "p99": 58.6786
+                },
+                "submit_lag_ms": {
+                  "count": 5,
+                  "max": 21.114000000000004,
+                  "min": 15.565999999999995,
+                  "p50": 18.956000000000003,
+                  "p90": 20.366400000000006,
+                  "p95": 20.740200000000005,
+                  "p99": 21.039240000000003
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-210.thumbnailer-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "210.thumbnailer",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/210.thumbnailer-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 55.244,
+              "warm_sample_count": 5
+            }
+          },
+          "resource_class": "balanced",
+          "semantic_source": "upstream-sebs"
+        },
+        "220.video-processing": {
+          "buckets": {
+            "200-400ms": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 381.738,
+                "min": 364.463,
+                "p50": 377.938,
+                "p90": 380.97799999999995,
+                "p95": 381.358,
+                "p99": 381.662
+              },
+              "bucket": "200-400ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1118.504,
+                "min": 1094.175,
+                "p50": 1106.3395,
+                "p90": 1116.0711,
+                "p95": 1117.2875499999998,
+                "p99": 1118.2607099999998
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 396.316,
+                "min": 379.553,
+                "p50": 392.565,
+                "p90": 395.56579999999997,
+                "p95": 395.94089999999994,
+                "p99": 396.2409799999999
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-220.video-processing-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 396.316,
+                  "min": 379.553,
+                  "p50": 392.565,
+                  "p90": 395.56579999999997,
+                  "p95": 395.94089999999994,
+                  "p99": 396.2409799999999
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 15.089999999999975,
+                  "min": 14.577999999999975,
+                  "p50": 14.62700000000001,
+                  "p90": 14.997399999999983,
+                  "p95": 15.043699999999978,
+                  "p99": 15.080739999999976
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-220.video-processing-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "220.video-processing",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/220.video-processing-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 392.565,
+              "warm_sample_count": 3
+            },
+            "2s+": {
+              "benchmark_body_ms": {
+                "count": 2,
+                "max": 6177.422,
+                "min": 6169.34,
+                "p50": 6173.380999999999,
+                "p90": 6176.6138,
+                "p95": 6177.0179,
+                "p99": 6177.341179999999
+              },
+              "bucket": "2s+",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 6607.948,
+                "min": 6595.568,
+                "p50": 6601.758,
+                "p90": 6606.710000000001,
+                "p95": 6607.329,
+                "p99": 6607.8242
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "large",
+              "isolated_warm_ms": {
+                "count": 2,
+                "max": 6607.948,
+                "min": 6595.568,
+                "p50": 6601.758,
+                "p90": 6606.710000000001,
+                "p95": 6607.329,
+                "p99": 6607.8242
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-220.video-processing-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 2,
+                  "max": 6607.948,
+                  "min": 6595.568,
+                  "p50": 6601.758,
+                  "p90": 6606.710000000001,
+                  "p95": 6607.329,
+                  "p99": 6607.8242
+                },
+                "submit_lag_ms": {
+                  "count": 2,
+                  "max": 430.52600000000075,
+                  "min": 426.22800000000007,
+                  "p50": 428.3770000000004,
+                  "p90": 430.0962000000007,
+                  "p95": 430.31110000000075,
+                  "p99": 430.4830200000007
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-220.video-processing-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 2,
+              "sebs_anchor": "220.video-processing",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/220.video-processing-large-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 6601.758,
+              "warm_sample_count": 2
+            },
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 579.972,
+                "min": 579.972,
+                "p50": 579.972,
+                "p90": 579.972,
+                "p95": 579.972,
+                "p99": 579.972
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1315.825,
+                "min": 1309.677,
+                "p50": 1312.751,
+                "p90": 1315.2102,
+                "p95": 1315.5176000000001,
+                "p99": 1315.7635200000002
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 593.275,
+                "min": 593.275,
+                "p50": 593.275,
+                "p90": 593.275,
+                "p95": 593.275,
+                "p99": 593.275
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-220.video-processing-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 593.275,
+                  "min": 593.275,
+                  "p50": 593.275,
+                  "p90": 593.275,
+                  "p95": 593.275,
+                  "p99": 593.275
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 13.302999999999997,
+                  "min": 13.302999999999997,
+                  "p50": 13.302999999999997,
+                  "p90": 13.302999999999997,
+                  "p95": 13.302999999999997,
+                  "p99": 13.302999999999997
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-220.video-processing-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "http-mem2048",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "220.video-processing",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/220.video-processing-small-python-http-mem2048/experiments.json",
+              "supported": true,
+              "target_duration_ms": 593.275,
+              "warm_sample_count": 1
+            }
+          },
+          "resource_class": "balanced",
+          "semantic_source": "upstream-sebs"
+        },
+        "311.compression": {
+          "buckets": {
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 426.117,
+                "min": 413.247,
+                "p50": 417.327,
+                "p90": 424.35900000000004,
+                "p95": 425.238,
+                "p99": 425.94120000000004
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1052.9,
+                "min": 1037.726,
+                "p50": 1045.313,
+                "p90": 1051.3826000000001,
+                "p95": 1052.1413,
+                "p99": 1052.74826
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 445.494,
+                "min": 432.703,
+                "p50": 437.75,
+                "p90": 443.9452,
+                "p95": 444.7196,
+                "p99": 445.33912000000004
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-311.compression-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 445.494,
+                  "min": 432.703,
+                  "p50": 437.75,
+                  "p90": 443.9452,
+                  "p95": 444.7196,
+                  "p99": 445.33912000000004
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 20.423000000000002,
+                  "min": 19.37700000000001,
+                  "p50": 19.45599999999996,
+                  "p90": 20.229599999999994,
+                  "p95": 20.3263,
+                  "p99": 20.40366
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-311.compression-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "311.compression",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/311.compression-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 437.75,
+              "warm_sample_count": 3
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "411.image-recognition": {
+          "buckets": {
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 4,
+                "max": 44.587,
+                "min": 39.405,
+                "p50": 43.854,
+                "p90": 44.575,
+                "p95": 44.581,
+                "p99": 44.585800000000006
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 1,
+                "max": 4455.118,
+                "min": 4455.118,
+                "p50": 4455.118,
+                "p90": 4455.118,
+                "p95": 4455.118,
+                "p99": 4455.118
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 4,
+                "max": 81.749,
+                "min": 53.426,
+                "p50": 58.622,
+                "p90": 74.8208,
+                "p95": 78.2849,
+                "p99": 81.05618000000001
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-411.image-recognition-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 4,
+                  "max": 81.749,
+                  "min": 53.426,
+                  "p50": 58.622,
+                  "p90": 74.8208,
+                  "p95": 78.2849,
+                  "p99": 81.05618000000001
+                },
+                "submit_lag_ms": {
+                  "count": 4,
+                  "max": 38.587999999999994,
+                  "min": 14.021,
+                  "p50": 14.055,
+                  "p90": 31.232,
+                  "p95": 34.91,
+                  "p99": 37.852399999999996
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-411.image-recognition-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "411.image-recognition",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/411.image-recognition-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 58.622,
+              "warm_sample_count": 4
+            }
+          },
+          "resource_class": "memory",
+          "semantic_source": "upstream-sebs"
+        },
+        "501.graph-pagerank": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 0.317,
+                "min": 0.317,
+                "p50": 0.317,
+                "p90": 0.317,
+                "p95": 0.317,
+                "p99": 0.317
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 452.9,
+                "min": 451.651,
+                "p50": 452.27549999999997,
+                "p90": 452.7751,
+                "p95": 452.83754999999996,
+                "p99": 452.88750999999996
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 12.131,
+                "min": 12.131,
+                "p50": 12.131,
+                "p90": 12.131,
+                "p95": 12.131,
+                "p99": 12.131
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-501.graph-pagerank-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 12.131,
+                  "min": 12.131,
+                  "p50": 12.131,
+                  "p90": 12.131,
+                  "p95": 12.131,
+                  "p99": 12.131
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 11.814,
+                  "min": 11.814,
+                  "p50": 11.814,
+                  "p90": 11.814,
+                  "p95": 11.814,
+                  "p99": 11.814
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-501.graph-pagerank-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "501.graph-pagerank",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/501.graph-pagerank-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 12.131,
+              "warm_sample_count": 1
+            },
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 42.912,
+                "min": 36.578,
+                "p50": 42.145,
+                "p90": 42.7586,
+                "p95": 42.8353,
+                "p99": 42.89666
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 0,
+                "max": null,
+                "min": null,
+                "p50": null,
+                "p90": null,
+                "p95": null,
+                "p99": null
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 56.381,
+                "min": 50.803,
+                "p50": 55.912,
+                "p90": 56.2872,
+                "p95": 56.3341,
+                "p99": 56.37162
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-501.graph-pagerank-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 56.381,
+                  "min": 50.803,
+                  "p50": 55.912,
+                  "p90": 56.2872,
+                  "p95": 56.3341,
+                  "p99": 56.37162
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 14.224999999999994,
+                  "min": 13.469000000000001,
+                  "p50": 13.766999999999996,
+                  "p90": 14.133399999999995,
+                  "p95": 14.179199999999994,
+                  "p99": 14.215839999999995
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-501.graph-pagerank-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "501.graph-pagerank",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/501.graph-pagerank-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 55.912,
+              "warm_sample_count": 3
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "502.graph-mst": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 0.313,
+                "min": 0.313,
+                "p50": 0.313,
+                "p90": 0.313,
+                "p95": 0.313,
+                "p99": 0.313
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 576.401,
+                "min": 454.653,
+                "p50": 515.527,
+                "p90": 564.2262,
+                "p95": 570.3136,
+                "p99": 575.1835199999999
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 13.896,
+                "min": 13.896,
+                "p50": 13.896,
+                "p90": 13.896,
+                "p95": 13.896,
+                "p99": 13.896
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-502.graph-mst-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 13.896,
+                  "min": 13.896,
+                  "p50": 13.896,
+                  "p90": 13.896,
+                  "p95": 13.896,
+                  "p99": 13.896
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 13.583,
+                  "min": 13.583,
+                  "p50": 13.583,
+                  "p90": 13.583,
+                  "p95": 13.583,
+                  "p99": 13.583
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-502.graph-mst-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "502.graph-mst",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/502.graph-mst-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 13.896,
+              "warm_sample_count": 1
+            },
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 27.633,
+                "min": 26.672,
+                "p50": 27.279,
+                "p90": 27.5622,
+                "p95": 27.5976,
+                "p99": 27.62592
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 0,
+                "max": null,
+                "min": null,
+                "p50": null,
+                "p90": null,
+                "p95": null,
+                "p99": null
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 87.737,
+                "min": 59.195,
+                "p50": 60.151,
+                "p90": 82.21979999999999,
+                "p95": 84.9784,
+                "p99": 87.18527999999999
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-502.graph-mst-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 87.737,
+                  "min": 59.195,
+                  "p50": 60.151,
+                  "p90": 82.21979999999999,
+                  "p95": 84.9784,
+                  "p99": 87.18527999999999
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 60.458,
+                  "min": 32.518,
+                  "p50": 32.522999999999996,
+                  "p90": 54.870999999999995,
+                  "p95": 57.6645,
+                  "p99": 59.8993
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-502.graph-mst-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "502.graph-mst",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/502.graph-mst-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 60.151,
+              "warm_sample_count": 3
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "503.graph-bfs": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 0.314,
+                "min": 0.227,
+                "p50": 0.276,
+                "p90": 0.3064,
+                "p95": 0.3102,
+                "p99": 0.31324
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 586.315,
+                "min": 468.977,
+                "p50": 527.646,
+                "p90": 574.5812000000001,
+                "p95": 580.4481000000001,
+                "p99": 585.14162
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 15.657,
+                "min": 14.094,
+                "p50": 14.501,
+                "p90": 15.4258,
+                "p95": 15.5414,
+                "p99": 15.63388
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-503.graph-bfs-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 15.657,
+                  "min": 14.094,
+                  "p50": 14.501,
+                  "p90": 15.4258,
+                  "p95": 15.5414,
+                  "p99": 15.63388
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 15.343,
+                  "min": 13.818,
+                  "p50": 14.274,
+                  "p90": 15.129199999999999,
+                  "p95": 15.236099999999999,
+                  "p99": 15.32162
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-503.graph-bfs-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "503.graph-bfs",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/503.graph-bfs-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 14.501,
+              "warm_sample_count": 3
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "504.dna-visualisation": {
+          "buckets": {
+            "2s+": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 7919.444,
+                "min": 7919.444,
+                "p50": 7919.444,
+                "p90": 7919.444,
+                "p95": 7919.444,
+                "p99": 7919.444
+              },
+              "bucket": "2s+",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 8485.211,
+                "min": 8303.049,
+                "p50": 8394.130000000001,
+                "p90": 8466.994799999999,
+                "p95": 8476.1029,
+                "p99": 8483.389379999999
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 7932.459,
+                "min": 7932.459,
+                "p50": 7932.459,
+                "p90": 7932.459,
+                "p95": 7932.459,
+                "p99": 7932.459
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-504.dna-visualisation-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 7932.459,
+                  "min": 7932.459,
+                  "p50": 7932.459,
+                  "p90": 7932.459,
+                  "p95": 7932.459,
+                  "p99": 7932.459
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 13.014999999999418,
+                  "min": 13.014999999999418,
+                  "p50": 13.014999999999418,
+                  "p90": 13.014999999999418,
+                  "p95": 13.014999999999418,
+                  "p99": 13.014999999999418
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-504.dna-visualisation-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "504.dna-visualisation",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/504.dna-visualisation-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 7932.459,
+              "warm_sample_count": 1
+            }
+          },
+          "resource_class": "memory",
+          "semantic_source": "upstream-sebs"
+        }
+      },
+      "resource_class": "anchor",
+      "semantic_source": "upstream-sebs",
+      "uses_upstream_sebs_directly": true
+    }
+  },
+  "profile_rows": [
+    {
+      "bucket": "400ms-2s",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "010.sleep",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/010.sleep-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 1000.132,
+      "warm_client_p99_ms": 1014.802
+    },
+    {
+      "bucket": "0-50ms",
+      "input_size": "test",
+      "run_variant": "http",
+      "runtime": "python",
+      "sebs_anchor": "040.server-reply",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/040.server-reply-test-python-http/experiments.json",
+      "warm_benchmark_p99_ms": 0.269,
+      "warm_client_p99_ms": 12.472
+    },
+    {
+      "bucket": "0-50ms",
+      "input_size": "small",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "110.dynamic-html",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/110.dynamic-html-small-python/experiments.json",
+      "warm_benchmark_p99_ms": 1.8067199999999999,
+      "warm_client_p99_ms": 31.526
+    },
+    {
+      "bucket": "0-50ms",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "110.dynamic-html",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/110.dynamic-html-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 1.5170400000000002,
+      "warm_client_p99_ms": 46.425360000000005
+    },
+    {
+      "bucket": "400ms-2s",
+      "input_size": "large",
+      "run_variant": "http-raisedlimit",
+      "runtime": "python",
+      "sebs_anchor": "110.dynamic-html",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/110.dynamic-html-large-python-http-raisedlimit/experiments.json",
+      "warm_benchmark_p99_ms": 117.07783,
+      "warm_client_p99_ms": 477.81939
+    },
+    {
+      "bucket": "400ms-2s",
+      "input_size": "large",
+      "run_variant": "http-mem2048",
+      "runtime": "python",
+      "sebs_anchor": "120.uploader",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/120.uploader-large-python-http-mem2048/experiments.json",
+      "warm_benchmark_p99_ms": 757.752,
+      "warm_client_p99_ms": 770.77
+    },
+    {
+      "bucket": "400ms-2s",
+      "input_size": "large",
+      "run_variant": "library",
+      "runtime": "python",
+      "sebs_anchor": "120.uploader",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/120.uploader-large-python-library/experiments.json",
+      "warm_benchmark_p99_ms": 833.235,
+      "warm_client_p99_ms": 882.989
+    },
+    {
+      "bucket": "400ms-2s",
+      "input_size": "small",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "120.uploader",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/120.uploader-small-python/experiments.json",
+      "warm_benchmark_p99_ms": 1531.07618,
+      "warm_client_p99_ms": 1553.9395100000002
+    },
+    {
+      "bucket": "50-200ms",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "120.uploader",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/120.uploader-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 80.78239,
+      "warm_client_p99_ms": 101.85633
+    },
+    {
+      "bucket": "50-200ms",
+      "input_size": "small",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "210.thumbnailer",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/210.thumbnailer-small-python/experiments.json",
+      "warm_benchmark_p99_ms": 37.639359999999996,
+      "warm_client_p99_ms": 58.6786
+    },
+    {
+      "bucket": "50-200ms",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "210.thumbnailer",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/210.thumbnailer-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 37.81258,
+      "warm_client_p99_ms": 56.60849999999999
+    },
+    {
+      "bucket": "200-400ms",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "220.video-processing",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/220.video-processing-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 381.662,
+      "warm_client_p99_ms": 396.2409799999999
+    },
+    {
+      "bucket": "2s+",
+      "input_size": "large",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "220.video-processing",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/220.video-processing-large-python/experiments.json",
+      "warm_benchmark_p99_ms": 6177.341179999999,
+      "warm_client_p99_ms": 6607.8242
+    },
+    {
+      "bucket": "400ms-2s",
+      "input_size": "small",
+      "run_variant": "http-mem2048",
+      "runtime": "python",
+      "sebs_anchor": "220.video-processing",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/220.video-processing-small-python-http-mem2048/experiments.json",
+      "warm_benchmark_p99_ms": 579.972,
+      "warm_client_p99_ms": 593.275
+    },
+    {
+      "bucket": "400ms-2s",
+      "input_size": "small",
+      "run_variant": "library",
+      "runtime": "python",
+      "sebs_anchor": "220.video-processing",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/220.video-processing-small-python-library/experiments.json",
+      "warm_benchmark_p99_ms": 582.314,
+      "warm_client_p99_ms": 633.707
+    },
+    {
+      "bucket": "400ms-2s",
+      "input_size": "large",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "311.compression",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/311.compression-large-python/experiments.json",
+      "warm_benchmark_p99_ms": 414.92894,
+      "warm_client_p99_ms": 427.80206000000004
+    },
+    {
+      "bucket": "400ms-2s",
+      "input_size": "small",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "311.compression",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/311.compression-small-python/experiments.json",
+      "warm_benchmark_p99_ms": 417.97651999999994,
+      "warm_client_p99_ms": 436.83104000000003
+    },
+    {
+      "bucket": "400ms-2s",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "311.compression",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/311.compression-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 425.94120000000004,
+      "warm_client_p99_ms": 445.33912000000004
+    },
+    {
+      "bucket": "50-200ms",
+      "input_size": "large",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "411.image-recognition",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/411.image-recognition-large-python/experiments.json",
+      "warm_benchmark_p99_ms": 49.305,
+      "warm_client_p99_ms": 61.97
+    },
+    {
+      "bucket": "50-200ms",
+      "input_size": "small",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "411.image-recognition",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/411.image-recognition-small-python/experiments.json",
+      "warm_benchmark_p99_ms": 44.585800000000006,
+      "warm_client_p99_ms": 81.05618000000001
+    },
+    {
+      "bucket": "50-200ms",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "411.image-recognition",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/411.image-recognition-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 41.0879,
+      "warm_client_p99_ms": 57.35028
+    },
+    {
+      "bucket": "0-50ms",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "501.graph-pagerank",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/501.graph-pagerank-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 0.317,
+      "warm_client_p99_ms": 12.131
+    },
+    {
+      "bucket": "50-200ms",
+      "input_size": "small",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "501.graph-pagerank",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/501.graph-pagerank-small-python/experiments.json",
+      "warm_benchmark_p99_ms": 42.89666,
+      "warm_client_p99_ms": 56.37162
+    },
+    {
+      "bucket": "0-50ms",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "502.graph-mst",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/502.graph-mst-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 0.313,
+      "warm_client_p99_ms": 13.896
+    },
+    {
+      "bucket": "50-200ms",
+      "input_size": "small",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "502.graph-mst",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/502.graph-mst-small-python/experiments.json",
+      "warm_benchmark_p99_ms": 27.62592,
+      "warm_client_p99_ms": 87.18527999999999
+    },
+    {
+      "bucket": "0-50ms",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "503.graph-bfs",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/503.graph-bfs-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 0.31324,
+      "warm_client_p99_ms": 15.63388
+    },
+    {
+      "bucket": "2s+",
+      "input_size": "test",
+      "run_variant": "",
+      "runtime": "python",
+      "sebs_anchor": "504.dna-visualisation",
+      "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/504.dna-visualisation-test-python/experiments.json",
+      "warm_benchmark_p99_ms": 7919.444,
+      "warm_client_p99_ms": 7932.459
+    }
+  ],
+  "schema": "cosmos.semantic.duration-calibration",
+  "skipped_failed_experiments": [
+    {
+      "failures": 1,
+      "path": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/110.dynamic-html-large-python-library/experiments.json",
+      "total": 1
+    }
+  ],
+  "source": {
+    "decision_metric": "isolated_warm_client_p99_ms",
+    "host": "amd249.utah.cloudlab.us",
+    "openwhisk_overrides": {
+      "whisk.activation.payload.max": "8m",
+      "whisk.activation.payload.truncation": "8m",
+      "whisk.namespace-default-limit.activation.payload.max": "8m",
+      "whisk.namespace-default-limit.activation.payload.truncation": "8m"
+    },
+    "results_dir": "/opt/sebs/results/semantic-profile-20260601-013110",
+    "skipped_failed_experiment_count": 1,
+    "successful_experiment_count": 27,
+    "type": "remote-openwhisk-sebs-profile"
+  },
+  "version": 1
+}

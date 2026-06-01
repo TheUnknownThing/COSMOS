@@ -12,6 +12,7 @@ import socket
 import subprocess
 import threading
 import time
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--activation-poll-timeout-s", type=float, default=180.0)
     parser.add_argument("--activation-poll-interval-s", type=float, default=1.0)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--max-inflight",
+        type=int,
+        default=0,
+        help=(
+            "Maximum concurrent wsk invocations. Defaults to unbounded so replay "
+            "timing matches the input schedule exactly."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--calibrate",
@@ -526,7 +536,7 @@ def run_invocation(
             completion_ns = now_ns()
             stdout_fh.write(stdout)
             stderr_fh.write(stderr)
-            activation_id = parse_activation_id(stdout) or activation_guess
+            activation_id = parse_activation_id(stdout) or parse_activation_id(stderr) or activation_guess
             return {
                 "event_id": invocation.event_id,
                 "invocation_id": invocation.invocation_id,
@@ -559,7 +569,7 @@ def run_invocation(
         stdout_fh.write(stdout)
         stderr_fh.write(stderr)
 
-    activation_id = parse_activation_id(stdout) or activation_guess
+    activation_id = parse_activation_id(stdout) or parse_activation_id(stderr) or activation_guess
     parsed_stdout = parse_prefixed_json(stdout)
     accepted_not_finished = (
         process.returncode == 202
@@ -618,75 +628,51 @@ def run_invocation(
     }
 
 
+LATENCY_FIELDNAMES = [
+    "event_id",
+    "invocation_id",
+    "function_id",
+    "profile_id",
+    "workload",
+    "action",
+    "activation_id",
+    "scheduled_at_ms",
+    "target_duration_ms",
+    "deadline_us",
+    "deadline_source",
+    "isolated_warm_p99_ms",
+    "slo_class",
+    "slo_met",
+    "normalized_slowdown",
+    "scheduled_monotonic_ns",
+    "submit_monotonic_ns",
+    "completion_monotonic_ns",
+    "latency_ms",
+    "exit_status",
+    "ok",
+    "metadata_status",
+    "activation_status",
+    "poll_status",
+    "stdout_path",
+    "stderr_path",
+]
+
+
 def write_latency_header(path: Path) -> None:
     with path.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(
-            fh,
-            fieldnames=[
-                "event_id",
-                "invocation_id",
-                "function_id",
-                "profile_id",
-                "workload",
-                "action",
-                "activation_id",
-                "scheduled_at_ms",
-                "target_duration_ms",
-                "deadline_us",
-                "deadline_source",
-                "isolated_warm_p99_ms",
-                "slo_class",
-                "slo_met",
-                "normalized_slowdown",
-                "scheduled_monotonic_ns",
-                "submit_monotonic_ns",
-                "completion_monotonic_ns",
-                "latency_ms",
-                "exit_status",
-                "ok",
-                "metadata_status",
-                "activation_status",
-                "poll_status",
-                "stdout_path",
-                "stderr_path",
-            ],
-        )
+        writer = csv.DictWriter(fh, fieldnames=LATENCY_FIELDNAMES)
         writer.writeheader()
 
 
-def append_latency(path: Path, result: dict[str, Any]) -> None:
+def write_latency_row(writer: csv.DictWriter, result: dict[str, Any]) -> None:
     annotate_slo_metrics(result)
-    fieldnames = [
-        "event_id",
-        "invocation_id",
-        "function_id",
-        "profile_id",
-        "workload",
-        "action",
-        "activation_id",
-        "scheduled_at_ms",
-        "target_duration_ms",
-        "deadline_us",
-        "deadline_source",
-        "isolated_warm_p99_ms",
-        "slo_class",
-        "slo_met",
-        "normalized_slowdown",
-        "scheduled_monotonic_ns",
-        "submit_monotonic_ns",
-        "completion_monotonic_ns",
-        "latency_ms",
-        "exit_status",
-        "ok",
-        "metadata_status",
-        "activation_status",
-        "poll_status",
-        "stdout_path",
-        "stderr_path",
-    ]
+    writer.writerow({key: result.get(key, "") for key in LATENCY_FIELDNAMES})
+
+
+def append_latency(path: Path, result: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
-        writer.writerow({key: result.get(key, "") for key in fieldnames})
+        writer = csv.DictWriter(fh, fieldnames=LATENCY_FIELDNAMES)
+        write_latency_row(writer, result)
 
 
 def percentile(values: list[float], pct: float) -> float | None:
@@ -731,7 +717,76 @@ def annotate_slo_metrics(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def summarize_replay_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+def distribution(values: list[float]) -> dict[str, float | None]:
+    return {
+        "p50": percentile(values, 0.50),
+        "p90": percentile(values, 0.90),
+        "p95": percentile(values, 0.95),
+        "p99": percentile(values, 0.99),
+        "mean": (sum(values) / len(values)) if values else None,
+    }
+
+
+def arrival_summary(invocations: list[ReplayInvocation]) -> dict[str, Any]:
+    if not invocations:
+        return {
+            "average_arrival_rate_per_s": None,
+            "peak_1s_arrival_rate": 0,
+            "scheduled_span_s": None,
+        }
+    scheduled_ms = [float(invocation.at_ms) for invocation in invocations]
+    span_s = max(0.0, (max(scheduled_ms) - min(scheduled_ms)) / 1000.0)
+    buckets = Counter(int(ms // 1000.0) for ms in scheduled_ms)
+    return {
+        "average_arrival_rate_per_s": (len(scheduled_ms) / span_s) if span_s > 0 else None,
+        "peak_1s_arrival_rate": max(buckets.values()) if buckets else 0,
+        "scheduled_span_s": span_s,
+    }
+
+
+def workload_slo_breakdown(results: list[dict[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in results:
+        grouped[str(item.get("workload") or "unknown")].append(item)
+
+    output: dict[str, Any] = {}
+    for workload, workload_results in sorted(grouped.items()):
+        ok_results = [item for item in workload_results if item.get("ok")]
+        slo_met = [item for item in ok_results if item.get("slo_met")]
+        submit_times = [
+            int(item["submit_monotonic_ns"])
+            for item in workload_results
+            if item.get("submit_monotonic_ns")
+        ]
+        completion_times = [
+            int(item["completion_monotonic_ns"])
+            for item in workload_results
+            if item.get("completion_monotonic_ns")
+        ]
+        elapsed_s = None
+        if submit_times and completion_times:
+            elapsed_s = max(0.0, (max(completion_times) - min(submit_times)) / 1_000_000_000.0)
+        output[workload] = {
+            "attempts": len(workload_results),
+            "successes": len(ok_results),
+            "slo_successes": len(slo_met),
+            "slo_success_rate": (len(slo_met) / len(workload_results)) if workload_results else None,
+            "slo_goodput_per_s": (len(slo_met) / elapsed_s) if elapsed_s and elapsed_s > 0 else None,
+            "latency_ms": distribution(
+                [
+                    float(item["latency_ms"])
+                    for item in ok_results
+                    if item.get("latency_ms") is not None
+                ]
+            ),
+        }
+    return output
+
+
+def summarize_replay_results(
+    results: list[dict[str, Any]],
+    invocations: list[ReplayInvocation] | None = None,
+) -> dict[str, Any]:
     ok_results = [item for item in results if item.get("ok")]
     slo_met = [item for item in ok_results if item.get("slo_met")]
     slowdowns = [
@@ -739,7 +794,9 @@ def summarize_replay_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         for item in ok_results
         if item.get("normalized_slowdown") is not None
     ]
-    submit_times = [int(item["submit_monotonic_ns"]) for item in results if item.get("submit_monotonic_ns")]
+    submit_times = [
+        int(item["submit_monotonic_ns"]) for item in results if item.get("submit_monotonic_ns")
+    ]
     completion_times = [
         int(item["completion_monotonic_ns"])
         for item in results
@@ -748,21 +805,51 @@ def summarize_replay_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     elapsed_s = None
     if submit_times and completion_times:
         elapsed_s = max(0.0, (max(completion_times) - min(submit_times)) / 1_000_000_000.0)
-    return {
+    submit_lags_ms = [
+        (int(item["submit_monotonic_ns"]) - int(item["scheduled_monotonic_ns"])) / 1_000_000.0
+        for item in results
+        if item.get("submit_monotonic_ns") and item.get("scheduled_monotonic_ns")
+    ]
+    post_submit_latency_ms = [
+        float(item["latency_ms"])
+        for item in ok_results
+        if item.get("latency_ms") is not None
+    ]
+    target_deadline_ratios: list[float] = []
+    impossible_deadlines = 0
+    for item in results:
+        try:
+            target_ms = float(item.get("target_duration_ms") or 0.0)
+            deadline_ms = float(item.get("deadline_us") or 0.0) / 1000.0
+        except (TypeError, ValueError):
+            continue
+        if deadline_ms > 0 and target_ms > 0:
+            target_deadline_ratios.append(target_ms / deadline_ms)
+            if target_ms > deadline_ms:
+                impossible_deadlines += 1
+
+    action_counts = Counter(str(item.get("action") or "unknown") for item in results)
+    summary = {
         "attempts": len(results),
         "successes": len(ok_results),
         "slo_successes": len(slo_met),
         "slo_goodput_invocations": len(slo_met),
         "slo_goodput_per_s": (len(slo_met) / elapsed_s) if elapsed_s and elapsed_s > 0 else None,
         "slo_success_rate": (len(slo_met) / len(results)) if results else None,
-        "normalized_slowdown": {
-            "p50": percentile(slowdowns, 0.50),
-            "p90": percentile(slowdowns, 0.90),
-            "p99": percentile(slowdowns, 0.99),
-            "mean": (sum(slowdowns) / len(slowdowns)) if slowdowns else None,
+        "normalized_slowdown": distribution(slowdowns),
+        "submit_lag_ms": distribution(submit_lags_ms),
+        "post_submit_latency_ms": distribution(post_submit_latency_ms),
+        "target_duration_vs_deadline": {
+            "target_over_deadline": distribution(target_deadline_ratios),
+            "impossible_deadline_count": impossible_deadlines,
         },
+        "action_mix": dict(sorted(action_counts.items())),
+        "per_workload": workload_slo_breakdown(results),
         "elapsed_s": elapsed_s,
     }
+    if invocations is not None:
+        summary["arrival"] = arrival_summary(invocations)
+    return summary
 
 
 def isolated_warm_p99_from_records(records: dict[str, Any]) -> dict[str, float]:
@@ -895,6 +982,8 @@ def main() -> int:
     args = parse_args()
     if args.limit is not None and args.limit <= 0:
         raise SystemExit("--limit must be positive")
+    if args.max_inflight < 0:
+        raise SystemExit("--max-inflight must be non-negative")
     if args.slo_deadline_multiplier <= 0:
         raise SystemExit("--slo-deadline-multiplier must be positive")
     if not args.dry_run and shutil.which(args.wsk) is None:
@@ -946,6 +1035,7 @@ def main() -> int:
         "poll_accepted": args.poll_accepted,
         "activation_poll_timeout_s": args.activation_poll_timeout_s,
         "dry_run": args.dry_run,
+        "max_inflight": args.max_inflight,
         "slo_calibration": str(args.slo_calibration) if args.slo_calibration else None,
         "slo_deadline_multiplier": args.slo_deadline_multiplier,
         "calibrated_deadline_actions": sorted(slo_calibration_ms or {}),
@@ -962,6 +1052,10 @@ def main() -> int:
     base_ns = now_ns()
     threads: list[threading.Thread] = []
     results: list[dict[str, Any]] = []
+    inflight = threading.Semaphore(args.max_inflight) if args.max_inflight else None
+    requests_fh = (run_dir / "requests.jsonl").open("a", encoding="utf-8", buffering=1)
+    latency_fh = latency_csv.open("a", encoding="utf-8", newline="", buffering=1)
+    latency_writer = csv.DictWriter(latency_fh, fieldnames=LATENCY_FIELDNAMES)
 
     def worker(invocation: ReplayInvocation) -> None:
         nonlocal failures
@@ -969,34 +1063,75 @@ def main() -> int:
         sleep_ns = target_ns - now_ns()
         if sleep_ns > 0:
             time.sleep(sleep_ns / 1_000_000_000)
-        result = run_invocation(args, invocation, run_dir, container_map)
+        acquired = False
+        try:
+            if inflight is not None:
+                inflight.acquire()
+                acquired = True
+            result = run_invocation(args, invocation, run_dir, container_map)
+            result["scheduled_monotonic_ns"] = target_ns
+        except Exception as exc:
+            failure_ns = now_ns()
+            result = {
+                "event_id": invocation.event_id,
+                "invocation_id": invocation.invocation_id,
+                "function_id": invocation.function_id,
+                "profile_id": invocation.profile_id,
+                "workload": invocation.workload,
+                "action": invocation.action,
+                "activation_id": "",
+                "scheduled_at_ms": invocation.at_ms,
+                "target_duration_ms": invocation.target_duration_ms,
+                "deadline_us": invocation.deadline_us,
+                "deadline_source": invocation.deadline_source,
+                "isolated_warm_p99_ms": invocation.isolated_warm_p99_ms,
+                "slo_class": invocation.slo_class,
+                "scheduled_monotonic_ns": target_ns,
+                "submit_monotonic_ns": failure_ns,
+                "completion_monotonic_ns": failure_ns,
+                "latency_ms": 0.0,
+                "exit_status": -1,
+                "ok": False,
+                "metadata_status": f"exception:{type(exc).__name__}:{exc}",
+                "activation_status": "",
+                "poll_status": "",
+                "stdout_path": "",
+                "stderr_path": "",
+                "command": "",
+            }
+        finally:
+            if acquired and inflight is not None:
+                inflight.release()
         annotate_slo_metrics(result)
         with write_lock:
             if not result.get("ok"):
                 failures += 1
             results.append(result)
-            with (run_dir / "requests.jsonl").open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
-            append_latency(latency_csv, result)
+            requests_fh.write(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
+            write_latency_row(latency_writer, result)
 
-    for invocation in invocations:
-        thread = threading.Thread(
-            target=worker,
-            args=(invocation,),
-            name=f"ow-replay-{invocation.invocation_id}",
-        )
-        thread.start()
-        threads.append(thread)
+    try:
+        for invocation in invocations:
+            thread = threading.Thread(
+                target=worker,
+                args=(invocation,),
+                name=f"ow-replay-{invocation.invocation_id}",
+            )
+            thread.start()
+            threads.append(thread)
 
-    for thread in threads:
-        thread.join()
+        for thread in threads:
+            thread.join()
+    finally:
+        requests_fh.close()
+        latency_fh.close()
 
     summary = {
         "count": len(invocations),
         "failures": failures,
         "ok": failures == 0,
         "run_dir": str(run_dir),
-        "slo": summarize_replay_results(results),
+        "slo": summarize_replay_results(results, invocations),
     }
     (run_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",

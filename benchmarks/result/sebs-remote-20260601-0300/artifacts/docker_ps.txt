@@ -1,0 +1,8 @@
+NAMES                                                    IMAGE                                                                                                         STATUS                  PORTS
+wsk0_15_guest_sebs7375fbca504dnavisualisationpython311   localhost:5000/spcleth/serverless-benchmarks:function.openwhisk.504.dna-visualisation.python-3.11-x64-1.2.1   Up 5 minutes (Paused)   
+wsk0_14_guest_sebs7375fbca503graphbfspython311           localhost:5000/spcleth/serverless-benchmarks:function.openwhisk.503.graph-bfs.python-3.11-x64-1.2.1           Up 5 minutes (Paused)   
+wsk0_4_prewarm_nodejs20                                  openwhisk/action-nodejs-v20:nightly                                                                           Up 6 minutes            8080/tcp
+cosmos-ow-controller                                     openwhisk/standalone:nightly                                                                                  Up 17 minutes           
+some-scylla                                              scylladb/scylla:6.0                                                                                           Up 2 hours              22/tcp, 7000-7001/tcp, 9042/tcp, 9160/tcp, 9180/tcp, 10000/tcp, 0.0.0.0:9012->8000/tcp, [::]:9012->8000/tcp
+keen_bohr                                                minio/minio:RELEASE.2024-07-16T23-46-41Z                                                                      Up 2 hours              0.0.0.0:9011->9000/tcp, [::]:9011->9000/tcp
+cosmos-sebs-registry                                     registry:2                                                                                                    Up 2 hours              0.0.0.0:5000->5000/tcp, [::]:5000->5000/tcp

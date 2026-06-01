@@ -85,6 +85,26 @@ python3 benchmarks/azure_trace/build_azure_trace_2019_direct.py \
   --output-dir /tmp/cosmos-azure-2019-direct-clustered-90m
 ```
 
+Use direct replay variants instead of a single headline plan when separating
+OpenWhisk queueing from scheduler behavior:
+
+```sh
+# Bursty Azure-shaped
+--arrival-mode clustered-bursty --workload-mix-mode trace
+
+# Smoothed Azure-shaped
+--arrival-mode evenly-spaced --workload-mix-mode trace
+
+# Balanced workload mix
+--arrival-mode evenly-spaced --workload-mix-mode balanced
+
+# Peak-stress dominant workload
+--arrival-mode front-loaded-burst --workload-mix-mode peak-stress
+
+# Target-duration-aware SLO labeling
+--deadline-mode target-duration-aware
+```
+
 Classified SeBS example:
 
 ```sh
@@ -139,4 +159,7 @@ python3 benchmarks/azure_trace/run_openwhisk_azure_replay.py \
 
 With calibration, deadlines are computed as
 `deadline = k * isolated_warm_p99[action]`. The replay summary reports
-`slo_goodput_per_s`, `slo_success_rate`, and normalized slowdown percentiles.
+arrival shape, peak 1-second arrival rate, action mix, per-workload SLO success
+and goodput, submit lag, post-submit latency, target-duration/deadline ratios,
+impossible-deadline counts, `slo_goodput_per_s`, `slo_success_rate`, and
+normalized slowdown percentiles.

@@ -1,4 +1,5 @@
 runs/
+results/
 scripts/results/
 azure_trace/results/
 local_harness/results/

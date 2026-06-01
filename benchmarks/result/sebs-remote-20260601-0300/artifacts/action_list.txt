@@ -1,0 +1,18 @@
+actions
+/guest/sebs-7375fbca-504.dna-visualisation-python-3.11                 private blackbox
+/guest/sebs-7375fbca-503.graph-bfs-python-3.11                         private blackbox
+/guest/sebs-7375fbca-502.graph-mst-python-3.11                         private blackbox
+/guest/sebs-7375fbca-501.graph-pagerank-python-3.11                    private blackbox
+/guest/sebs-7375fbca-411.image-recognition-python-3.11                 private blackbox
+/guest/sebs-7375fbca-311.compression-python-3.11                       private blackbox
+/guest/sebs-7375fbca-220.video-processing-python-3.11                  private blackbox
+/guest/sebs-7375fbca-210.thumbnailer-python-3.11                       private blackbox
+/guest/sebs-7375fbca-120.uploader-python-3.11                          private blackbox
+/guest/sebs-7375fbca-040.server-reply-python-3.11                      private blackbox
+/guest/sebs-7375fbca-010.sleep-python-3.11                             private blackbox
+/guest/balanced-pipeline-controllable                                  private nodejs:20
+/guest/network-transfer-controllable                                   private nodejs:20
+/guest/storage-io-controllable                                         private nodejs:20
+/guest/memory-scan-controllable                                        private nodejs:20
+/guest/cpu-spin-controllable                                           private nodejs:20
+/guest/sebs-7375fbca-110.dynamic-html-python-3.11                      private blackbox

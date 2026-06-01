@@ -1,0 +1,11 @@
+010.sleep,test,python,180,http,,
+040.server-reply,test,python,180,http,,
+120.uploader,large,python,420,http,2048,300
+210.thumbnailer,test,python,240,http,,
+220.video-processing,large,python,600,http,2048,300
+311.compression,large,python,240,http,,
+411.image-recognition,test,python,300,http,,
+501.graph-pagerank,small,python,300,http,,
+502.graph-mst,small,python,300,http,,
+503.graph-bfs,test,python,180,http,,
+504.dna-visualisation,test,python,600,http,,

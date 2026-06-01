@@ -105,6 +105,28 @@ def summarize_optional_ms(rows: list[dict[str, Any]], field: str) -> dict[str, f
     }
 
 
+def elapsed_seconds(rows: list[dict[str, Any]]) -> float | None:
+    starts: list[int] = []
+    ends: list[int] = []
+    for row in rows:
+        try:
+            if row.get("start_monotonic_ns"):
+                starts.append(int(row["start_monotonic_ns"]))
+            if row.get("end_monotonic_ns"):
+                ends.append(int(row["end_monotonic_ns"]))
+        except (TypeError, ValueError):
+            continue
+    if not starts or not ends:
+        return None
+    elapsed = (max(ends) - min(starts)) / 1_000_000_000.0
+    return elapsed if elapsed > 0 else None
+
+
+def goodput_per_s(ok_rows: list[dict[str, Any]], all_rows: list[dict[str, Any]]) -> float | None:
+    elapsed = elapsed_seconds(all_rows)
+    return (len(ok_rows) / elapsed) if elapsed else None
+
+
 def load_scheduler_samples(run_dir: Path) -> list[dict[str, Any]]:
     path = run_dir / "scheduler_stats.jsonl"
     if not path.exists():
@@ -311,6 +333,7 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
         "p95_ms": percentile(durations, 0.95),
         "p99_ms": percentile(durations, 0.99),
         "client_slo_violations": client_slo_violations,
+        "goodput_per_s": goodput_per_s(ok_rows, rows),
     }
 
     summary = {
@@ -340,7 +363,8 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
     for row in rows:
         wl = row.get("workload", "unknown")
         if wl not in per_workload:
-            per_workload[wl] = {"durations": [], "ok_rows": []}
+            per_workload[wl] = {"durations": [], "ok_rows": [], "rows": []}
+        per_workload[wl]["rows"].append(row)
         per_workload[wl]["durations"].append(row["duration_ms"])
         if row["status"] == "ok":
             per_workload[wl]["ok_rows"].append(row)
@@ -365,6 +389,7 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
                 "p95_ms": percentile(durs, 0.95),
                 "p99_ms": percentile(durs, 0.99),
                 "client_slo_violations": wl_violations,
+                "goodput_per_s": goodput_per_s(ok, data["rows"]),
             }
 
     per_slo_class: dict[int, dict[str, Any]] = {}
@@ -373,15 +398,27 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
             continue
         slo = int(row["slo_class"])
         if slo not in per_slo_class:
-            per_slo_class[slo] = {"durations": [], "ok_rows": []}
+            per_slo_class[slo] = {"durations": [], "ok_rows": [], "rows": []}
+        per_slo_class[slo]["rows"].append(row)
         per_slo_class[slo]["durations"].append(row["duration_ms"])
         if row["status"] == "ok":
             per_slo_class[slo]["ok_rows"].append(row)
     if per_slo_class:
         summary["per_slo_class"] = {}
+        latency_critical_mean = (
+            sum(per_slo_class[0]["durations"]) / len(per_slo_class[0]["durations"])
+            if 0 in per_slo_class and per_slo_class[0]["durations"]
+            else None
+        )
         for slo, data in sorted(per_slo_class.items()):
             durs = data["durations"]
             ok = data["ok_rows"]
+            mean_ms = sum(durs) / len(durs) if durs else 0.0
+            slowdown_vs_lc = (
+                mean_ms / latency_critical_mean
+                if durs and latency_critical_mean
+                else None
+            )
             slo_violations = sum(
                 1
                 for row in ok
@@ -393,11 +430,16 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
                 "failures": len(durs) - len(ok),
                 "min_ms": min(durs) if durs else 0.0,
                 "max_ms": max(durs) if durs else 0.0,
-                "mean_ms": sum(durs) / len(durs) if durs else 0.0,
+                "mean_ms": mean_ms,
                 "p50_ms": percentile(durs, 0.50),
                 "p95_ms": percentile(durs, 0.95),
                 "p99_ms": percentile(durs, 0.99),
                 "client_slo_violations": slo_violations,
+                "goodput_per_s": goodput_per_s(ok, data["rows"]),
+                "mean_slowdown_vs_latency_critical": slowdown_vs_lc,
+                "batch_slowdown_vs_latency_critical": slowdown_vs_lc
+                if slo == 2
+                else None,
             }
 
     (run_dir / "summary.json").write_text(

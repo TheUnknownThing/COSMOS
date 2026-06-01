@@ -61,6 +61,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dataset-2019-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--arrival-mode", choices=ARRIVAL_MODES, default="uniform-within-minute")
+    parser.add_argument(
+        "--workload-mix-mode",
+        choices=["trace", "balanced", "peak-stress"],
+        default="trace",
+        help=(
+            "trace preserves the classified Azure mix, balanced equalizes emitted "
+            "workload families, and peak-stress keeps the dominant family in the "
+            "selected window."
+        ),
+    )
+    parser.add_argument(
+        "--deadline-mode",
+        choices=["duration-headroom", "target-duration-aware"],
+        default="duration-headroom",
+        help=(
+            "Deadline labeling mode. target-duration-aware keeps deadlines tied "
+            "to each invocation target duration and marks the replay accordingly."
+        ),
+    )
     parser.add_argument("--window-start-ms", type=float, default=0.0)
     parser.add_argument("--window-ms", type=float)
     parser.add_argument("--scale", type=float, default=1.0)
@@ -138,6 +157,15 @@ def in_window(start_ms: float, end_ms: float | None) -> bool:
     return True
 
 
+def minute_overlaps_window(minute_start_ms: float, window_start_ms: float, end_ms: float | None) -> bool:
+    minute_end_ms = minute_start_ms + 60_000.0
+    if minute_end_ms < window_start_ms:
+        return False
+    if end_ms is not None and minute_start_ms > end_ms:
+        return False
+    return True
+
+
 def iter_2019_direct_events(
     invocation_paths: list[Path],
     profiles_by_function: dict[str, ClassifiedProfile],
@@ -148,6 +176,12 @@ def iter_2019_direct_events(
     rows_seen = 0
     for fallback_day, path in enumerate(invocation_paths):
         day = day_index(path, fallback_day)
+        day_start_ms = day * 1440 * 60_000.0
+        day_end_ms = day_start_ms + 1440 * 60_000.0
+        if day_end_ms < args.window_start_ms:
+            continue
+        if end_ms is not None and day_start_ms > end_ms:
+            break
         for row in open_csv_rows(path):
             if (
                 args.dataset_2019_invocation_row_limit is not None
@@ -168,11 +202,13 @@ def iter_2019_direct_events(
             for name, value in row.items():
                 if not str(name).isdigit():
                     continue
+                minute_index = day * 1440 + int(name) - 1
+                minute_start_ms = minute_index * 60_000.0
+                if not minute_overlaps_window(minute_start_ms, args.window_start_ms, end_ms):
+                    continue
                 count = int(parse_float(value) or 0)
                 if count <= 0:
                     continue
-                minute_index = day * 1440 + int(name) - 1
-                minute_start_ms = minute_index * 60_000.0
                 for index in range(count):
                     key = f"{path.name}:{function_id}:{name}:{index}"
                     source_start_ms = (
@@ -202,11 +238,80 @@ def iter_2019_direct_events(
     return sorted(events, key=lambda item: (item[0].source_start_ms, item[0].function_id))
 
 
+def collect_window_function_ids(invocation_paths: list[Path], args: argparse.Namespace) -> set[str]:
+    end_ms = args.window_start_ms + args.window_ms if args.window_ms is not None else None
+    function_ids: set[str] = set()
+    rows_seen = 0
+    for fallback_day, path in enumerate(invocation_paths):
+        day = day_index(path, fallback_day)
+        day_start_ms = day * 1440 * 60_000.0
+        day_end_ms = day_start_ms + 1440 * 60_000.0
+        if day_end_ms < args.window_start_ms:
+            continue
+        if end_ms is not None and day_start_ms > end_ms:
+            break
+        for row in open_csv_rows(path):
+            if (
+                args.dataset_2019_invocation_row_limit is not None
+                and rows_seen >= args.dataset_2019_invocation_row_limit
+            ):
+                return function_ids
+            rows_seen += 1
+            app = first_present(row, ("HashApp", "app"))
+            func = first_present(row, ("HashFunction", "func"))
+            if app is None or func is None:
+                continue
+            has_count_in_window = False
+            for name, value in row.items():
+                if not str(name).isdigit():
+                    continue
+                minute_index = day * 1440 + int(name) - 1
+                minute_start_ms = minute_index * 60_000.0
+                if not minute_overlaps_window(minute_start_ms, args.window_start_ms, end_ms):
+                    continue
+                if int(parse_float(value) or 0) > 0:
+                    has_count_in_window = True
+                    break
+            if has_count_in_window:
+                function_ids.add(f"{app}:{func}")
+    return function_ids
+
+
 def build_metrics(events: list[replay_common.TraceEvent], sample_limit: int) -> replay_common.Metrics:
     metrics = replay_common.Metrics()
     for event in events:
         metrics.add(event, sample_limit)
     return metrics
+
+
+def apply_workload_mix_mode(
+    selected: list[tuple[replay_common.TraceEvent, ClassifiedProfile]],
+    mode: str,
+) -> list[tuple[replay_common.TraceEvent, ClassifiedProfile]]:
+    if mode == "trace":
+        return selected
+
+    grouped: dict[str, list[tuple[replay_common.TraceEvent, ClassifiedProfile]]] = {}
+    for event, profile in selected:
+        workload = FAMILY_TO_SYNTHETIC_WORKLOAD[profile.family]
+        grouped.setdefault(workload, []).append((event, profile))
+    if not grouped:
+        return selected
+
+    if mode == "balanced":
+        per_workload = min(len(items) for items in grouped.values())
+        balanced = [
+            item
+            for workload in sorted(grouped)
+            for item in grouped[workload][:per_workload]
+        ]
+        return sorted(balanced, key=lambda item: (item[0].source_start_ms, item[0].function_id))
+
+    if mode == "peak-stress":
+        dominant_workload = max(sorted(grouped), key=lambda workload: len(grouped[workload]))
+        return grouped[dominant_workload]
+
+    raise ValueError(f"unknown workload mix mode: {mode}")
 
 
 def write_invocations_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -321,11 +426,15 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         invocation_files, _, _ = require_2019_dataset(args.dataset_2019_dir, args.dataset_2019_days)
+        window_function_ids = collect_window_function_ids(invocation_files, args)
+        if not window_function_ids:
+            raise SystemExit("no 2019 functions had invocations in the requested window")
         classified_profiles = load_classified_profiles(
             args.dataset_2019_dir,
             args.max_2019_profiles,
             args.dataset_2019_days,
             args.dataset_2019_invocation_row_limit,
+            window_function_ids,
         )
     except Missing2019DataError as exc:
         raise SystemExit(str(exc)) from exc
@@ -333,7 +442,10 @@ def main(argv: list[str] | None = None) -> int:
     profiles_by_function = {
         profile.features.function_id: profile for profile in classified_profiles
     }
-    selected = iter_2019_direct_events(invocation_files, profiles_by_function, args)
+    selected = apply_workload_mix_mode(
+        iter_2019_direct_events(invocation_files, profiles_by_function, args),
+        args.workload_mix_mode,
+    )
     if not selected:
         raise SystemExit("no 2019 invocations matched the requested window")
 
@@ -382,7 +494,11 @@ def main(argv: list[str] | None = None) -> int:
                 **row,
                 "function_hash": event.function_id,
                 "duration_ms": event.duration_ms,
-                "deadline_source": "duration-headroom; override with OpenWhisk calibration for SLO metrics",
+                "deadline_source": (
+                    "target-duration-aware"
+                    if args.deadline_mode == "target-duration-aware"
+                    else "duration-headroom; override with OpenWhisk calibration for SLO metrics"
+                ),
                 "profile_hints": hints,
             }
         )
@@ -428,6 +544,8 @@ def main(argv: list[str] | None = None) -> int:
             "scale": args.scale,
             "limit": args.limit,
             "arrival_mode": args.arrival_mode,
+            "workload_mix_mode": args.workload_mix_mode,
+            "deadline_mode": args.deadline_mode,
         },
         "classifier_summary": {
             "source_2019_profiles": len(classified_profiles),
@@ -448,6 +566,8 @@ def main(argv: list[str] | None = None) -> int:
         {
             "created_at": created_at,
             "arrival_mode": args.arrival_mode,
+            "workload_mix_mode": args.workload_mix_mode,
+            "deadline_mode": args.deadline_mode,
             "notes": [
                 "2019 per-minute arrivals are used directly.",
                 "Sub-minute placement is deterministic synthetic expansion because the public 2019 trace is minute-granular.",

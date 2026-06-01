@@ -3,6 +3,7 @@
 
 use crate::actuator::ResourceActuator;
 use crate::adapter::CpuAdapter;
+use crate::bpf::RL_CPU_ANY;
 use crate::coordinator::CoordinationEngine;
 use crate::metadata::delete_invocation_hint;
 use crate::policy::SchedulingPolicy;
@@ -112,7 +113,7 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
                     .schedule(&resolved, &raw, self.adapter.topology(), now)
             };
             for dec in &decisions {
-                self.adapter.dispatch(
+                let dispatched = self.adapter.dispatch(
                     dec.pid,
                     dec.cpu,
                     dec.slice_ns,
@@ -120,6 +121,16 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
                     dec.enq_flags,
                     dec.enq_cnt,
                 );
+                if !dispatched && dec.cpu != RL_CPU_ANY {
+                    self.adapter.dispatch(
+                        dec.pid,
+                        RL_CPU_ANY,
+                        dec.slice_ns,
+                        dec.vtime,
+                        dec.enq_flags,
+                        dec.enq_cnt,
+                    );
+                }
             }
             {
                 if let Ok(reg) = self.registry.try_read() {

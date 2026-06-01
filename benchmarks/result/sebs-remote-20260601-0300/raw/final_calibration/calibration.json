@@ -1,0 +1,3593 @@
+{
+  "bucket_targets_ms": {
+    "0-50ms": 25,
+    "200-400ms": 300,
+    "2s+": 2100,
+    "400ms-2s": 1000,
+    "50-200ms": 125
+  },
+  "created_at": "2026-06-01T08:55:31.948314+00:00",
+  "measurements": {
+    "balanced-pipeline-controllable": {
+      "buckets": {
+        "0-50ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 25.031,
+            "min": 25.031,
+            "p50": 25.031,
+            "p90": 25.031,
+            "p99": 25.031
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "balanced",
+            "--target-us",
+            "25000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 25.031,
+            "min": 25.003,
+            "p50": 25.01,
+            "p90": 25.026799999999998,
+            "p99": 25.030579999999997
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 25.01,
+            "min": 25.003,
+            "p50": 25.006500000000003,
+            "p90": 25.0093,
+            "p99": 25.00993
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25031,
+              "iterations": 375,
+              "mode": "balanced",
+              "sink": 7571121030566450219,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25010,
+              "iterations": 376,
+              "mode": "balanced",
+              "sink": 4363426350902014169,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25003,
+              "iterations": 376,
+              "mode": "balanced",
+              "sink": 4363426350902014169,
+              "target_us": 25000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 25,
+          "target_duration_us": 25000
+        },
+        "200-400ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 300.013,
+            "min": 300.013,
+            "p50": 300.013,
+            "p90": 300.013,
+            "p99": 300.013
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "balanced",
+            "--target-us",
+            "300000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 300.054,
+            "min": 300.008,
+            "p50": 300.013,
+            "p90": 300.0458,
+            "p99": 300.05318
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 300.054,
+            "min": 300.008,
+            "p50": 300.03099999999995,
+            "p90": 300.04939999999993,
+            "p99": 300.05354
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300013,
+              "iterations": 4515,
+              "mode": "balanced",
+              "sink": 12106558486490809907,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300008,
+              "iterations": 4517,
+              "mode": "balanced",
+              "sink": 8140185853912778551,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300054,
+              "iterations": 4503,
+              "mode": "balanced",
+              "sink": 1275101511716113440,
+              "target_us": 300000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 300,
+          "target_duration_us": 300000
+        },
+        "2s+": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 2100.014,
+            "min": 2100.014,
+            "p50": 2100.014,
+            "p90": 2100.014,
+            "p99": 2100.014
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "balanced",
+            "--target-us",
+            "2100000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 2100.017,
+            "min": 2100.014,
+            "p50": 2100.016,
+            "p90": 2100.0168,
+            "p99": 2100.01698
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 2100.017,
+            "min": 2100.016,
+            "p50": 2100.0164999999997,
+            "p90": 2100.0168999999996,
+            "p99": 2100.01699
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100014,
+              "iterations": 31655,
+              "mode": "balanced",
+              "sink": 17566305958807507008,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100016,
+              "iterations": 31582,
+              "mode": "balanced",
+              "sink": 12260581842738166469,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100017,
+              "iterations": 31534,
+              "mode": "balanced",
+              "sink": 17244274131955418845,
+              "target_us": 2100000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 2100,
+          "target_duration_us": 2100000
+        },
+        "400ms-2s": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 1000.055,
+            "min": 1000.055,
+            "p50": 1000.055,
+            "p90": 1000.055,
+            "p99": 1000.055
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "balanced",
+            "--target-us",
+            "1000000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 1000.068,
+            "min": 1000.024,
+            "p50": 1000.055,
+            "p90": 1000.0654,
+            "p99": 1000.0677400000001
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 1000.068,
+            "min": 1000.024,
+            "p50": 1000.046,
+            "p90": 1000.0636,
+            "p99": 1000.06756
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000055,
+              "iterations": 15089,
+              "mode": "balanced",
+              "sink": 7932313764546325504,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000024,
+              "iterations": 14988,
+              "mode": "balanced",
+              "sink": 9326362236614612393,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000068,
+              "iterations": 15046,
+              "mode": "balanced",
+              "sink": 14168957512998897233,
+              "target_us": 1000000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 1000,
+          "target_duration_us": 1000000
+        },
+        "50-200ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 125.044,
+            "min": 125.044,
+            "p50": 125.044,
+            "p90": 125.044,
+            "p99": 125.044
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "balanced",
+            "--target-us",
+            "125000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 125.044,
+            "min": 125.006,
+            "p50": 125.01,
+            "p90": 125.0372,
+            "p99": 125.04332000000001
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 125.01,
+            "min": 125.006,
+            "p50": 125.00800000000001,
+            "p90": 125.00959999999999,
+            "p99": 125.00996
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125044,
+              "iterations": 1882,
+              "mode": "balanced",
+              "sink": 403436552333868038,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125010,
+              "iterations": 1873,
+              "mode": "balanced",
+              "sink": 1380645327511217280,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "balanced",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125006,
+              "iterations": 1873,
+              "mode": "balanced",
+              "sink": 1380645327511217280,
+              "target_us": 125000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 125,
+          "target_duration_us": 125000
+        }
+      },
+      "resource_class": "balanced",
+      "semantic_source": "sebs-inspired-controllable",
+      "uses_upstream_sebs_directly": false
+    },
+    "cpu-spin-controllable": {
+      "buckets": {
+        "0-50ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 25.0,
+            "min": 25.0,
+            "p50": 25.0,
+            "p90": 25.0,
+            "p99": 25.0
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "cpu",
+            "--target-us",
+            "25000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 25.004,
+            "min": 25.0,
+            "p50": 25.003,
+            "p90": 25.003800000000002,
+            "p99": 25.003980000000002
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 25.004,
+            "min": 25.003,
+            "p50": 25.003500000000003,
+            "p90": 25.0039,
+            "p99": 25.00399
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25000,
+              "iterations": 5751,
+              "mode": "cpu",
+              "sink": 7323795909332325808,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25004,
+              "iterations": 5764,
+              "mode": "cpu",
+              "sink": 1759243994446686225,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25003,
+              "iterations": 5656,
+              "mode": "cpu",
+              "sink": 4225724646827966472,
+              "target_us": 25000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 25,
+          "target_duration_us": 25000
+        },
+        "200-400ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 300.003,
+            "min": 300.003,
+            "p50": 300.003,
+            "p90": 300.003,
+            "p99": 300.003
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "cpu",
+            "--target-us",
+            "300000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 300.003,
+            "min": 300.003,
+            "p50": 300.003,
+            "p90": 300.003,
+            "p99": 300.003
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 300.003,
+            "min": 300.003,
+            "p50": 300.003,
+            "p90": 300.003,
+            "p99": 300.003
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300003,
+              "iterations": 69235,
+              "mode": "cpu",
+              "sink": 17448148035018241797,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300003,
+              "iterations": 69249,
+              "mode": "cpu",
+              "sink": 11823151947235670753,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300003,
+              "iterations": 69285,
+              "mode": "cpu",
+              "sink": 6600681380292805200,
+              "target_us": 300000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 300,
+          "target_duration_us": 300000
+        },
+        "2s+": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 2100.003,
+            "min": 2100.003,
+            "p50": 2100.003,
+            "p90": 2100.003,
+            "p99": 2100.003
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "cpu",
+            "--target-us",
+            "2100000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 2100.003,
+            "min": 2100.002,
+            "p50": 2100.003,
+            "p90": 2100.003,
+            "p99": 2100.003
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 2100.003,
+            "min": 2100.002,
+            "p50": 2100.0025,
+            "p90": 2100.0029000000004,
+            "p99": 2100.00299
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100003,
+              "iterations": 484845,
+              "mode": "cpu",
+              "sink": 15173089005786049061,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100002,
+              "iterations": 484793,
+              "mode": "cpu",
+              "sink": 16360893548974441947,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100003,
+              "iterations": 484613,
+              "mode": "cpu",
+              "sink": 6573606786183237320,
+              "target_us": 2100000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 2100,
+          "target_duration_us": 2100000
+        },
+        "400ms-2s": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 1000.0,
+            "min": 1000.0,
+            "p50": 1000.0,
+            "p90": 1000.0,
+            "p99": 1000.0
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "cpu",
+            "--target-us",
+            "1000000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 1000.004,
+            "min": 1000.0,
+            "p50": 1000.003,
+            "p90": 1000.0038000000001,
+            "p99": 1000.00398
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 1000.004,
+            "min": 1000.003,
+            "p50": 1000.0035,
+            "p90": 1000.0038999999999,
+            "p99": 1000.00399
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000000,
+              "iterations": 230747,
+              "mode": "cpu",
+              "sink": 10547215110104123727,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000004,
+              "iterations": 230675,
+              "mode": "cpu",
+              "sink": 8963284010497202318,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000003,
+              "iterations": 230919,
+              "mode": "cpu",
+              "sink": 13913460688894770236,
+              "target_us": 1000000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 1000,
+          "target_duration_us": 1000000
+        },
+        "50-200ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 125.003,
+            "min": 125.003,
+            "p50": 125.003,
+            "p90": 125.003,
+            "p99": 125.003
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "cpu",
+            "--target-us",
+            "125000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 125.007,
+            "min": 125.003,
+            "p50": 125.003,
+            "p90": 125.0062,
+            "p99": 125.00692000000001
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 125.007,
+            "min": 125.003,
+            "p50": 125.005,
+            "p90": 125.0066,
+            "p99": 125.00695999999999
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125003,
+              "iterations": 28856,
+              "mode": "cpu",
+              "sink": 3088109643751512188,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125007,
+              "iterations": 28687,
+              "mode": "cpu",
+              "sink": 16045292021409516467,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "cpu",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125003,
+              "iterations": 28816,
+              "mode": "cpu",
+              "sink": 12718681859651510831,
+              "target_us": 125000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 125,
+          "target_duration_us": 125000
+        }
+      },
+      "resource_class": "cpu",
+      "semantic_source": "sebs-inspired-controllable",
+      "uses_upstream_sebs_directly": false
+    },
+    "memory-scan-controllable": {
+      "buckets": {
+        "0-50ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 25.024,
+            "min": 25.024,
+            "p50": 25.024,
+            "p90": 25.024,
+            "p99": 25.024
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "memory",
+            "--target-us",
+            "25000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 25.024,
+            "min": 25.009,
+            "p50": 25.012,
+            "p90": 25.0216,
+            "p99": 25.023760000000003
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 25.012,
+            "min": 25.009,
+            "p50": 25.0105,
+            "p90": 25.011699999999998,
+            "p99": 25.01197
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25024,
+              "iterations": 697,
+              "mode": "memory",
+              "sink": 9826491408295664268,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25009,
+              "iterations": 698,
+              "mode": "memory",
+              "sink": 5815516173277062889,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25012,
+              "iterations": 696,
+              "mode": "memory",
+              "sink": 14830354039481173619,
+              "target_us": 25000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 25,
+          "target_duration_us": 25000
+        },
+        "200-400ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 300.032,
+            "min": 300.032,
+            "p50": 300.032,
+            "p90": 300.032,
+            "p99": 300.032
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "memory",
+            "--target-us",
+            "300000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 300.032,
+            "min": 300.002,
+            "p50": 300.006,
+            "p90": 300.0268,
+            "p99": 300.03147999999993
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 300.006,
+            "min": 300.002,
+            "p50": 300.004,
+            "p90": 300.0056,
+            "p99": 300.00595999999996
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300032,
+              "iterations": 8380,
+              "mode": "memory",
+              "sink": 2034536068771737762,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300002,
+              "iterations": 8366,
+              "mode": "memory",
+              "sink": 7974265471473874002,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300006,
+              "iterations": 8377,
+              "mode": "memory",
+              "sink": 15011265505993870290,
+              "target_us": 300000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 300,
+          "target_duration_us": 300000
+        },
+        "2s+": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 2100.019,
+            "min": 2100.019,
+            "p50": 2100.019,
+            "p90": 2100.019,
+            "p99": 2100.019
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "memory",
+            "--target-us",
+            "2100000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 2100.022,
+            "min": 2100.004,
+            "p50": 2100.019,
+            "p90": 2100.0214,
+            "p99": 2100.0219399999996
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 2100.022,
+            "min": 2100.004,
+            "p50": 2100.013,
+            "p90": 2100.0202,
+            "p99": 2100.02182
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100019,
+              "iterations": 58566,
+              "mode": "memory",
+              "sink": 9994835005252053308,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100004,
+              "iterations": 58640,
+              "mode": "memory",
+              "sink": 8101203147788169596,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100022,
+              "iterations": 58561,
+              "mode": "memory",
+              "sink": 2104678046744066554,
+              "target_us": 2100000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 2100,
+          "target_duration_us": 2100000
+        },
+        "400ms-2s": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 1000.013,
+            "min": 1000.013,
+            "p50": 1000.013,
+            "p90": 1000.013,
+            "p99": 1000.013
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "memory",
+            "--target-us",
+            "1000000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 1000.03,
+            "min": 1000.013,
+            "p50": 1000.027,
+            "p90": 1000.0293999999999,
+            "p99": 1000.02994
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 1000.03,
+            "min": 1000.027,
+            "p50": 1000.0285,
+            "p90": 1000.0297,
+            "p99": 1000.0299699999999
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000013,
+              "iterations": 27779,
+              "mode": "memory",
+              "sink": 18289660126938877440,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000027,
+              "iterations": 27893,
+              "mode": "memory",
+              "sink": 15494836570652670533,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000030,
+              "iterations": 27933,
+              "mode": "memory",
+              "sink": 17098687556460673132,
+              "target_us": 1000000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 1000,
+          "target_duration_us": 1000000
+        },
+        "50-200ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 125.02,
+            "min": 125.02,
+            "p50": 125.02,
+            "p90": 125.02,
+            "p99": 125.02
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "memory",
+            "--target-us",
+            "125000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 125.026,
+            "min": 125.016,
+            "p50": 125.02,
+            "p90": 125.0248,
+            "p99": 125.02587999999999
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 125.026,
+            "min": 125.016,
+            "p50": 125.021,
+            "p90": 125.02499999999999,
+            "p99": 125.02590000000001
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125020,
+              "iterations": 3482,
+              "mode": "memory",
+              "sink": 1988625537559874618,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125016,
+              "iterations": 3489,
+              "mode": "memory",
+              "sink": 3535823717481991541,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "memory",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125026,
+              "iterations": 3484,
+              "mode": "memory",
+              "sink": 11735684103883993329,
+              "target_us": 125000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 125,
+          "target_duration_us": 125000
+        }
+      },
+      "resource_class": "memory",
+      "semantic_source": "sebs-inspired-controllable",
+      "uses_upstream_sebs_directly": false
+    },
+    "network-transfer-controllable": {
+      "buckets": {
+        "0-50ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 25.012,
+            "min": 25.012,
+            "p50": 25.012,
+            "p90": 25.012,
+            "p99": 25.012
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "network",
+            "--target-us",
+            "25000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 25.012,
+            "min": 25.002,
+            "p50": 25.011,
+            "p90": 25.0118,
+            "p99": 25.011979999999998
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 25.011,
+            "min": 25.002,
+            "p50": 25.0065,
+            "p90": 25.010099999999998,
+            "p99": 25.01091
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25012,
+              "iterations": 1935,
+              "mode": "network",
+              "sink": 1740650397737571627,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25002,
+              "iterations": 1943,
+              "mode": "network",
+              "sink": 16599665539692618319,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25011,
+              "iterations": 1991,
+              "mode": "network",
+              "sink": 13359953677821986819,
+              "target_us": 25000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 25,
+          "target_duration_us": 25000
+        },
+        "200-400ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 300.002,
+            "min": 300.002,
+            "p50": 300.002,
+            "p90": 300.002,
+            "p99": 300.002
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "network",
+            "--target-us",
+            "300000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 300.01,
+            "min": 300.002,
+            "p50": 300.008,
+            "p90": 300.0096,
+            "p99": 300.00996
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 300.01,
+            "min": 300.008,
+            "p50": 300.009,
+            "p90": 300.0098,
+            "p99": 300.00998000000004
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300002,
+              "iterations": 23438,
+              "mode": "network",
+              "sink": 16854046853941743760,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300010,
+              "iterations": 23954,
+              "mode": "network",
+              "sink": 4068749666256674666,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300008,
+              "iterations": 23967,
+              "mode": "network",
+              "sink": 9618014213763977782,
+              "target_us": 300000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 300,
+          "target_duration_us": 300000
+        },
+        "2s+": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 2100.006,
+            "min": 2100.006,
+            "p50": 2100.006,
+            "p90": 2100.006,
+            "p99": 2100.006
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "network",
+            "--target-us",
+            "2100000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 2100.012,
+            "min": 2100.003,
+            "p50": 2100.006,
+            "p90": 2100.0108,
+            "p99": 2100.0118800000005
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 2100.012,
+            "min": 2100.003,
+            "p50": 2100.0075,
+            "p90": 2100.0111,
+            "p99": 2100.01191
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100006,
+              "iterations": 167514,
+              "mode": "network",
+              "sink": 18312937479390032133,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100003,
+              "iterations": 167856,
+              "mode": "network",
+              "sink": 13244529716300393950,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100012,
+              "iterations": 167913,
+              "mode": "network",
+              "sink": 8931589399095575671,
+              "target_us": 2100000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 2100,
+          "target_duration_us": 2100000
+        },
+        "400ms-2s": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 1000.008,
+            "min": 1000.008,
+            "p50": 1000.008,
+            "p90": 1000.008,
+            "p99": 1000.008
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "network",
+            "--target-us",
+            "1000000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 1000.008,
+            "min": 1000.005,
+            "p50": 1000.007,
+            "p90": 1000.0078000000001,
+            "p99": 1000.00798
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 1000.007,
+            "min": 1000.005,
+            "p50": 1000.006,
+            "p90": 1000.0068,
+            "p99": 1000.0069799999999
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000008,
+              "iterations": 79954,
+              "mode": "network",
+              "sink": 4457087003942485819,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000005,
+              "iterations": 79839,
+              "mode": "network",
+              "sink": 4572893871605065330,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000007,
+              "iterations": 79899,
+              "mode": "network",
+              "sink": 2632409683395798962,
+              "target_us": 1000000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 1000,
+          "target_duration_us": 1000000
+        },
+        "50-200ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 125.009,
+            "min": 125.009,
+            "p50": 125.009,
+            "p90": 125.009,
+            "p99": 125.009
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "network",
+            "--target-us",
+            "125000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 125.009,
+            "min": 125.001,
+            "p50": 125.009,
+            "p90": 125.00900000000001,
+            "p99": 125.009
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 125.009,
+            "min": 125.001,
+            "p50": 125.005,
+            "p90": 125.0082,
+            "p99": 125.00892
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125009,
+              "iterations": 9960,
+              "mode": "network",
+              "sink": 966746974160904466,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125001,
+              "iterations": 9996,
+              "mode": "network",
+              "sink": 7297055261821725392,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "network",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125009,
+              "iterations": 9985,
+              "mode": "network",
+              "sink": 945154517814072490,
+              "target_us": 125000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 125,
+          "target_duration_us": 125000
+        }
+      },
+      "resource_class": "network",
+      "semantic_source": "sebs-inspired-controllable",
+      "uses_upstream_sebs_directly": false
+    },
+    "storage-io-controllable": {
+      "buckets": {
+        "0-50ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 25.002,
+            "min": 25.002,
+            "p50": 25.002,
+            "p90": 25.002,
+            "p99": 25.002
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "io",
+            "--target-us",
+            "25000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 25.006,
+            "min": 25.002,
+            "p50": 25.005,
+            "p90": 25.0058,
+            "p99": 25.00598
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 25.006,
+            "min": 25.005,
+            "p50": 25.005499999999998,
+            "p90": 25.0059,
+            "p99": 25.00599
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25002,
+              "iterations": 2172,
+              "mode": "io",
+              "sink": 10260784980415861203,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25005,
+              "iterations": 2172,
+              "mode": "io",
+              "sink": 10260784980415861203,
+              "target_us": 25000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "25000"
+              ],
+              "elapsed_us": 25006,
+              "iterations": 2175,
+              "mode": "io",
+              "sink": 4901729807365116908,
+              "target_us": 25000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 25,
+          "target_duration_us": 25000
+        },
+        "200-400ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 300.009,
+            "min": 300.009,
+            "p50": 300.009,
+            "p90": 300.009,
+            "p99": 300.009
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "io",
+            "--target-us",
+            "300000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 300.01,
+            "min": 300.009,
+            "p50": 300.01,
+            "p90": 300.01,
+            "p99": 300.01
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 300.01,
+            "min": 300.01,
+            "p50": 300.01,
+            "p90": 300.01,
+            "p99": 300.01
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300009,
+              "iterations": 26140,
+              "mode": "io",
+              "sink": 10835352530104760643,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300010,
+              "iterations": 26063,
+              "mode": "io",
+              "sink": 15361729283826986505,
+              "target_us": 300000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "300000"
+              ],
+              "elapsed_us": 300010,
+              "iterations": 26162,
+              "mode": "io",
+              "sink": 7845636829053428068,
+              "target_us": 300000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 300,
+          "target_duration_us": 300000
+        },
+        "2s+": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 2100.008,
+            "min": 2100.008,
+            "p50": 2100.008,
+            "p90": 2100.008,
+            "p99": 2100.008
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "io",
+            "--target-us",
+            "2100000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 2100.01,
+            "min": 2100.005,
+            "p50": 2100.008,
+            "p90": 2100.0096000000003,
+            "p99": 2100.0099600000003
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 2100.01,
+            "min": 2100.005,
+            "p50": 2100.0075,
+            "p90": 2100.0095,
+            "p99": 2100.00995
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100008,
+              "iterations": 183121,
+              "mode": "io",
+              "sink": 18113327614179097915,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100005,
+              "iterations": 183082,
+              "mode": "io",
+              "sink": 4034255535056926161,
+              "target_us": 2100000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "2100000"
+              ],
+              "elapsed_us": 2100010,
+              "iterations": 181886,
+              "mode": "io",
+              "sink": 7928101226790852830,
+              "target_us": 2100000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 2100,
+          "target_duration_us": 2100000
+        },
+        "400ms-2s": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 1000.01,
+            "min": 1000.01,
+            "p50": 1000.01,
+            "p90": 1000.01,
+            "p99": 1000.01
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "io",
+            "--target-us",
+            "1000000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 1000.01,
+            "min": 1000.005,
+            "p50": 1000.007,
+            "p90": 1000.0093999999999,
+            "p99": 1000.0099399999999
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 1000.007,
+            "min": 1000.005,
+            "p50": 1000.006,
+            "p90": 1000.0068,
+            "p99": 1000.0069799999999
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000010,
+              "iterations": 87095,
+              "mode": "io",
+              "sink": 15151447706513969100,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000007,
+              "iterations": 87136,
+              "mode": "io",
+              "sink": 6960612925650670412,
+              "target_us": 1000000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "1000000"
+              ],
+              "elapsed_us": 1000005,
+              "iterations": 87130,
+              "mode": "io",
+              "sink": 18778784348214115,
+              "target_us": 1000000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 1000,
+          "target_duration_us": 1000000
+        },
+        "50-200ms": {
+          "cold_start_ms": {
+            "count": 1,
+            "max": 125.007,
+            "min": 125.007,
+            "p50": 125.007,
+            "p90": 125.007,
+            "p99": 125.007
+          },
+          "command": [
+            "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+            "--mode",
+            "io",
+            "--target-us",
+            "125000"
+          ],
+          "isolated_all_ms": {
+            "count": 3,
+            "max": 125.007,
+            "min": 125.004,
+            "p50": 125.007,
+            "p90": 125.007,
+            "p99": 125.007
+          },
+          "isolated_warm_ms": {
+            "count": 2,
+            "max": 125.007,
+            "min": 125.004,
+            "p50": 125.00550000000001,
+            "p90": 125.00670000000001,
+            "p99": 125.00697
+          },
+          "openwhisk": {
+            "available": false,
+            "post_submit_latency_ms": null,
+            "reason": "local controllable-kernel calibration path",
+            "submit_lag_ms": null
+          },
+          "raw_samples": [
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125007,
+              "iterations": 10887,
+              "mode": "io",
+              "sink": 14132652600697193019,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125004,
+              "iterations": 10860,
+              "mode": "io",
+              "sink": 5524325663898058487,
+              "target_us": 125000
+            },
+            {
+              "command": [
+                "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+                "--mode",
+                "io",
+                "--target-us",
+                "125000"
+              ],
+              "elapsed_us": 125007,
+              "iterations": 10887,
+              "mode": "io",
+              "sink": 14132652600697193019,
+              "target_us": 125000
+            }
+          ],
+          "resource_counters": {
+            "available": false,
+            "reason": "native kernel self-report does not include perf or cgroup counters"
+          },
+          "supported": true,
+          "target_duration_ms": 125,
+          "target_duration_us": 125000
+        }
+      },
+      "resource_class": "io",
+      "semantic_source": "sebs-inspired-controllable",
+      "uses_upstream_sebs_directly": false
+    },
+    "upstream-sebs-calibrated": {
+      "anchors": {
+        "010.sleep": {
+          "buckets": {
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 1000.132,
+                "min": 1000.132,
+                "p50": 1000.132,
+                "p90": 1000.132,
+                "p95": 1000.132,
+                "p99": 1000.132
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1424.243,
+                "min": 1405.315,
+                "p50": 1414.779,
+                "p90": 1422.3502,
+                "p95": 1423.2966,
+                "p99": 1424.0537199999999
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 1014.802,
+                "min": 1014.802,
+                "p50": 1014.802,
+                "p90": 1014.802,
+                "p95": 1014.802,
+                "p99": 1014.802
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-010.sleep-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 1014.802,
+                  "min": 1014.802,
+                  "p50": 1014.802,
+                  "p90": 1014.802,
+                  "p95": 1014.802,
+                  "p99": 1014.802
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 14.670000000000073,
+                  "min": 14.670000000000073,
+                  "p50": 14.670000000000073,
+                  "p90": 14.670000000000073,
+                  "p95": 14.670000000000073,
+                  "p99": 14.670000000000073
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-010.sleep-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "010.sleep",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/010.sleep-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 1014.802,
+              "warm_sample_count": 1
+            }
+          },
+          "resource_class": "balanced",
+          "semantic_source": "upstream-sebs"
+        },
+        "040.server-reply": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 0.269,
+                "min": 0.269,
+                "p50": 0.269,
+                "p90": 0.269,
+                "p95": 0.269,
+                "p99": 0.269
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 428.382,
+                "min": 415.56,
+                "p50": 421.971,
+                "p90": 427.0998,
+                "p95": 427.7409,
+                "p99": 428.25378
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 12.472,
+                "min": 12.472,
+                "p50": 12.472,
+                "p90": 12.472,
+                "p95": 12.472,
+                "p99": 12.472
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-040.server-reply-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 12.472,
+                  "min": 12.472,
+                  "p50": 12.472,
+                  "p90": 12.472,
+                  "p95": 12.472,
+                  "p99": 12.472
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 12.203,
+                  "min": 12.203,
+                  "p50": 12.203,
+                  "p90": 12.203,
+                  "p95": 12.203,
+                  "p99": 12.203
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-040.server-reply-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "http",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "040.server-reply",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/040.server-reply-test-python-http/experiments.json",
+              "supported": true,
+              "target_duration_ms": 12.472,
+              "warm_sample_count": 1
+            }
+          },
+          "resource_class": "network",
+          "semantic_source": "upstream-sebs"
+        },
+        "110.dynamic-html": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 5,
+                "max": 1.808,
+                "min": 1.611,
+                "p50": 1.696,
+                "p90": 1.7952,
+                "p95": 1.8016,
+                "p99": 1.8067199999999999
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 0,
+                "max": null,
+                "min": null,
+                "p50": null,
+                "p90": null,
+                "p95": null,
+                "p99": null
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 5,
+                "max": 31.782,
+                "min": 23.806,
+                "p50": 25.137,
+                "p90": 29.222,
+                "p95": 30.502000000000002,
+                "p99": 31.526
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-110.dynamic-html-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 5,
+                  "max": 31.782,
+                  "min": 23.806,
+                  "p50": 25.137,
+                  "p90": 29.222,
+                  "p95": 30.502000000000002,
+                  "p99": 31.526
+                },
+                "submit_lag_ms": {
+                  "count": 5,
+                  "max": 30.006,
+                  "min": 22.195,
+                  "p50": 23.329,
+                  "p90": 27.4996,
+                  "p95": 28.7528,
+                  "p99": 29.75536
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-110.dynamic-html-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "110.dynamic-html",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/110.dynamic-html-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 25.137,
+              "warm_sample_count": 5
+            },
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 2,
+                "max": 117.08,
+                "min": 116.863,
+                "p50": 116.97149999999999,
+                "p90": 117.0583,
+                "p95": 117.06915000000001,
+                "p99": 117.07783
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 1,
+                "max": 1917.613,
+                "min": 1917.613,
+                "p50": 1917.613,
+                "p90": 1917.613,
+                "p95": 1917.613,
+                "p99": 1917.613
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "large",
+              "isolated_warm_ms": {
+                "count": 2,
+                "max": 478.114,
+                "min": 448.653,
+                "p50": 463.3835,
+                "p90": 475.1679,
+                "p95": 476.64095,
+                "p99": 477.81939
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-110.dynamic-html-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 2,
+                  "max": 478.114,
+                  "min": 448.653,
+                  "p50": 463.3835,
+                  "p90": 475.1679,
+                  "p95": 476.64095,
+                  "p99": 477.81939
+                },
+                "submit_lag_ms": {
+                  "count": 2,
+                  "max": 361.251,
+                  "min": 331.57300000000004,
+                  "p50": 346.41200000000003,
+                  "p90": 358.2832,
+                  "p95": 359.7671,
+                  "p99": 360.95422
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-110.dynamic-html-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "http-raisedlimit",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "110.dynamic-html",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/110.dynamic-html-large-python-http-raisedlimit/experiments.json",
+              "supported": true,
+              "target_duration_ms": 463.3835,
+              "warm_sample_count": 2
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "120.uploader": {
+          "buckets": {
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 757.752,
+                "min": 757.752,
+                "p50": 757.752,
+                "p90": 757.752,
+                "p95": 757.752,
+                "p99": 757.752
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1370.329,
+                "min": 1322.016,
+                "p50": 1346.1725000000001,
+                "p90": 1365.4977,
+                "p95": 1367.91335,
+                "p99": 1369.84587
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "large",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 770.77,
+                "min": 770.77,
+                "p50": 770.77,
+                "p90": 770.77,
+                "p95": 770.77,
+                "p99": 770.77
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-120.uploader-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 770.77,
+                  "min": 770.77,
+                  "p50": 770.77,
+                  "p90": 770.77,
+                  "p95": 770.77,
+                  "p99": 770.77
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 13.018000000000029,
+                  "min": 13.018000000000029,
+                  "p50": 13.018000000000029,
+                  "p90": 13.018000000000029,
+                  "p95": 13.018000000000029,
+                  "p99": 13.018000000000029
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-120.uploader-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "http-mem2048",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "120.uploader",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/120.uploader-large-python-http-mem2048/experiments.json",
+              "supported": true,
+              "target_duration_ms": 770.77,
+              "warm_sample_count": 1
+            },
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 4,
+                "max": 80.92,
+                "min": 75.379,
+                "p50": 75.8825,
+                "p90": 79.5439,
+                "p95": 80.23195,
+                "p99": 80.78239
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 1,
+                "max": 736.425,
+                "min": 736.425,
+                "p50": 736.425,
+                "p90": 736.425,
+                "p95": 736.425,
+                "p99": 736.425
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 4,
+                "max": 101.964,
+                "min": 95.658,
+                "p50": 97.5875,
+                "p90": 100.88730000000001,
+                "p95": 101.42565,
+                "p99": 101.85633
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-120.uploader-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 4,
+                  "max": 101.964,
+                  "min": 95.658,
+                  "p50": 97.5875,
+                  "p90": 100.88730000000001,
+                  "p95": 101.42565,
+                  "p99": 101.85633
+                },
+                "submit_lag_ms": {
+                  "count": 4,
+                  "max": 22.042,
+                  "min": 20.226,
+                  "p50": 21.232499999999995,
+                  "p90": 21.8557,
+                  "p95": 21.94885,
+                  "p99": 22.023370000000003
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-120.uploader-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "120.uploader",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/120.uploader-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 97.5875,
+              "warm_sample_count": 4
+            }
+          },
+          "resource_class": "io",
+          "semantic_source": "upstream-sebs"
+        },
+        "210.thumbnailer": {
+          "buckets": {
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 5,
+                "max": 37.66,
+                "min": 36.288,
+                "p50": 36.569,
+                "p90": 37.453599999999994,
+                "p95": 37.556799999999996,
+                "p99": 37.639359999999996
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 0,
+                "max": null,
+                "min": null,
+                "p50": null,
+                "p90": null,
+                "p95": null,
+                "p99": null
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 5,
+                "max": 58.774,
+                "min": 52.135,
+                "p50": 55.244,
+                "p90": 57.82000000000001,
+                "p95": 58.297,
+                "p99": 58.6786
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-210.thumbnailer-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 5,
+                  "max": 58.774,
+                  "min": 52.135,
+                  "p50": 55.244,
+                  "p90": 57.82000000000001,
+                  "p95": 58.297,
+                  "p99": 58.6786
+                },
+                "submit_lag_ms": {
+                  "count": 5,
+                  "max": 21.114000000000004,
+                  "min": 15.565999999999995,
+                  "p50": 18.956000000000003,
+                  "p90": 20.366400000000006,
+                  "p95": 20.740200000000005,
+                  "p99": 21.039240000000003
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-210.thumbnailer-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "210.thumbnailer",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/210.thumbnailer-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 55.244,
+              "warm_sample_count": 5
+            }
+          },
+          "resource_class": "balanced",
+          "semantic_source": "upstream-sebs"
+        },
+        "220.video-processing": {
+          "buckets": {
+            "200-400ms": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 381.738,
+                "min": 364.463,
+                "p50": 377.938,
+                "p90": 380.97799999999995,
+                "p95": 381.358,
+                "p99": 381.662
+              },
+              "bucket": "200-400ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1118.504,
+                "min": 1094.175,
+                "p50": 1106.3395,
+                "p90": 1116.0711,
+                "p95": 1117.2875499999998,
+                "p99": 1118.2607099999998
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 396.316,
+                "min": 379.553,
+                "p50": 392.565,
+                "p90": 395.56579999999997,
+                "p95": 395.94089999999994,
+                "p99": 396.2409799999999
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-220.video-processing-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 396.316,
+                  "min": 379.553,
+                  "p50": 392.565,
+                  "p90": 395.56579999999997,
+                  "p95": 395.94089999999994,
+                  "p99": 396.2409799999999
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 15.089999999999975,
+                  "min": 14.577999999999975,
+                  "p50": 14.62700000000001,
+                  "p90": 14.997399999999983,
+                  "p95": 15.043699999999978,
+                  "p99": 15.080739999999976
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-220.video-processing-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "220.video-processing",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/220.video-processing-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 392.565,
+              "warm_sample_count": 3
+            },
+            "2s+": {
+              "benchmark_body_ms": {
+                "count": 2,
+                "max": 6177.422,
+                "min": 6169.34,
+                "p50": 6173.380999999999,
+                "p90": 6176.6138,
+                "p95": 6177.0179,
+                "p99": 6177.341179999999
+              },
+              "bucket": "2s+",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 6607.948,
+                "min": 6595.568,
+                "p50": 6601.758,
+                "p90": 6606.710000000001,
+                "p95": 6607.329,
+                "p99": 6607.8242
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "large",
+              "isolated_warm_ms": {
+                "count": 2,
+                "max": 6607.948,
+                "min": 6595.568,
+                "p50": 6601.758,
+                "p90": 6606.710000000001,
+                "p95": 6607.329,
+                "p99": 6607.8242
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-220.video-processing-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 2,
+                  "max": 6607.948,
+                  "min": 6595.568,
+                  "p50": 6601.758,
+                  "p90": 6606.710000000001,
+                  "p95": 6607.329,
+                  "p99": 6607.8242
+                },
+                "submit_lag_ms": {
+                  "count": 2,
+                  "max": 430.52600000000075,
+                  "min": 426.22800000000007,
+                  "p50": 428.3770000000004,
+                  "p90": 430.0962000000007,
+                  "p95": 430.31110000000075,
+                  "p99": 430.4830200000007
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-220.video-processing-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 2,
+              "sebs_anchor": "220.video-processing",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/220.video-processing-large-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 6601.758,
+              "warm_sample_count": 2
+            },
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 579.972,
+                "min": 579.972,
+                "p50": 579.972,
+                "p90": 579.972,
+                "p95": 579.972,
+                "p99": 579.972
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1315.825,
+                "min": 1309.677,
+                "p50": 1312.751,
+                "p90": 1315.2102,
+                "p95": 1315.5176000000001,
+                "p99": 1315.7635200000002
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 593.275,
+                "min": 593.275,
+                "p50": 593.275,
+                "p90": 593.275,
+                "p95": 593.275,
+                "p99": 593.275
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-220.video-processing-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 593.275,
+                  "min": 593.275,
+                  "p50": 593.275,
+                  "p90": 593.275,
+                  "p95": 593.275,
+                  "p99": 593.275
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 13.302999999999997,
+                  "min": 13.302999999999997,
+                  "p50": 13.302999999999997,
+                  "p90": 13.302999999999997,
+                  "p95": 13.302999999999997,
+                  "p99": 13.302999999999997
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-220.video-processing-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "http-mem2048",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "220.video-processing",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/220.video-processing-small-python-http-mem2048/experiments.json",
+              "supported": true,
+              "target_duration_ms": 593.275,
+              "warm_sample_count": 1
+            }
+          },
+          "resource_class": "balanced",
+          "semantic_source": "upstream-sebs"
+        },
+        "311.compression": {
+          "buckets": {
+            "400ms-2s": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 426.117,
+                "min": 413.247,
+                "p50": 417.327,
+                "p90": 424.35900000000004,
+                "p95": 425.238,
+                "p99": 425.94120000000004
+              },
+              "bucket": "400ms-2s",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 1052.9,
+                "min": 1037.726,
+                "p50": 1045.313,
+                "p90": 1051.3826000000001,
+                "p95": 1052.1413,
+                "p99": 1052.74826
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 445.494,
+                "min": 432.703,
+                "p50": 437.75,
+                "p90": 443.9452,
+                "p95": 444.7196,
+                "p99": 445.33912000000004
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-311.compression-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 445.494,
+                  "min": 432.703,
+                  "p50": 437.75,
+                  "p90": 443.9452,
+                  "p95": 444.7196,
+                  "p99": 445.33912000000004
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 20.423000000000002,
+                  "min": 19.37700000000001,
+                  "p50": 19.45599999999996,
+                  "p90": 20.229599999999994,
+                  "p95": 20.3263,
+                  "p99": 20.40366
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-311.compression-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "311.compression",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/311.compression-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 437.75,
+              "warm_sample_count": 3
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "411.image-recognition": {
+          "buckets": {
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 4,
+                "max": 44.587,
+                "min": 39.405,
+                "p50": 43.854,
+                "p90": 44.575,
+                "p95": 44.581,
+                "p99": 44.585800000000006
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 1,
+                "max": 4455.118,
+                "min": 4455.118,
+                "p50": 4455.118,
+                "p90": 4455.118,
+                "p95": 4455.118,
+                "p99": 4455.118
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 4,
+                "max": 81.749,
+                "min": 53.426,
+                "p50": 58.622,
+                "p90": 74.8208,
+                "p95": 78.2849,
+                "p99": 81.05618000000001
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-411.image-recognition-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 4,
+                  "max": 81.749,
+                  "min": 53.426,
+                  "p50": 58.622,
+                  "p90": 74.8208,
+                  "p95": 78.2849,
+                  "p99": 81.05618000000001
+                },
+                "submit_lag_ms": {
+                  "count": 4,
+                  "max": 38.587999999999994,
+                  "min": 14.021,
+                  "p50": 14.055,
+                  "p90": 31.232,
+                  "p95": 34.91,
+                  "p99": 37.852399999999996
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-411.image-recognition-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "411.image-recognition",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/411.image-recognition-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 58.622,
+              "warm_sample_count": 4
+            }
+          },
+          "resource_class": "memory",
+          "semantic_source": "upstream-sebs"
+        },
+        "501.graph-pagerank": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 0.317,
+                "min": 0.317,
+                "p50": 0.317,
+                "p90": 0.317,
+                "p95": 0.317,
+                "p99": 0.317
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 452.9,
+                "min": 451.651,
+                "p50": 452.27549999999997,
+                "p90": 452.7751,
+                "p95": 452.83754999999996,
+                "p99": 452.88750999999996
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 12.131,
+                "min": 12.131,
+                "p50": 12.131,
+                "p90": 12.131,
+                "p95": 12.131,
+                "p99": 12.131
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-501.graph-pagerank-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 12.131,
+                  "min": 12.131,
+                  "p50": 12.131,
+                  "p90": 12.131,
+                  "p95": 12.131,
+                  "p99": 12.131
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 11.814,
+                  "min": 11.814,
+                  "p50": 11.814,
+                  "p90": 11.814,
+                  "p95": 11.814,
+                  "p99": 11.814
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-501.graph-pagerank-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "501.graph-pagerank",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/501.graph-pagerank-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 12.131,
+              "warm_sample_count": 1
+            },
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 42.912,
+                "min": 36.578,
+                "p50": 42.145,
+                "p90": 42.7586,
+                "p95": 42.8353,
+                "p99": 42.89666
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 0,
+                "max": null,
+                "min": null,
+                "p50": null,
+                "p90": null,
+                "p95": null,
+                "p99": null
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 56.381,
+                "min": 50.803,
+                "p50": 55.912,
+                "p90": 56.2872,
+                "p95": 56.3341,
+                "p99": 56.37162
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-501.graph-pagerank-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 56.381,
+                  "min": 50.803,
+                  "p50": 55.912,
+                  "p90": 56.2872,
+                  "p95": 56.3341,
+                  "p99": 56.37162
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 14.224999999999994,
+                  "min": 13.469000000000001,
+                  "p50": 13.766999999999996,
+                  "p90": 14.133399999999995,
+                  "p95": 14.179199999999994,
+                  "p99": 14.215839999999995
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-501.graph-pagerank-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "501.graph-pagerank",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/501.graph-pagerank-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 55.912,
+              "warm_sample_count": 3
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "502.graph-mst": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 0.313,
+                "min": 0.313,
+                "p50": 0.313,
+                "p90": 0.313,
+                "p95": 0.313,
+                "p99": 0.313
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 576.401,
+                "min": 454.653,
+                "p50": 515.527,
+                "p90": 564.2262,
+                "p95": 570.3136,
+                "p99": 575.1835199999999
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 13.896,
+                "min": 13.896,
+                "p50": 13.896,
+                "p90": 13.896,
+                "p95": 13.896,
+                "p99": 13.896
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-502.graph-mst-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 13.896,
+                  "min": 13.896,
+                  "p50": 13.896,
+                  "p90": 13.896,
+                  "p95": 13.896,
+                  "p99": 13.896
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 13.583,
+                  "min": 13.583,
+                  "p50": 13.583,
+                  "p90": 13.583,
+                  "p95": 13.583,
+                  "p99": 13.583
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-502.graph-mst-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "502.graph-mst",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/502.graph-mst-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 13.896,
+              "warm_sample_count": 1
+            },
+            "50-200ms": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 27.633,
+                "min": 26.672,
+                "p50": 27.279,
+                "p90": 27.5622,
+                "p95": 27.5976,
+                "p99": 27.62592
+              },
+              "bucket": "50-200ms",
+              "cold_start_ms": {
+                "count": 0,
+                "max": null,
+                "min": null,
+                "p50": null,
+                "p90": null,
+                "p95": null,
+                "p99": null
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "small",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 87.737,
+                "min": 59.195,
+                "p50": 60.151,
+                "p90": 82.21979999999999,
+                "p95": 84.9784,
+                "p99": 87.18527999999999
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-502.graph-mst-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 87.737,
+                  "min": 59.195,
+                  "p50": 60.151,
+                  "p90": 82.21979999999999,
+                  "p95": 84.9784,
+                  "p99": 87.18527999999999
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 60.458,
+                  "min": 32.518,
+                  "p50": 32.522999999999996,
+                  "p90": 54.870999999999995,
+                  "p95": 57.6645,
+                  "p99": 59.8993
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-502.graph-mst-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "502.graph-mst",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/502.graph-mst-small-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 60.151,
+              "warm_sample_count": 3
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "503.graph-bfs": {
+          "buckets": {
+            "0-50ms": {
+              "benchmark_body_ms": {
+                "count": 3,
+                "max": 0.314,
+                "min": 0.227,
+                "p50": 0.276,
+                "p90": 0.3064,
+                "p95": 0.3102,
+                "p99": 0.31324
+              },
+              "bucket": "0-50ms",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 586.315,
+                "min": 468.977,
+                "p50": 527.646,
+                "p90": 574.5812000000001,
+                "p95": 580.4481000000001,
+                "p99": 585.14162
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 3,
+                "max": 15.657,
+                "min": 14.094,
+                "p50": 14.501,
+                "p90": 15.4258,
+                "p95": 15.5414,
+                "p99": 15.63388
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-503.graph-bfs-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 3,
+                  "max": 15.657,
+                  "min": 14.094,
+                  "p50": 14.501,
+                  "p90": 15.4258,
+                  "p95": 15.5414,
+                  "p99": 15.63388
+                },
+                "submit_lag_ms": {
+                  "count": 3,
+                  "max": 15.343,
+                  "min": 13.818,
+                  "p50": 14.274,
+                  "p90": 15.129199999999999,
+                  "p95": 15.236099999999999,
+                  "p99": 15.32162
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-503.graph-bfs-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 5,
+              "sebs_anchor": "503.graph-bfs",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/503.graph-bfs-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 14.501,
+              "warm_sample_count": 3
+            }
+          },
+          "resource_class": "cpu",
+          "semantic_source": "upstream-sebs"
+        },
+        "504.dna-visualisation": {
+          "buckets": {
+            "2s+": {
+              "benchmark_body_ms": {
+                "count": 1,
+                "max": 7919.444,
+                "min": 7919.444,
+                "p50": 7919.444,
+                "p90": 7919.444,
+                "p95": 7919.444,
+                "p99": 7919.444
+              },
+              "bucket": "2s+",
+              "cold_start_ms": {
+                "count": 2,
+                "max": 8485.211,
+                "min": 8303.049,
+                "p50": 8394.130000000001,
+                "p90": 8466.994799999999,
+                "p95": 8476.1029,
+                "p99": 8483.389379999999
+              },
+              "decision_metric": "isolated_warm_client_p99_ms",
+              "input_size": "test",
+              "isolated_warm_ms": {
+                "count": 1,
+                "max": 7932.459,
+                "min": 7932.459,
+                "p50": 7932.459,
+                "p90": 7932.459,
+                "p95": 7932.459,
+                "p99": 7932.459
+              },
+              "openwhisk": {
+                "action": "sebs-7375fbca-504.dna-visualisation-python-3.11",
+                "available": true,
+                "post_submit_latency_ms": {
+                  "count": 1,
+                  "max": 7932.459,
+                  "min": 7932.459,
+                  "p50": 7932.459,
+                  "p90": 7932.459,
+                  "p95": 7932.459,
+                  "p99": 7932.459
+                },
+                "submit_lag_ms": {
+                  "count": 1,
+                  "max": 13.014999999999418,
+                  "min": 13.014999999999418,
+                  "p50": 13.014999999999418,
+                  "p90": 13.014999999999418,
+                  "p95": 13.014999999999418,
+                  "p99": 13.014999999999418
+                }
+              },
+              "openwhisk_action": "sebs-7375fbca-504.dna-visualisation-python-3.11",
+              "resource_counters": {
+                "available": false,
+                "reason": "SeBS/OpenWhisk run collected latency and benchmark output only; no perf/cgroup counter sampler was attached"
+              },
+              "run_variant": "",
+              "runtime": "python",
+              "sample_count": 3,
+              "sebs_anchor": "504.dna-visualisation",
+              "source_experiments_json": "/opt/sebs/results/semantic-profile-20260601-013110/504.dna-visualisation-test-python/experiments.json",
+              "supported": true,
+              "target_duration_ms": 7932.459,
+              "warm_sample_count": 1
+            }
+          },
+          "resource_class": "memory",
+          "semantic_source": "upstream-sebs"
+        }
+      },
+      "resource_class": "anchor",
+      "semantic_source": "upstream-sebs",
+      "uses_upstream_sebs_directly": true
+    }
+  },
+  "schema": "cosmos.semantic.duration-calibration",
+  "source": {
+    "kernel_path": "/opt/COSMOS/benchmarks/semantic_benchmark/kernels/semantic_kernel",
+    "repetitions": 3,
+    "tolerance": 1.25,
+    "upstream_calibration": [
+      "/opt/sebs/results/semantic-profile-20260601-013110/upstream_calibration.json"
+    ]
+  },
+  "unsupported": [],
+  "version": 1
+}

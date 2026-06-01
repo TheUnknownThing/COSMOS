@@ -1,0 +1,17 @@
+02:49:07,575 INFO SeBS-733f: Created experiment output at /opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/110-dynamic-html-large-raised-limit-fresh
+02:49:07,978 INFO OpenWhiskConfig-01d7: Loading cached config for OpenWhisk
+02:49:07,979 INFO OpenWhisk-7129: Using existing resource name: 7375fbca.
+02:49:07,981 INFO Benchmark-5dce: Building benchmark 110.dynamic-html. Reason: no cached code package/container.
+02:49:07,992 INFO Benchmark-5dce: Docker pull of build image spcleth/serverless-benchmarks:build.openwhisk.python.3.11-1.2.1
+02:49:08,272 INFO Benchmark-5dce: Docker pull of build image spcleth/serverless-benchmarks:build.openwhisk.python.3.11-1.2.0
+02:49:08,548 WARNING Benchmark-5dce: Neither current (build.openwhisk.python.3.11-1.2.1) nor previous (build.openwhisk.python.3.11-1.2.0) version build image available, build may fail
+02:49:08,728 INFO Benchmark-5dce: Created function container localhost:5000/spcleth/serverless-benchmarks:function.openwhisk.110.dynamic-html.python-3.11-x64-1.2.1, code package (source hash: 44b276eb6e44869cf06c70bd8e7e79c4), for run on openwhisk with python:3.11
+02:49:08,730 INFO OpenWhisk-7129: Created /opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/110-dynamic-html-large-raised-limit-fresh/110.dynamic-html_code/python/default/3.11/x64/container/110.dynamic-html.zip archive
+02:49:08,730 INFO OpenWhisk-7129: Zip archive size 0.000823 MB
+02:49:08,758 INFO OpenWhisk-7129: Creating new function! Reason: function sebs-7375fbca-110.dynamic-html-python-3.11 not found in cache.
+02:49:08,758 INFO OpenWhisk-7129: Creating function as an action in OpenWhisk.
+02:49:08,808 INFO OpenWhisk-7129: Creating new OpenWhisk action sebs-7375fbca-110.dynamic-html-python-3.11
+02:49:09,31 INFO SeBS-733f: Beginning repetition 1/3
+02:49:10,968 INFO SeBS-733f: Beginning repetition 2/3
+02:49:11,461 INFO SeBS-733f: Beginning repetition 3/3
+02:49:11,967 INFO SeBS-733f: Save results to /opt/sebs/results/semantic-profile-20260601-013110/retry-20260601-023506/110-dynamic-html-large-raised-limit-fresh/experiments.json

@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import signal
+import shutil
 import socket
 import stat
 import subprocess
@@ -34,9 +35,9 @@ DEFAULT_WORKLOAD_DURATION_MS = 250
 SCHEDULER_STATS_READY_TIMEOUT_S = 30.0
 EVENT_BRIDGE_EVENT_TIMEOUT_S = 10.0
 TIME_BIN = Path("/usr/bin/time")
-CARGO_BIN = Path(os.environ.get("CARGO", "/root/.cargo/bin/cargo"))
-if not CARGO_BIN.exists():
-    CARGO_BIN = Path("cargo")
+_CARGO_ENV = os.environ.get("CARGO")
+_CARGO_PATH = shutil.which("cargo")
+CARGO_BIN = Path(_CARGO_ENV) if _CARGO_ENV else Path(_CARGO_PATH or "cargo")
 BPFTOOL_BIN = Path("/usr/sbin/bpftool")
 if not BPFTOOL_BIN.exists():
     BPFTOOL_BIN = Path("/usr/bin/bpftool")
@@ -366,6 +367,14 @@ def send_event_bridge_event(port: int, event: dict) -> None:
             raise RuntimeError(
                 f"event bridge rejected event {event!r}: {response or 'no response'}"
             )
+
+
+def try_send_event_bridge_event(port: int, event: dict) -> str | None:
+    try:
+        send_event_bridge_event(port, event)
+        return None
+    except Exception as exc:
+        return str(exc)
 
 
 def process_state(pid: int) -> str | None:
@@ -699,8 +708,9 @@ def run_workload_invocation(
             start_ns = metadata_ready_ns
             os.kill(metadata_tgid, signal.SIGCONT)
             returncode = process.wait()
+            metadata_cleanup_errors = []
             for tgid in reversed(metadata_tgids):
-                send_event_bridge_event(
+                err = try_send_event_bridge_event(
                     metadata_bridge_port,
                     {
                         "type": "local_end",
@@ -708,6 +718,8 @@ def run_workload_invocation(
                         "tgid": tgid,
                     },
                 )
+                if err is not None:
+                    metadata_cleanup_errors.append(err)
 
     end_ns = time.monotonic_ns()
     payload = {
@@ -734,6 +746,8 @@ def run_workload_invocation(
         "metadata_key_visible": metadata_key_visible,
         "cgroup_path": None,
     }
+    if metadata_bridge_port is not None and metadata_cleanup_errors:
+        payload["metadata_cleanup_errors"] = metadata_cleanup_errors
     output_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return returncode
 
@@ -819,8 +833,9 @@ def complete_metadata_bridge_invocation(
 ) -> int:
     returncode = staged.process.wait()
     end_ns = time.monotonic_ns()
+    metadata_cleanup_errors = []
     for tgid in reversed(staged.metadata_tgids):
-        send_event_bridge_event(
+        err = try_send_event_bridge_event(
             metadata_bridge_port,
             {
                 "type": "local_end",
@@ -828,6 +843,8 @@ def complete_metadata_bridge_invocation(
                 "tgid": tgid,
             },
         )
+        if err is not None:
+            metadata_cleanup_errors.append(err)
     staged.stderr_file.close()
 
     payload = {
@@ -853,6 +870,8 @@ def complete_metadata_bridge_invocation(
         "metadata_key_visible": staged.metadata_key_visible,
         "cgroup_path": str(staged.cgroup_path) if staged.cgroup_path is not None else None,
     }
+    if metadata_cleanup_errors:
+        payload["metadata_cleanup_errors"] = metadata_cleanup_errors
     staged.output_json.write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8"
     )

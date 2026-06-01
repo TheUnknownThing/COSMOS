@@ -228,6 +228,7 @@ def require_2019_dataset(
 def load_invocation_features(
     paths: list[Path],
     row_limit: int | None = None,
+    allowed_functions: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
     functions: dict[str, dict[str, Any]] = {}
     app_functions: dict[str, set[str]] = defaultdict(set)
@@ -248,6 +249,8 @@ def load_invocation_features(
             app = str(app)
             func = str(func)
             function_id = f"{app}:{func}"
+            if allowed_functions is not None and function_id not in allowed_functions:
+                continue
             trigger = str(row.get("Trigger") or "others").strip().lower() or "others"
             if trigger not in TRIGGER_GROUPS:
                 trigger = "others"
@@ -371,10 +374,11 @@ def build_feature_catalog(
     max_profiles: int | None = None,
     max_days: int | None = None,
     invocation_row_limit: int | None = None,
+    allowed_functions: set[str] | None = None,
 ) -> list[FunctionFeatures]:
     invocation_files, duration_files, memory_files = require_2019_dataset(root, max_days)
     invocation_features, app_function_counts = load_invocation_features(
-        invocation_files, invocation_row_limit
+        invocation_files, invocation_row_limit, allowed_functions
     )
     durations = load_duration_features(duration_files, set(invocation_features))
     memories = load_memory_features(
@@ -522,9 +526,16 @@ def load_classified_profiles(
     max_profiles: int | None = None,
     max_days: int | None = None,
     invocation_row_limit: int | None = None,
+    allowed_functions: set[str] | None = None,
 ) -> list[ClassifiedProfile]:
     return classify_catalog(
-        build_feature_catalog(root, max_profiles, max_days, invocation_row_limit)
+        build_feature_catalog(
+            root,
+            max_profiles,
+            max_days,
+            invocation_row_limit,
+            allowed_functions,
+        )
     )
 
 

@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "schema": "cosmos.semantic-benchmark.contract",
+  "benchmark_name": "azure-2021-trace-preserving-sebs-semantics",
+  "trace_truth": {
+    "source": "Azure Functions Invocation Trace 2021",
+    "fields": [
+      "app",
+      "func",
+      "end_timestamp",
+      "duration"
+    ],
+    "time_unit": "seconds",
+    "derived_fields": {
+      "function_id": "app + ':' + func",
+      "source_start_ms": "(end_timestamp - duration) * 1000",
+      "target_duration_ms": "duration * 1000",
+      "source_end_ms": "end_timestamp * 1000"
+    },
+    "preserved_structure": [
+      "arrival_order",
+      "inter_arrival_burstiness",
+      "per_invocation_target_duration",
+      "function_identity",
+      "app_function_grouping"
+    ]
+  },
+  "semantic_mixes": [
+    "cpu-heavy",
+    "io-heavy",
+    "memory-heavy",
+    "network-heavy",
+    "balanced"
+  ],
+  "required_outputs": [
+    "trace_invocations.csv",
+    "trace_ir.json",
+    "fidelity.json",
+    "semantic_catalog.json",
+    "semantic_assignments.json",
+    "semantic_invocations.csv",
+    "calibration.json",
+    "profiles.json",
+    "invocations.csv",
+    "replay.json"
+  ],
+  "semantic_catalog": {
+    "schema": "cosmos.semantic.sebs-anchor-realization-catalog",
+    "anchor_required_fields": [
+      "benchmark_id",
+      "action_name",
+      "runtime_options",
+      "input_size_options",
+      "resource_hints",
+      "cold_warm_assumptions",
+      "requires_storage",
+      "requires_external_service"
+    ],
+    "resource_hint_semantics": {
+      "measured_false": "Anchor resource hints are semantic labels only until Phase 5 calibration emits measured resource counters.",
+      "measured_true": "Only Phase 5 calibration artifacts may publish numeric timing, bandwidth, memory, or cold-start measurements."
+    },
+    "realization_required_fields": [
+      "supported_duration_buckets",
+      "calibration_command",
+      "expected_phase_sequence",
+      "resource_knobs",
+      "uses_upstream_sebs_directly"
+    ]
+  },
+  "assignment_outputs": {
+    "schema": "cosmos.semantic.azure-2021-sebs-assignment",
+    "policy_fields": [
+      "semantic_mix",
+      "seed",
+      "function_assignment",
+      "duration_realization",
+      "realization_preference",
+      "allow_uncalibrated_upstream"
+    ],
+    "summary_fields": [
+      "anchor_counts",
+      "realization_counts",
+      "actual_workload_source_counts",
+      "duration_bucket_counts"
+    ]
+  },
+  "calibration_outputs": {
+    "schema": "cosmos.semantic.duration-calibration",
+    "required_measurements": [
+      "isolated_warm_ms",
+      "cold_start_ms",
+      "resource_counters",
+      "openwhisk"
+    ],
+    "bucket_decision": "Each upstream SeBS anchor/bucket pair or synthesized realization/bucket pair records supported=true only when calibration says that exact workload plausibly fits that Azure duration bucket."
+  },
+  "replay_outputs": {
+    "profiles_schema": "cosmos.semantic.azure-2021-openwhisk-profiles",
+    "replay_schema": "cosmos.semantic.azure-2021-openwhisk-replay",
+    "preserved_fields": [
+      "source_start_ms",
+      "at_ms",
+      "target_duration_ms",
+      "function_id",
+      "app",
+      "func"
+    ]
+  }
+}

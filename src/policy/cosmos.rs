@@ -104,6 +104,7 @@ pub struct CosmosPolicy {
     interval_latency_empty_samples: u64,
     interval_batch_empty_samples: u64,
     interval_samples: u64,
+    pool_isolation_active: bool,
     latency_sel_idx: usize,
     batch_sel_idx: usize,
     tail_guard_sel_idx: usize,
@@ -152,6 +153,7 @@ impl CosmosPolicy {
             interval_latency_empty_samples: 0,
             interval_batch_empty_samples: 0,
             interval_samples: 0,
+            pool_isolation_active: false,
             latency_sel_idx: 0,
             batch_sel_idx: 0,
             tail_guard_sel_idx: 0,
@@ -339,7 +341,7 @@ impl CosmosPolicy {
         meta: Option<&InvocationMeta>,
         now: u64,
     ) -> TaskPool {
-        let mut pool = if self.pools_enabled {
+        let mut pool = if self.pools_enabled && self.pool_isolation_active {
             match meta {
                 Some(ref m) if m.slo_class == crate::registry::SloClass::LatencyCritical => {
                     TaskPool::Latency
@@ -373,6 +375,98 @@ impl CosmosPolicy {
         }
 
         pool
+    }
+
+    fn queued_class_counts(
+        &self,
+        raw: &[QueuedTask],
+        resolved_meta: &[Option<InvocationMeta>],
+        now: u64,
+    ) -> (u64, u64, u64, u64) {
+        let mut latency = 0u64;
+        let mut standard = 0u64;
+        let mut batch = 0u64;
+        let mut miss_pressure = 0u64;
+
+        for (idx, task) in raw.iter().enumerate() {
+            let Some(meta) = resolved_meta.get(idx).and_then(|meta| meta.as_ref()) else {
+                continue;
+            };
+            match meta.slo_class {
+                crate::registry::SloClass::LatencyCritical => {
+                    latency = latency.saturating_add(1);
+                    if self.latency_task_under_pressure(task, meta, now) {
+                        miss_pressure = miss_pressure.saturating_add(1);
+                    }
+                }
+                crate::registry::SloClass::Standard => {
+                    standard = standard.saturating_add(1);
+                }
+                crate::registry::SloClass::Batch => {
+                    batch = batch.saturating_add(1);
+                }
+                crate::registry::SloClass::None => {}
+            }
+        }
+
+        (latency, standard, batch, miss_pressure)
+    }
+
+    fn latency_task_under_pressure(
+        &self,
+        task: &QueuedTask,
+        meta: &InvocationMeta,
+        now: u64,
+    ) -> bool {
+        if meta.deadline_ns == 0 {
+            return false;
+        }
+        if now >= meta.deadline_ns {
+            return true;
+        }
+        let est = self
+            .task_state
+            .get(&task.tgid)
+            .map_or(task.exec_runtime.max(self.slice_ns_min), |state| {
+                state.avg_runtime_ns.max(self.slice_ns_min)
+            });
+        let slack = meta.deadline_ns.saturating_sub(now).saturating_sub(est);
+        slack <= self.tail_guard_threshold_ns.max(self.slice_ns_min)
+    }
+
+    fn should_isolate_pools(
+        &self,
+        latency_depth: u64,
+        standard_depth: u64,
+        batch_depth: u64,
+        latency_miss_pressure: u64,
+        latency_cpu_count: u64,
+        batch_cpu_count: u64,
+    ) -> bool {
+        if !self.pools_enabled || self.pool_mgr.is_none() {
+            return false;
+        }
+        let class_kinds =
+            u8::from(latency_depth > 0) + u8::from(standard_depth > 0) + u8::from(batch_depth > 0);
+        if latency_depth == 0 || batch_depth == 0 || class_kinds < 2 {
+            return false;
+        }
+
+        let latency_pressure = latency_cpu_count > 0 && latency_depth > latency_cpu_count;
+        let batch_pressure = batch_cpu_count > 0 && batch_depth > batch_cpu_count;
+        let total_class_depth = latency_depth
+            .saturating_add(standard_depth)
+            .saturating_add(batch_depth);
+        let main_pool_cpus = latency_cpu_count.saturating_add(batch_cpu_count).max(1);
+        let enough_mixed_load = total_class_depth >= main_pool_cpus.saturating_div(2).max(2);
+        let batch_recently_active = self.interval_samples > 0
+            && self.interval_batch_empty_samples.saturating_mul(4) < self.interval_samples * 3;
+
+        latency_miss_pressure > 0
+            || latency_pressure
+            || batch_pressure
+            || enough_mixed_load
+            || batch_recently_active
     }
 
     fn score_for_vtime(
@@ -415,12 +509,13 @@ impl CosmosPolicy {
                             }
                             TaskClass::Background => base.saturating_add(self.slo_target_ns),
                         };
-                        return self.apply_cpu_intensity_bias(
+                        let score = self.apply_cpu_intensity_bias(
                             task,
                             Self::apply_phase_bias(task, score, phase_ctx),
                             meta,
                             cpu_intensity,
                         );
+                        return self.apply_batch_backoff(task, score, meta);
                     }
                 }
             }
@@ -434,12 +529,13 @@ impl CosmosPolicy {
             TaskClass::Background => 0,
         };
         let score = fair.saturating_sub(Self::scale_by_weight(task, boost));
-        self.apply_cpu_intensity_bias(
+        let score = self.apply_cpu_intensity_bias(
             task,
             Self::apply_phase_bias(task, score, phase_ctx),
             meta,
             cpu_intensity,
-        )
+        );
+        self.apply_batch_backoff(task, score, meta)
     }
 
     fn apply_phase_bias(
@@ -474,6 +570,22 @@ impl CosmosPolicy {
             score.saturating_add(shaping)
         } else if cpu_intensity >= 0.75 {
             score.saturating_sub(shaping)
+        } else {
+            score
+        }
+    }
+
+    fn apply_batch_backoff(
+        &self,
+        task: &QueuedTask,
+        score: u64,
+        meta: Option<&InvocationMeta>,
+    ) -> u64 {
+        if meta.is_some_and(|m| m.slo_class == crate::registry::SloClass::Batch) {
+            score.saturating_add(Self::scale_by_weight(
+                task,
+                self.task_slo_target(meta).max(self.slice_ns),
+            ))
         } else {
             score
         }
@@ -666,16 +778,35 @@ impl SchedulingPolicy for CosmosPolicy {
     ) -> Vec<DispatchDecision> {
         let mut decisions: Vec<(u64, u8, bool, u64, i32, i32, TaskPool, u64, u64, u64)> =
             Vec::with_capacity(raw.len());
-        let mut lat = 0u64;
-        let mut bat = 0u64;
         let runtime_hints = self.runtime_hints_from_registry(raw);
-
+        let (latency_depth, standard_depth, batch_depth, latency_miss_pressure) =
+            self.queued_class_counts(raw, resolved_meta, now);
+        let latency_cpus = self
+            .pool_mgr
+            .as_ref()
+            .map_or(0, |m| m.count_pool(TaskPool::Latency) as u64);
+        let batch_cpus = self
+            .pool_mgr
+            .as_ref()
+            .map_or(0, |m| m.count_pool(TaskPool::Batch) as u64);
+        self.pool_isolation_active = self.should_isolate_pools(
+            latency_depth,
+            standard_depth,
+            batch_depth,
+            latency_miss_pressure,
+            latency_cpus,
+            batch_cpus,
+        );
         for (i, task) in raw.iter().enumerate() {
             let meta = resolved_meta.get(i).and_then(|m| m.as_ref());
             let hints = runtime_hints.get(&task.tgid);
             let phase_ctx = hints.map(|h| &h.phase_ctx);
             let cpu_intensity = hints.and_then(|h| h.cpu_intensity);
             let has_meta = meta.is_some();
+            let latency_meta = meta.is_some_and(|m| {
+                m.slo_class == crate::registry::SloClass::LatencyCritical
+                    || m.slo_class == crate::registry::SloClass::Standard
+            });
             let class = self.classify(task, meta);
 
             let effective_vtime = if task.vtime == 0 {
@@ -722,11 +853,9 @@ impl SchedulingPolicy for CosmosPolicy {
             }
             match pool {
                 TaskPool::Latency => {
-                    lat += 1;
                     self.nr_pool_latency = self.nr_pool_latency.saturating_add(1);
                 }
                 TaskPool::Batch => {
-                    bat += 1;
                     self.nr_pool_batch = self.nr_pool_batch.saturating_add(1);
                 }
                 _ => {}
@@ -735,7 +864,7 @@ impl SchedulingPolicy for CosmosPolicy {
             decisions.push((
                 score,
                 class_rank(class),
-                has_meta,
+                latency_meta,
                 now,
                 task.pid,
                 task.cpu,
@@ -756,15 +885,6 @@ impl SchedulingPolicy for CosmosPolicy {
         });
 
         let pending = decisions.len() as u64;
-        let latency_cpus = self
-            .pool_mgr
-            .as_ref()
-            .map_or(0, |m| m.count_pool(TaskPool::Latency) as u64);
-        let batch_cpus = self
-            .pool_mgr
-            .as_ref()
-            .map_or(0, |m| m.count_pool(TaskPool::Batch) as u64);
-
         let mut latency_dispatched = 0u64;
         let mut batch_dispatched = 0u64;
         let mut overflow = 0u64;
@@ -807,17 +927,17 @@ impl SchedulingPolicy for CosmosPolicy {
         }
 
         self.max_pending = self.max_pending.max(pending);
-        self.last_latency_depth = lat;
-        self.last_batch_depth = bat;
+        self.last_latency_depth = latency_depth;
+        self.last_batch_depth = batch_depth;
         self.nr_pool_overflow = self.nr_pool_overflow.saturating_add(overflow);
-        self.interval_latency_home = self.interval_latency_home.saturating_add(lat);
-        self.interval_batch_home = self.interval_batch_home.saturating_add(bat);
+        self.interval_latency_home = self.interval_latency_home.saturating_add(latency_depth);
+        self.interval_batch_home = self.interval_batch_home.saturating_add(batch_depth);
         self.interval_samples = self.interval_samples.saturating_add(1);
-        if lat == 0 {
+        if latency_depth == 0 {
             self.interval_latency_empty_samples =
                 self.interval_latency_empty_samples.saturating_add(1);
         }
-        if bat == 0 {
+        if batch_depth == 0 {
             self.interval_batch_empty_samples = self.interval_batch_empty_samples.saturating_add(1);
         }
 
@@ -951,6 +1071,10 @@ mod tests {
         CosmosPolicy::new(opts)
     }
 
+    fn force_pool_isolation(policy: &mut CosmosPolicy) {
+        policy.pool_isolation_active = true;
+    }
+
     fn expected_heuristic(policy: &CosmosPolicy, task: &QueuedTask, class: TaskClass) -> u64 {
         let fair = policy.fair_test(task);
         let boost = match class {
@@ -1073,6 +1197,7 @@ mod tests {
     fn lat_crit_lat_pool() {
         let o = opts();
         let mut p = pl(&o);
+        force_pool_isolation(&mut p);
         let r = build_reg(&[(1, 100, 200 * MS, 0, 0)]);
         let (_, pl, _, _, _) = p.enqueue_test(&mut qt(1001, 100, "w", 5 * MS, 100), &r, 100 * MS);
         assert_eq!(pl, TaskPool::Latency);
@@ -1081,9 +1206,42 @@ mod tests {
     fn batch_bat_pool() {
         let o = opts();
         let mut p = pl(&o);
+        force_pool_isolation(&mut p);
         let r = build_reg(&[(1, 100, 200 * MS, 2, 0)]);
         let (_, pl, _, _, _) = p.enqueue_test(&mut qt(1001, 100, "w", 5 * MS, 100), &r, 100 * MS);
         assert_eq!(pl, TaskPool::Batch);
+    }
+
+    #[test]
+    fn homogeneous_latency_does_not_activate_pool_isolation() {
+        let o = opts();
+        let mut p = pl(&o);
+        p.init(8, 0);
+        assert!(!p.should_isolate_pools(16, 0, 0, 0, 4, 4));
+    }
+
+    #[test]
+    fn light_mixed_workload_stays_shared_without_pressure() {
+        let o = opts();
+        let mut p = pl(&o);
+        p.init(8, 0);
+        assert!(!p.should_isolate_pools(1, 0, 1, 0, 4, 4));
+    }
+
+    #[test]
+    fn pressured_mixed_workload_activates_pool_isolation() {
+        let o = opts();
+        let mut p = pl(&o);
+        p.init(8, 0);
+        assert!(p.should_isolate_pools(4, 0, 8, 0, 4, 4));
+    }
+
+    #[test]
+    fn latency_miss_pressure_activates_mixed_pool_isolation() {
+        let o = opts();
+        let mut p = pl(&o);
+        p.init(8, 0);
+        assert!(p.should_isolate_pools(1, 0, 1, 1, 4, 4));
     }
     #[test]
     fn standard_metadata_uses_shared_pool() {
@@ -1107,6 +1265,7 @@ mod tests {
     fn tg_promote() {
         let o = opts();
         let mut p = pl(&o);
+        force_pool_isolation(&mut p);
         let now = 100 * MS;
         let r = build_reg(&[(1, 100, now + 3 * MS, 0, 0)]);
         let (_, pool, _, _, _) = p.enqueue_test(&mut qt(1001, 100, "w", 1 * MS, 100), &r, now);
@@ -1117,6 +1276,7 @@ mod tests {
     fn init_without_tail_guard_cpus_disables_tg() {
         let o = opts();
         let mut p = pl(&o);
+        force_pool_isolation(&mut p);
         p.init(48, 0);
         let now = 100 * MS;
         let r = build_reg(&[(1, 100, now + 3 * MS, 0, 0)]);
@@ -1137,6 +1297,7 @@ mod tests {
     fn slo_violation() {
         let o = opts();
         let mut p = pl(&o);
+        force_pool_isolation(&mut p);
         let now = 200 * MS;
         let r = build_reg(&[(1, 100, 100 * MS, 0, 0)]);
         let (_, pool, _, _, _) = p.enqueue_test(&mut qt(1001, 100, "w", 1 * MS, 100), &r, now);
@@ -1147,6 +1308,7 @@ mod tests {
     fn no_tg_above_thr() {
         let o = opts();
         let mut p = pl(&o);
+        force_pool_isolation(&mut p);
         let now = 100 * MS;
         let r = build_reg(&[(1, 100, now + 20 * MS, 0, 0)]);
         let (_, pool, _, _, _) = p.enqueue_test(&mut qt(1001, 100, "w", 1 * MS, 100), &r, now);
@@ -1157,6 +1319,7 @@ mod tests {
     fn tg_multi() {
         let o = opts();
         let mut p = pl(&o);
+        force_pool_isolation(&mut p);
         let now = 100 * MS;
         let r = build_reg(&[
             (1, 101, now + 1 * MS, 0, 0),
@@ -1216,7 +1379,10 @@ mod tests {
         let mut t = qt(1005, 105, "w", 1 * MS, 100);
         let (c, _, sc, _, _) = p.enqueue_test(&mut t, &r, now);
         assert_eq!(c, TaskClass::Background);
-        assert_eq!(sc, expected_heuristic(&p, &t, c));
+        assert_eq!(
+            sc,
+            expected_heuristic(&p, &t, c).saturating_add(p.slice_ns)
+        );
     }
     #[test]
     fn no_meta_heuristic() {
