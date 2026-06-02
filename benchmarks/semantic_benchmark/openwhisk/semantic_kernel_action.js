@@ -1,13 +1,20 @@
-const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-const ACTION_TO_MODE = {
-  "cpu-spin-controllable": "cpu",
-  "memory-scan-controllable": "memory",
-  "storage-io-controllable": "io",
-  "network-transfer-controllable": "network",
-  "balanced-pipeline-controllable": "balanced",
+const ACTION_TO_KERNEL = {
+  "noop-dispatch-controllable": "semantic_control",
+  "passive-wait-controllable": "semantic_passive_wait",
+  "db-network-wait-controllable": "semantic_network_wait",
+  "local-file-io-controllable": "semantic_local_io",
+  "memory-touch-controllable": "semantic_memory_touch",
+  "cpu-loop-controllable": "semantic_cpu_loop",
+  "mixed-pipeline-controllable": "semantic_mixed_pipeline",
+  "workflow-fanout-controllable": "semantic_workflow_fanout",
+  "cpu-spin-controllable": "semantic_cpu_spin",
+  "memory-scan-controllable": "semantic_memory_scan",
+  "storage-io-controllable": "semantic_storage_io",
+  "network-transfer-controllable": "semantic_network_transfer",
+  "balanced-pipeline-controllable": "semantic_balanced_pipeline",
 };
 
 function actionName() {
@@ -15,19 +22,22 @@ function actionName() {
   return raw.split("/").filter(Boolean).pop() || "";
 }
 
-function modeFor(args) {
-  if (args.mode) return String(args.mode);
-  if (args.duration_realization && ACTION_TO_MODE[args.duration_realization]) {
-    return ACTION_TO_MODE[args.duration_realization];
+function kernelFor(args) {
+  if (args.kernel) {
+    const kernel = String(args.kernel);
+    return ACTION_TO_KERNEL[kernel] || kernel;
   }
-  if (args.payload && args.payload.duration_realization && ACTION_TO_MODE[args.payload.duration_realization]) {
-    return ACTION_TO_MODE[args.payload.duration_realization];
+  if (args.duration_realization && ACTION_TO_KERNEL[args.duration_realization]) {
+    return ACTION_TO_KERNEL[args.duration_realization];
+  }
+  if (args.payload && args.payload.duration_realization && ACTION_TO_KERNEL[args.payload.duration_realization]) {
+    return ACTION_TO_KERNEL[args.payload.duration_realization];
   }
   const name = actionName();
-  if (ACTION_TO_MODE[name]) return ACTION_TO_MODE[name];
-  const workload = String(args.workload || args.kernel || "");
-  if (ACTION_TO_MODE[workload]) return ACTION_TO_MODE[workload];
-  throw new Error(`cannot infer semantic kernel mode for action=${name}`);
+  if (ACTION_TO_KERNEL[name]) return ACTION_TO_KERNEL[name];
+  const workload = String(args.workload || "");
+  if (ACTION_TO_KERNEL[workload]) return ACTION_TO_KERNEL[workload];
+  throw new Error(`cannot infer semantic kernel for action=${name}`);
 }
 
 function targetUs(args) {
@@ -53,25 +63,30 @@ function extraArgs(args) {
   if (knobs.transfer_size) {
     result.push("--transfer-size", String(Math.max(1, Math.floor(Number(knobs.transfer_size)))));
   }
+  if (knobs.fanout) {
+    result.push("--fanout", String(Math.max(1, Math.floor(Number(knobs.fanout)))));
+  }
   return result;
 }
 
 function main(args) {
-  const kernel = path.join(__dirname, "semantic_kernel");
+  const kernel = path.join(__dirname, kernelFor(args || {}));
   fs.chmodSync(kernel, 0o755);
-  const mode = modeFor(args || {});
   const target = targetUs(args || {});
-  const command = ["--mode", mode, "--target-us", String(target), ...extraArgs(args || {})];
+  const command = ["--target-us", String(target), ...extraArgs(args || {})];
   const started = Date.now();
-  const stdout = execFileSync(kernel, command, {
+  const child = require("child_process").spawnSync(kernel, command, {
     encoding: "utf8",
     timeout: Math.max(30000, Math.ceil(target / 1000) + 30000),
   });
-  const kernelResult = JSON.parse(stdout);
+  if (child.status !== 0) {
+    throw new Error(child.stderr || `kernel failed with status ${child.status}`);
+  }
+  const kernelResult = JSON.parse(child.stdout);
   return {
     ok: true,
-    benchmark: actionName() || `semantic-kernel-${mode}`,
-    mode,
+    benchmark: actionName() || path.basename(kernel),
+    executable: path.basename(kernel),
     target_duration_ms: Math.round(target / 1000),
     elapsed_ms: Date.now() - started,
     kernel: kernelResult,

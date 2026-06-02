@@ -23,6 +23,56 @@ DEFAULT_ASSIGNMENTS = Path(
 )
 DEFAULT_OUTPUT_DIR = Path("benchmarks/semantic_benchmark/results/azure-2021-replay")
 DEFAULT_SLO_MIN_SLACK_US = 5_000
+MIB = 1024 * 1024
+
+
+PHASE_KIND_FOR_SCHEDULER: dict[str, str] = {
+    "BlockedNetwork": "IoBound",
+    "ControlPlane": "Idle",
+    "CpuBound": "CpuBound",
+    "CpuOnlyLong": "CpuBound",
+    "FanOutFanIn": "Mixed",
+    "Idle": "Idle",
+    "IoBound": "IoBound",
+    "LocalFileIo": "IoBound",
+    "MemoryBound": "MemoryBound",
+    "MemoryPressure": "MemoryBound",
+    "Mixed": "Mixed",
+    "NetworkBound": "IoBound",
+    "NetworkOrIoBound": "IoBound",
+    "Unknown": "Unknown",
+    "UpstreamSeBS": "Mixed",
+    "WaitBound": "Idle",
+    "WriteBack": "IoBound",
+}
+
+
+CPU_INTENSITY_BY_RESOURCE_CLASS: dict[str, float] = {
+    "control": 0.10,
+    "wait": 0.05,
+    "network_wait": 0.15,
+    "cpu": 0.90,
+    "io": 0.30,
+    "memory": 0.55,
+    "network": 0.25,
+    "balanced": 0.50,
+    "mixed": 0.55,
+    "orchestration": 0.20,
+}
+
+
+IO_WEIGHT_BY_RESOURCE_CLASS: dict[str, int] = {
+    "control": 100,
+    "wait": 100,
+    "network_wait": 250,
+    "cpu": 350,
+    "io": 750,
+    "memory": 350,
+    "network": 300,
+    "balanced": 650,
+    "mixed": 650,
+    "orchestration": 450,
+}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -63,10 +113,98 @@ def slo_class(duration_class: str) -> int:
     return {
         "0-50ms": 0,
         "50-200ms": 1,
-        "200-400ms": 2,
-        "400ms-2s": 3,
-        "2s+": 4,
+        "200-400ms": 1,
+        "400ms-2s": 2,
+        "2s+": 2,
     }[duration_class]
+
+
+def scheduler_phase_sequence(invocation: dict[str, Any]) -> list[dict[str, Any]]:
+    phases: list[dict[str, Any]] = []
+    for entry in invocation.get("expected_phase_sequence") or []:
+        if not isinstance(entry, dict):
+            continue
+        kind = PHASE_KIND_FOR_SCHEDULER.get(str(entry.get("kind")), "Unknown")
+        try:
+            duration_pct = int(entry.get("duration_pct", 0))
+        except (TypeError, ValueError):
+            continue
+        if duration_pct > 0:
+            phases.append({"kind": kind, "duration_pct": duration_pct})
+    return phases or [{"kind": "Mixed", "duration_pct": 100}]
+
+
+def scheduler_profile_hints(invocation: dict[str, Any]) -> dict[str, Any]:
+    resource_class = str(invocation["resource_class"])
+    profile = invocation.get("resource_profile") or {}
+    measured = profile.get("measured") or {}
+    target_duration_ms = int(invocation["target_duration_ms"])
+    measured_cpu = measured.get("cpu_intensity") if isinstance(measured, dict) else None
+    measured_io_weight = measured.get("io_weight") if isinstance(measured, dict) else None
+    hints: dict[str, Any] = {
+        "cpu_intensity": (
+            float(measured_cpu)
+            if isinstance(measured_cpu, (int, float))
+            else CPU_INTENSITY_BY_RESOURCE_CLASS.get(resource_class, 0.50)
+        ),
+        "io_weight": (
+            int(measured_io_weight)
+            if isinstance(measured_io_weight, (int, float))
+            else IO_WEIGHT_BY_RESOURCE_CLASS.get(resource_class, 500)
+        ),
+        "phase_sequence": scheduler_phase_sequence(invocation),
+        "estimated_duration_ns": target_duration_ms * 1_000_000,
+    }
+    max_rss_mb = profile.get("max_rss_mb")
+    measured_rss_kb = measured.get("maxrss_kb") if isinstance(measured, dict) else None
+    if isinstance(measured_rss_kb, (int, float)) and measured_rss_kb > 0:
+        max_rss_mb = max(float(max_rss_mb or 0), float(measured_rss_kb) / 1024.0)
+    if isinstance(max_rss_mb, (int, float)) and max_rss_mb > 0:
+        memory_bytes = max(16 * MIB, int(max_rss_mb) * MIB)
+        hints["memory_bytes"] = memory_bytes
+        hints["working_set_bytes"] = max(1, memory_bytes // 2)
+
+    read_kb = profile.get("read_kb")
+    write_kb = profile.get("write_kb")
+    measured_read_bytes = measured.get("read_bytes") if isinstance(measured, dict) else None
+    measured_write_bytes = measured.get("write_bytes") if isinstance(measured, dict) else None
+    if isinstance(measured_read_bytes, (int, float)):
+        read_kb = max(float(read_kb or 0), float(measured_read_bytes) / 1024.0)
+    if isinstance(measured_write_bytes, (int, float)):
+        write_kb = max(float(write_kb or 0), float(measured_write_bytes) / 1024.0)
+    io_kb = 0
+    if isinstance(read_kb, (int, float)):
+        io_kb += int(read_kb)
+    if isinstance(write_kb, (int, float)):
+        io_kb += int(write_kb)
+    if io_kb > 0 and target_duration_ms > 0:
+        hints["io_bandwidth_bytes_per_sec"] = max(
+            1,
+            int(io_kb * 1024 * 1000 / target_duration_ms),
+        )
+
+    network_kb = profile.get("network_kb")
+    measured_network_bytes = measured.get("network_bytes") if isinstance(measured, dict) else None
+    if isinstance(measured_network_bytes, (int, float)):
+        network_kb = max(float(network_kb or 0), float(measured_network_bytes) / 1024.0)
+    if isinstance(network_kb, (int, float)) and network_kb > 0 and target_duration_ms > 0:
+        hints["network_bandwidth_bytes_per_sec"] = max(
+            1,
+            int(network_kb * 1024 * 1000 / target_duration_ms),
+        )
+
+    metrics = invocation.get("calibration_metrics") or {}
+    cold = metrics.get("cold_start_ms")
+    warm = metrics.get("isolated_warm_ms")
+    if isinstance(cold, dict) and isinstance(warm, dict):
+        cold_p50 = cold.get("p50")
+        warm_p50 = warm.get("p50")
+        if isinstance(cold_p50, (int, float)) and isinstance(warm_p50, (int, float)):
+            penalty_ms = cold_p50 - warm_p50
+            if penalty_ms > 0:
+                hints["cold_load_penalty_ns"] = int(penalty_ms * 1_000_000)
+
+    return hints
 
 
 def sebs_payload(invocation: dict[str, Any]) -> dict[str, Any]:
@@ -85,6 +223,7 @@ def sebs_payload(invocation: dict[str, Any]) -> dict[str, Any]:
         "target_duration_ms": invocation["target_duration_ms"],
         "target_duration_class": invocation["target_duration_class"],
         "resource_knobs": invocation["resource_knobs"],
+        "resource_profile": invocation.get("resource_profile"),
     }
 
 
@@ -128,13 +267,15 @@ def replay_invocation(invocation: dict[str, Any], profile_id: str) -> dict[str, 
         ],
         "calibration_status": invocation.get("calibration_status"),
         "calibration_supports_slo": calibration_supports_slo,
-        "profile_hints": {
+        "profile_hints": scheduler_profile_hints(invocation),
+        "semantic_metadata": {
             "resource_class": resource_class,
             "actual_workload": workload,
             "actual_workload_source": invocation.get("actual_workload_source"),
             "semantic_anchor": invocation["sebs_anchor"],
             "duration_realization": invocation["duration_realization"],
             "expected_phase_sequence": invocation["expected_phase_sequence"],
+            "resource_profile": invocation.get("resource_profile"),
             "calibration_status": invocation.get("calibration_status"),
         },
         "payload": sebs_payload(invocation),
@@ -161,8 +302,10 @@ def build_profiles(
         realization = REALIZATIONS[assigned["duration_realization"]]
         profile_lookup[profile_id] = {
             "profile_id": profile_id,
+            **replay["profile_hints"],
             "workload": replay["workload"],
             "actual_workload_source": assigned.get("actual_workload_source"),
+            "actual_workload": replay["workload"],
             "semantic_source": assigned["semantic_source"],
             "sebs_anchor": assigned["sebs_anchor"],
             "sebs_action_name": assigned["sebs_action_name"],
@@ -171,6 +314,7 @@ def build_profiles(
             "uses_upstream_sebs_directly": realization["uses_upstream_sebs_directly"],
             "expected_phase_sequence": assigned["expected_phase_sequence"],
             "resource_knob_template": realization["resource_knobs"],
+            "measured": (assigned.get("resource_profile") or {}).get("measured"),
             "calibration_status": assigned.get("calibration_status"),
             "calibration_supports_slo": bool(assigned.get("calibration_supports_slo")),
             "openwhisk_action_map_key": replay["workload"],
@@ -307,6 +451,21 @@ def build_replay_payloads(
         },
         "profiles_path": "profiles.json",
         "invocations_path": "invocations.csv",
+        "scheduler_metadata": {
+            "enabled_by_default": True,
+            "event_bridge_port_flag": "--event-bridge-port",
+            "metadata_target_default": "openwhisk-container",
+            "inline_profile_hints": True,
+            "profile_hints_schema": "cosmos_metadata_model.ProfileHints",
+            "fields": [
+                "profile_id",
+                "profile_hints",
+                "slo_class",
+                "target_duration_ms",
+                "deadline_us",
+            ],
+            "replay_runner": "benchmarks/semantic_benchmark/run_openwhisk_semantic_replay.py",
+        },
         "invocations": replay_invocations,
     }
     fidelity = build_fidelity(assignments, replay_invocations, created_at)

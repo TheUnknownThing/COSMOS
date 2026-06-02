@@ -1,3 +1,5 @@
+#pragma once
+
 #define _GNU_SOURCE
 
 #include <errno.h>
@@ -45,6 +47,15 @@ static void cpu_step(uint64_t *state) {
     uint64_t x = *state;
     for (int i = 0; i < 2048; ++i) {
         x = next_rand(x + (uint64_t)i + 0x9e3779b97f4a7c15ULL);
+    }
+    *state = x;
+    sink_u64 ^= x;
+}
+
+static void control_step(uint64_t *state) {
+    uint64_t x = *state;
+    for (int i = 0; i < 128; ++i) {
+        x = next_rand(x + (uint64_t)i + 0x632be59bd9b4e019ULL);
     }
     *state = x;
     sink_u64 ^= x;
@@ -142,118 +153,54 @@ static void network_step(int sockets[2], uint8_t *buffer, size_t chunk, uint64_t
     sink_u64 ^= *state;
 }
 
-static void usage(const char *argv0) {
-    fprintf(
-        stderr,
-        "usage: %s --mode cpu|memory|io|network|balanced --target-us N "
-        "[--working-set BYTES] [--transfer-size BYTES]\n",
-        argv0
-    );
+static void sleep_us(uint64_t us) {
+    struct timespec req;
+    req.tv_sec = (time_t)(us / 1000000ULL);
+    req.tv_nsec = (long)((us % 1000000ULL) * 1000ULL);
+    while (nanosleep(&req, &req) != 0) {
+        if (errno != EINTR) {
+            perror("nanosleep");
+            exit(2);
+        }
+    }
 }
 
-int main(int argc, char **argv) {
-    const char *mode = NULL;
-    uint64_t target_us = 0;
-    size_t working_set = 1024 * 1024;
-    size_t transfer_size = 4096;
-
-    for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
-            mode = argv[++i];
-        } else if (strcmp(argv[i], "--target-us") == 0 && i + 1 < argc) {
-            target_us = parse_u64(argv[++i], "--target-us");
-        } else if (strcmp(argv[i], "--working-set") == 0 && i + 1 < argc) {
-            working_set = (size_t)parse_u64(argv[++i], "--working-set");
-        } else if (strcmp(argv[i], "--transfer-size") == 0 && i + 1 < argc) {
-            transfer_size = (size_t)parse_u64(argv[++i], "--transfer-size");
-        } else {
-            usage(argv[0]);
-            return 2;
-        }
+static void passive_wait_step(uint64_t deadline_us, uint64_t *state) {
+    uint64_t now = now_us();
+    if (now >= deadline_us) {
+        return;
     }
-
-    if (mode == NULL || target_us == 0 || transfer_size == 0) {
-        usage(argv[0]);
-        return 2;
+    uint64_t remaining = deadline_us - now;
+    if (remaining > 4000ULL) {
+        uint64_t sleep_for = remaining - 1000ULL;
+        sleep_us(sleep_for);
+    } else {
+        control_step(state);
     }
-
-    uint8_t *memory = NULL;
-    if (strcmp(mode, "memory") == 0 || strcmp(mode, "balanced") == 0) {
-        memory = malloc(working_set);
-        if (memory == NULL) {
-            perror("malloc");
-            return 2;
-        }
-        memset(memory, 1, working_set);
-    }
-
-    uint8_t *transfer = malloc(transfer_size);
-    if (transfer == NULL) {
-        perror("malloc");
-        return 2;
-    }
-    memset(transfer, 7, transfer_size);
-
-    int fd = -1;
-    if (strcmp(mode, "io") == 0 || strcmp(mode, "balanced") == 0) {
-        fd = make_temp_fd();
-    }
-
-    int sockets[2] = {-1, -1};
-    if (strcmp(mode, "network") == 0 || strcmp(mode, "balanced") == 0) {
-        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
-            perror("socketpair");
-            return 2;
-        }
-    }
-
-    uint64_t state = 0x123456789abcdefULL;
-    uint64_t start = now_us();
-    uint64_t deadline = start + target_us;
-    uint64_t iterations = 0;
-
-    while (now_us() < deadline) {
-        if (strcmp(mode, "cpu") == 0) {
-            cpu_step(&state);
-        } else if (strcmp(mode, "memory") == 0) {
-            memory_step(memory, working_set, &state);
-        } else if (strcmp(mode, "io") == 0) {
-            io_step(fd, transfer, transfer_size, &state);
-        } else if (strcmp(mode, "network") == 0) {
-            network_step(sockets, transfer, transfer_size, &state);
-        } else if (strcmp(mode, "balanced") == 0) {
-            cpu_step(&state);
-            memory_step(memory, working_set, &state);
-            io_step(fd, transfer, transfer_size, &state);
-            network_step(sockets, transfer, transfer_size, &state);
-        } else {
-            fprintf(stderr, "unsupported mode: %s\n", mode);
-            return 2;
-        }
-        ++iterations;
-    }
-
-    uint64_t elapsed = now_us() - start;
-    printf(
-        "{\"mode\":\"%s\",\"target_us\":%llu,\"elapsed_us\":%llu,"
-        "\"iterations\":%llu,\"sink\":%llu}\n",
-        mode,
-        (unsigned long long)target_us,
-        (unsigned long long)elapsed,
-        (unsigned long long)iterations,
-        (unsigned long long)sink_u64
-    );
-
-    if (sockets[0] >= 0) {
-        close(sockets[0]);
-    }
-    if (sockets[1] >= 0) {
-        close(sockets[1]);
-    }
-    if (fd >= 0) {
-        close(fd);
-    }
-    free(transfer);
-    free(memory);
-    return 0;
 }
+
+static void mixed_pipeline_step(
+    int fd,
+    int sockets[2],
+    uint8_t *memory,
+    size_t working_set,
+    uint8_t *transfer,
+    size_t transfer_size,
+    uint64_t *state
+) {
+    io_step(fd, transfer, transfer_size, state);
+    network_step(sockets, transfer, transfer_size, state);
+    memory_step(memory, working_set, state);
+    cpu_step(state);
+}
+
+static void workflow_fanout_step(uint64_t *state, uint64_t deadline_us, int fanout) {
+    for (int i = 0; i < fanout; ++i) {
+        control_step(state);
+        if (i % 2 == 0) {
+            sleep_us(50);
+        }
+    }
+    passive_wait_step(deadline_us, state);
+}
+

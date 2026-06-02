@@ -30,6 +30,7 @@
     "io-heavy",
     "memory-heavy",
     "network-heavy",
+    "api-heavy",
     "balanced"
   ],
   "required_outputs": [

@@ -13,6 +13,7 @@ from typing import Any
 from semantic_catalog import (
     ASSIGNMENT_SCHEMA,
     CATALOG_VERSION,
+    DEFAULT_BUCKET_TARGET_MS,
     SEBS_ANCHORS,
     REALIZATIONS,
     anchor_counts,
@@ -48,7 +49,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--semantic-mix",
-        choices=("cpu-heavy", "io-heavy", "memory-heavy", "network-heavy", "balanced"),
+        choices=(
+            "cpu-heavy",
+            "io-heavy",
+            "memory-heavy",
+            "network-heavy",
+            "api-heavy",
+            "balanced",
+        ),
         default="balanced",
     )
     parser.add_argument("--seed", type=int, default=1)
@@ -70,6 +78,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("fail", "mark"),
         default="fail",
         help="Fail on uncalibrated/unsupported invocations or emit them with calibration_status=unsupported.",
+    )
+    parser.add_argument(
+        "--duration-target-mode",
+        choices=("exact", "bucket-target"),
+        default="exact",
+        help=(
+            "exact preserves Azure per-invocation durations; bucket-target preserves "
+            "duration classes but uses calibrated representative runtimes."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -99,26 +116,147 @@ def resource_knobs(
     }[bucket]
     base_transfer = 32 * 1024 * scale
     base_working_set = 512 * 1024 * scale
+    target_s = target_duration_ms / 1000.0
     knobs: dict[str, Any] = {
         "target_duration_ms": target_duration_ms,
         "target_duration_us": target_duration_ms * 1000,
         "duration_bucket": bucket,
         "repeat_count": max(1, round(target_duration_ms / 50)),
+        "expected_cpu_ms": target_duration_ms,
+        "expected_blocked_ms": 0,
+        "expected_max_rss_mb": 32,
+        "expected_read_kb": 0,
+        "expected_write_kb": 0,
+        "expected_network_kb": 0,
     }
-    if realization_id == "cpu-spin-controllable":
+    if realization_id == "noop-dispatch-controllable":
+        knobs.update(
+            {
+                "dispatch_count": max(1, scale),
+                "expected_cpu_ms": min(target_duration_ms, 5),
+                "expected_blocked_ms": max(0, target_duration_ms - 5),
+                "expected_max_rss_mb": 16,
+            }
+        )
+    elif realization_id == "passive-wait-controllable":
+        active_cpu = min(target_duration_ms, 10)
+        knobs.update(
+            {
+                "expected_cpu_ms": active_cpu,
+                "expected_blocked_ms": max(0, target_duration_ms - active_cpu),
+                "expected_max_rss_mb": 16,
+            }
+        )
+    elif realization_id == "db-network-wait-controllable":
+        network_kb = max(4, scale * 8)
+        active_cpu = min(target_duration_ms, max(5, int(target_s * 20)))
+        knobs.update(
+            {
+                "transfer_size": min(base_transfer, 64 * 1024),
+                "expected_cpu_ms": active_cpu,
+                "expected_blocked_ms": max(0, target_duration_ms - active_cpu),
+                "expected_max_rss_mb": 64,
+                "expected_network_kb": network_kb,
+            }
+        )
+    elif realization_id == "cpu-spin-controllable":
         knobs.update({"loop_count": max(1_000, target_duration_ms * 1_000)})
+    elif realization_id == "cpu-loop-controllable":
+        knobs.update(
+            {
+                "loop_count": max(10_000, target_duration_ms * 2_000),
+                "expected_cpu_ms": target_duration_ms,
+                "expected_max_rss_mb": 32,
+            }
+        )
     elif realization_id == "memory-scan-controllable":
-        knobs.update({"working_set_size": max(256 * 1024, base_working_set)})
+        working_set = max(256 * 1024, base_working_set)
+        knobs.update(
+            {
+                "working_set_size": working_set,
+                "expected_max_rss_mb": max(32, round(working_set / 1024 / 1024) + 24),
+            }
+        )
+    elif realization_id == "memory-touch-controllable":
+        working_set = max(512 * 1024, base_working_set * 2)
+        knobs.update(
+            {
+                "working_set_size": working_set,
+                "expected_cpu_ms": target_duration_ms,
+                "expected_max_rss_mb": max(48, round(working_set / 1024 / 1024) + 32),
+            }
+        )
     elif realization_id == "storage-io-controllable":
-        knobs.update({"bytes": base_transfer * 4, "transfer_size": base_transfer})
+        io_kb = (base_transfer * 4) // 1024
+        knobs.update(
+            {
+                "bytes": base_transfer * 4,
+                "transfer_size": base_transfer,
+                "expected_cpu_ms": min(target_duration_ms, max(10, target_duration_ms // 4)),
+                "expected_read_kb": io_kb,
+                "expected_write_kb": io_kb,
+            }
+        )
+    elif realization_id == "local-file-io-controllable":
+        io_kb = (base_transfer * 2) // 1024
+        knobs.update(
+            {
+                "bytes": base_transfer * 2,
+                "transfer_size": base_transfer,
+                "expected_cpu_ms": min(target_duration_ms, max(5, target_duration_ms // 5)),
+                "expected_read_kb": io_kb,
+                "expected_write_kb": io_kb,
+            }
+        )
     elif realization_id == "network-transfer-controllable":
-        knobs.update({"transfer_size": base_transfer * 2})
+        knobs.update(
+            {
+                "transfer_size": base_transfer * 2,
+                "expected_cpu_ms": min(target_duration_ms, max(10, target_duration_ms // 3)),
+                "expected_network_kb": (base_transfer * 2) // 1024,
+            }
+        )
     elif realization_id == "balanced-pipeline-controllable":
+        working_set = max(256 * 1024, base_working_set)
         knobs.update(
             {
                 "bytes": base_transfer * 2,
                 "loop_count": max(500, target_duration_ms * 500),
-                "working_set_size": max(256 * 1024, base_working_set),
+                "working_set_size": working_set,
+                "expected_cpu_ms": max(1, int(target_duration_ms * 0.4)),
+                "expected_max_rss_mb": max(32, round(working_set / 1024 / 1024) + 24),
+                "expected_read_kb": (base_transfer * 2) // 1024,
+                "expected_write_kb": (base_transfer * 2) // 1024,
+                "expected_network_kb": base_transfer // 1024,
+            }
+        )
+    elif realization_id == "mixed-pipeline-controllable":
+        working_set = max(512 * 1024, base_working_set)
+        knobs.update(
+            {
+                "bytes": base_transfer * 3,
+                "loop_count": max(1_000, target_duration_ms * 750),
+                "working_set_size": working_set,
+                "transfer_size": base_transfer,
+                "expected_cpu_ms": max(1, int(target_duration_ms * 0.5)),
+                "expected_blocked_ms": max(0, int(target_duration_ms * 0.15)),
+                "expected_max_rss_mb": max(48, round(working_set / 1024 / 1024) + 32),
+                "expected_read_kb": (base_transfer * 3) // 1024,
+                "expected_write_kb": (base_transfer * 3) // 1024,
+                "expected_network_kb": base_transfer // 1024,
+            }
+        )
+    elif realization_id == "workflow-fanout-controllable":
+        fanout = max(2, min(64, scale * 4))
+        active_cpu = min(target_duration_ms, max(5, fanout))
+        knobs.update(
+            {
+                "fanout": fanout,
+                "dispatch_count": fanout,
+                "expected_cpu_ms": active_cpu,
+                "expected_blocked_ms": max(0, target_duration_ms - active_cpu),
+                "expected_max_rss_mb": 32,
+                "expected_network_kb": fanout,
             }
         )
     elif realization_id == "upstream-sebs-calibrated":
@@ -132,16 +270,23 @@ def semantic_invocation(
     realization_id: str,
     calibration: dict[str, Any] | None = None,
     selection_reason: str = "selected",
+    execution_duration_ms: int | None = None,
+    duration_target_mode: str = "exact",
 ) -> dict[str, Any]:
     anchor_id = function_mapping["semantic_anchor"]
     realization = REALIZATIONS[realization_id]
-    target_duration_ms = int(invocation["target_duration_ms"])
+    source_duration_ms = int(invocation["target_duration_ms"])
+    source_duration_class = duration_bucket(source_duration_ms)
+    target_duration_ms = execution_duration_ms or source_duration_ms
     decision = calibration_decision(calibration, realization_id, target_duration_ms, anchor_id)
     calibration_status = decision.status
     supports_slo = decision.supported if calibration is not None else False
     actual_workload = anchor_id if is_upstream_sebs_realization(realization_id) else realization_id
+    knobs = resource_knobs(anchor_id, realization_id, target_duration_ms)
+    measured = decision.metrics.get("resource_counters") if decision.metrics else None
     return {
         **invocation,
+        "target_duration_ms": target_duration_ms,
         "semantic_source": realization["semantic_source"],
         "actual_workload": actual_workload,
         "actual_workload_source": (
@@ -152,10 +297,27 @@ def semantic_invocation(
         "resource_class": SEBS_ANCHORS[anchor_id]["resource_class"],
         "duration_realization": realization_id,
         "duration_realization_reason": selection_reason,
+        "source_duration_ms": source_duration_ms,
+        "source_duration_class": source_duration_class,
         "target_duration_class": duration_bucket(target_duration_ms),
+        "duration_target_mode": duration_target_mode,
         "duration_realization_uses_upstream_sebs": realization["uses_upstream_sebs_directly"],
         "expected_phase_sequence": realization["expected_phase_sequence"],
-        "resource_knobs": resource_knobs(anchor_id, realization_id, target_duration_ms),
+        "resource_knobs": knobs,
+        "resource_profile": {
+            "anchor": anchor_id,
+            "class": SEBS_ANCHORS[anchor_id]["resource_class"],
+            "bucket": duration_bucket(target_duration_ms),
+            "target_wall_ms": target_duration_ms,
+            "cpu_ms": knobs.get("expected_cpu_ms"),
+            "blocked_ms": knobs.get("expected_blocked_ms"),
+            "max_rss_mb": knobs.get("expected_max_rss_mb"),
+            "read_kb": knobs.get("expected_read_kb"),
+            "write_kb": knobs.get("expected_write_kb"),
+            "network_kb": knobs.get("expected_network_kb"),
+            "supported": supports_slo,
+            "measured": measured,
+        },
         "calibration_status": calibration_status,
         "calibration_supports_slo": supports_slo,
         "calibration_metrics": decision.metrics,
@@ -170,8 +332,11 @@ def build_assignments_payload(
     allow_uncalibrated_upstream: bool = False,
     calibration: dict[str, Any] | None = None,
     unsupported_mode: str = "fail",
+    duration_target_mode: str = "exact",
 ) -> dict[str, Any]:
     validate_mix(semantic_mix)
+    if duration_target_mode not in {"exact", "bucket-target"}:
+        raise ValueError(f"unsupported duration target mode: {duration_target_mode}")
     invocations = trace_ir["invocations"]
     function_mappings: dict[str, dict[str, Any]] = {}
     enriched_invocations: list[dict[str, Any]] = []
@@ -194,7 +359,13 @@ def build_assignments_payload(
             }
 
         anchor_id = function_mappings[function_id]["semantic_anchor"]
-        target_duration_ms = int(invocation["target_duration_ms"])
+        source_duration_ms = int(invocation["target_duration_ms"])
+        source_bucket = duration_bucket(source_duration_ms)
+        target_duration_ms = (
+            DEFAULT_BUCKET_TARGET_MS[source_bucket]
+            if duration_target_mode == "bucket-target"
+            else source_duration_ms
+        )
         selection_reason = "selected"
         upstream_candidates = upstream_realization_candidates(anchor_id, target_duration_ms)
         if calibration is None and not allow_uncalibrated_upstream:
@@ -277,6 +448,8 @@ def build_assignments_payload(
                 realization_id,
                 calibration,
                 selection_reason,
+                target_duration_ms,
+                duration_target_mode,
             )
         )
 
@@ -311,6 +484,13 @@ def build_assignments_payload(
             "allow_uncalibrated_upstream": allow_uncalibrated_upstream,
             "calibration_required_for_slo": calibration is not None,
             "unsupported_mode": unsupported_mode,
+            "duration_target_mode": duration_target_mode,
+            "duration_target_mode_note": (
+                "Azure durations are preserved as source_duration_ms/source_duration_class; "
+                "target_duration_ms is bucket representative runtime."
+                if duration_target_mode == "bucket-target"
+                else "target_duration_ms preserves exact Azure duration."
+            ),
         },
         "summary": {
             "invocations": len(enriched_invocations),
@@ -340,6 +520,9 @@ def write_semantic_invocations_csv(path: Path, invocations: list[dict[str, Any]]
         "source_start_ms",
         "source_end_ms",
         "target_duration_ms",
+        "source_duration_ms",
+        "source_duration_class",
+        "duration_target_mode",
         "target_duration_class",
         "app",
         "func",
@@ -379,6 +562,7 @@ def main(argv: list[str] | None = None) -> int:
             args.allow_uncalibrated_upstream,
             calibration,
             args.unsupported_mode,
+            args.duration_target_mode,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc

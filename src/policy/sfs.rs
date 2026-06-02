@@ -12,6 +12,7 @@ use crate::registry::{InvocationMeta, InvocationRegistry};
 
 const NSEC_PER_USEC: u64 = 1_000;
 const TASK_STATE_TTL_NS: u64 = 60_000_000_000;
+const SYSTEM_GUARD_WAIT_NS: u64 = 500_000_000;
 
 #[derive(Debug, Clone, Default)]
 struct SfsTaskState {
@@ -183,6 +184,12 @@ impl SfsPolicy {
             .unwrap_or(credit)
     }
 
+    fn system_guard_applies(task: &QueuedTask, meta: Option<&InvocationMeta>, now: u64) -> bool {
+        meta.is_none()
+            && task.stop_ts > 0
+            && now.saturating_sub(task.stop_ts) >= SYSTEM_GUARD_WAIT_NS
+    }
+
     fn cfs_score(&self, task: &QueuedTask) -> u64 {
         task.vtime
             .saturating_add(task.exec_runtime)
@@ -232,7 +239,7 @@ impl SfsPolicy {
                     self.counters.nr_heuristic_classified.saturating_add(1);
             }
 
-            let (score, slice_ns, active_short) = if demoted {
+            let (mut score, slice_ns, active_short) = if demoted {
                 (
                     self.cfs_score(task),
                     self.cfs_slice_ns.max(self.slice_ns_min),
@@ -245,6 +252,9 @@ impl SfsPolicy {
                     true,
                 )
             };
+            if Self::system_guard_applies(task, meta, now) {
+                score = 0;
+            }
 
             if active_short {
                 self.counters.nr_slo_boosted = self.counters.nr_slo_boosted.saturating_add(1);
@@ -447,6 +457,18 @@ mod tests {
 
         assert!(state.demoted);
         assert_eq!(state.remaining_credit_ns, 0);
+    }
+
+    #[test]
+    fn stale_unmetadata_task_is_guarded_ahead_of_fresh_background() {
+        let mut policy = SfsPolicy::new(&opts());
+        let now = 1_000 * MS;
+        let fresh = qt(5001, 501, 1 * MS, 0);
+        let stale = qt(5002, 502, 1 * MS, now.saturating_sub(SYSTEM_GUARD_WAIT_NS));
+        let decisions = policy.schedule_internal(&[None, None], &[fresh, stale], now, 4);
+
+        assert_eq!(decisions[0].pid, 5002);
+        assert_eq!(decisions[0].vtime, 0);
     }
 
     #[test]

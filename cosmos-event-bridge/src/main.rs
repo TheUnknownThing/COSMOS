@@ -11,7 +11,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -96,6 +96,14 @@ struct BridgeState {
     containers: HashMap<String, ContainerState>,
 }
 
+struct StartResolution {
+    container_id: String,
+    tgids: Vec<u32>,
+    timeout_ms: u64,
+    slo_class: u32,
+    deadline_ns: u64,
+}
+
 fn hash_activation_id(id: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     id.hash(&mut hasher);
@@ -117,7 +125,66 @@ fn docker_inspect_pid(container_id: &str) -> Result<u32> {
     let pid: u32 = pid_str
         .parse()
         .with_context(|| format!("invalid PID from docker inspect: '{}'", pid_str))?;
+    if pid == 0 {
+        anyhow::bail!("container '{}' has no running init PID", container_id);
+    }
     Ok(pid)
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == value;
+    }
+    let mut rest = value;
+    let anchored_start = !pattern.starts_with('*');
+    let anchored_end = !pattern.ends_with('*');
+    for (index, part) in pattern
+        .split('*')
+        .filter(|part| !part.is_empty())
+        .enumerate()
+    {
+        if index == 0 && anchored_start {
+            if !rest.starts_with(part) {
+                return false;
+            }
+            rest = &rest[part.len()..];
+            continue;
+        }
+        let Some(pos) = rest.find(part) else {
+            return false;
+        };
+        rest = &rest[pos + part.len()..];
+    }
+    !anchored_end || rest.is_empty()
+}
+
+fn resolve_container_id(container_id: &str) -> Result<String> {
+    if !container_id.contains('*') {
+        return Ok(container_id.to_string());
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let output = Command::new("docker")
+            .args(["ps", "--format", "{{.Names}}"])
+            .output()
+            .context("failed to run docker ps")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("docker ps failed: {}", stderr);
+        }
+        let mut matches: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|name| wildcard_match(container_id, name))
+            .map(str::to_string)
+            .collect();
+        if let Some(name) = matches.drain(..).next() {
+            return Ok(name);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("no running Docker container matches '{}'", container_id);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn read_child_pids(pid: u32) -> Vec<u32> {
@@ -142,25 +209,22 @@ fn collect_descendant_tgids(root: u32) -> Vec<u32> {
         stack.extend(read_child_pids(pid));
     }
 
-    seen.into_iter().collect()
+    seen.into_iter().filter(|pid| *pid != 0).collect()
 }
 
 fn container_tgids(root: u32) -> Vec<u32> {
-    let mut tgids = Vec::new();
     let deadline = std::time::Instant::now() + Duration::from_millis(500);
 
     loop {
-        tgids = collect_descendant_tgids(root);
+        let tgids = collect_descendant_tgids(root);
         if tgids.len() > 1 {
-            break;
+            return tgids;
         }
         if std::time::Instant::now() >= deadline {
-            break;
+            return tgids;
         }
         thread::sleep(Duration::from_millis(10));
     }
-
-    tgids
 }
 
 fn slo_class_from_timeout(timeout_ms: u64) -> u32 {
@@ -200,6 +264,45 @@ fn monotonic_now_ns() -> u64 {
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
 }
 
+fn prepare_start(ev: &StartEvent) -> Result<StartResolution> {
+    let container_id = resolve_container_id(&ev.container_id)?;
+    let tgid = docker_inspect_pid(&container_id)?;
+    let tgids = container_tgids(tgid);
+    if tgids.is_empty() {
+        anyhow::bail!("container '{}' produced no valid tgids", container_id);
+    }
+    let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
+    let estimated_duration_ns = compute_estimated_duration_ns(
+        ev.timeout_ms,
+        ev.estimated_duration_ms,
+        ev.profile_hints.as_ref(),
+    );
+    let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
+    let invocation_id = hash_activation_id(&ev.activation_id);
+
+    for tgid in &tgids {
+        metadata_writer::write_meta(
+            *tgid,
+            deadline_ns,
+            estimated_duration_ns,
+            slo_class,
+            if ev.cold_start { 1 } else { 0 },
+            invocation_id,
+            ev.profile_id.as_deref(),
+            ev.profile_hints.as_ref(),
+        )
+        .with_context(|| format!("failed to write metadata for tgid={}", tgid))?;
+    }
+
+    Ok(StartResolution {
+        container_id,
+        tgids,
+        timeout_ms: ev.timeout_ms,
+        slo_class,
+        deadline_ns,
+    })
+}
+
 impl BridgeState {
     fn new() -> Self {
         Self {
@@ -207,33 +310,8 @@ impl BridgeState {
         }
     }
 
-    fn handle_start(&mut self, ev: &StartEvent) -> Result<()> {
-        let tgid = docker_inspect_pid(&ev.container_id)?;
-        let tgids = container_tgids(tgid);
-        let deadline_ns = monotonic_now_ns() + ev.timeout_ms * 1_000_000;
-        let estimated_duration_ns = compute_estimated_duration_ns(
-            ev.timeout_ms,
-            ev.estimated_duration_ms,
-            ev.profile_hints.as_ref(),
-        );
-        let slo_class = resolve_slo_class(ev.timeout_ms, ev.slo_class);
-        let invocation_id = hash_activation_id(&ev.activation_id);
-
-        for tgid in &tgids {
-            metadata_writer::write_meta(
-                *tgid,
-                deadline_ns,
-                estimated_duration_ns,
-                slo_class,
-                if ev.cold_start { 1 } else { 0 },
-                invocation_id,
-                ev.profile_id.as_deref(),
-                ev.profile_hints.as_ref(),
-            )
-            .with_context(|| format!("failed to write metadata for tgid={}", tgid))?;
-        }
-
-        match self.containers.entry(ev.container_id.clone()) {
+    fn record_start(&mut self, container_key: &str, tgids: &[u32]) {
+        match self.containers.entry(container_key.to_string()) {
             Entry::Occupied(mut e) => {
                 let state = e.get_mut();
                 for tgid in tgids.iter().copied() {
@@ -245,35 +323,28 @@ impl BridgeState {
             }
             Entry::Vacant(e) => {
                 e.insert(ContainerState {
-                    tgids: tgids.clone(),
+                    tgids: tgids.to_vec(),
                     refcount: 1,
                 });
             }
         }
-
-        eprintln!(
-            "COSMOS start: activation={} container={} tgids={:?} action={} kind={} timeout_ms={} slo={} cold={} deadline_ns={}",
-            ev.activation_id, ev.container_id, tgids,
-            ev.action_name, ev.kind, ev.timeout_ms, slo_class, ev.cold_start, deadline_ns
-        );
-        Ok(())
     }
 
-    fn handle_end(&mut self, ev: &EndEvent) -> Result<()> {
-        let should_delete = match self.containers.entry(ev.container_id.clone()) {
+    fn take_end_tgids(&mut self, ev: &EndEvent) -> Option<Vec<u32>> {
+        let should_remove = match self.containers.entry(ev.container_id.clone()) {
             Entry::Occupied(mut e) => {
                 let state = e.get_mut();
                 if state.refcount > 0 {
                     state.refcount -= 1;
                 }
                 if state.refcount == 0 {
-                    Some(state.tgids.clone())
+                    true
                 } else {
                     eprintln!(
                         "COSMOS end: activation={} container={} tgids={:?} (refcount={})",
                         ev.activation_id, ev.container_id, state.tgids, state.refcount
                     );
-                    None
+                    false
                 }
             }
             Entry::Vacant(_) => {
@@ -281,22 +352,15 @@ impl BridgeState {
                     "COSMOS end: activation={} container={} (unknown container)",
                     ev.activation_id, ev.container_id
                 );
-                None
+                return None;
             }
         };
-
-        if let Some(tgids) = should_delete {
-            for tgid in &tgids {
-                metadata_writer::delete_meta(*tgid)
-                    .with_context(|| format!("failed to delete metadata for tgid={}", tgid))?;
-            }
-            self.containers.remove(&ev.container_id);
-            eprintln!(
-                "COSMOS end: activation={} container={} tgids={:?} (deleted — refcount=0)",
-                ev.activation_id, ev.container_id, tgids
-            );
+        if !should_remove {
+            return None;
         }
-        Ok(())
+        self.containers
+            .remove(&ev.container_id)
+            .map(|state| state.tgids)
     }
 }
 
@@ -359,18 +423,50 @@ async fn handle_connection(
                 }
                 let mut ok = true;
                 match serde_json::from_str::<CosmosEvent>(&line) {
-                    Ok(CosmosEvent::Start(ev)) => {
-                        let mut state = state.lock().expect("bridge state mutex poisoned");
-                        if let Err(e) = state.handle_start(&ev) {
+                    Ok(CosmosEvent::Start(ev)) => match prepare_start(&ev) {
+                        Ok(resolved) => {
+                            {
+                                let mut state = state.lock().expect("bridge state mutex poisoned");
+                                state.record_start(&ev.container_id, &resolved.tgids);
+                            }
+                            eprintln!(
+                                    "COSMOS start: activation={} container={} tgids={:?} action={} kind={} timeout_ms={} slo={} cold={} deadline_ns={}",
+                                    ev.activation_id,
+                                    resolved.container_id,
+                                    resolved.tgids,
+                                    ev.action_name,
+                                    ev.kind,
+                                    resolved.timeout_ms,
+                                    resolved.slo_class,
+                                    ev.cold_start,
+                                    resolved.deadline_ns
+                                );
+                        }
+                        Err(e) => {
                             eprintln!("error handling start event: {:#}", e);
                             ok = false;
                         }
-                    }
+                    },
                     Ok(CosmosEvent::End(ev)) => {
-                        let mut state = state.lock().expect("bridge state mutex poisoned");
-                        if let Err(e) = state.handle_end(&ev) {
-                            eprintln!("error handling end event: {:#}", e);
-                            ok = false;
+                        let tgids = {
+                            let mut state = state.lock().expect("bridge state mutex poisoned");
+                            state.take_end_tgids(&ev)
+                        };
+                        if let Some(tgids) = tgids {
+                            for tgid in &tgids {
+                                if let Err(e) =
+                                    metadata_writer::delete_meta(*tgid).with_context(|| {
+                                        format!("failed to delete metadata for tgid={}", tgid)
+                                    })
+                                {
+                                    eprintln!("error handling end event: {:#}", e);
+                                    ok = false;
+                                }
+                            }
+                            eprintln!(
+                                "COSMOS end: activation={} container={} tgids={:?} (deleted — refcount=0)",
+                                ev.activation_id, ev.container_id, tgids
+                            );
                         }
                     }
                     Ok(CosmosEvent::LocalStart(ev)) => {

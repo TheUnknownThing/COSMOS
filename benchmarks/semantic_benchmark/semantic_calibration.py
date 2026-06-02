@@ -94,6 +94,7 @@ def calibration_decision(
             "target_duration_ms": bucket_payload.get("target_duration_ms"),
             "isolated_warm_ms": bucket_payload.get("isolated_warm_ms"),
             "cold_start_ms": bucket_payload.get("cold_start_ms"),
+            "resource_counters": bucket_payload.get("resource_counters"),
             "openwhisk": bucket_payload.get("openwhisk"),
         },
     )

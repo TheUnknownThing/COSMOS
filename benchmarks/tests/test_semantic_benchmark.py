@@ -32,6 +32,10 @@ build_semantic_assignments = load_module(
 )
 build_calibration = load_module("build_calibration", SEMANTIC_DIR / "build_calibration.py")
 build_replay = load_module("build_replay", SEMANTIC_DIR / "build_replay.py")
+openwhisk_semantic_replay = load_module(
+    "run_openwhisk_semantic_replay",
+    SEMANTIC_DIR / "run_openwhisk_semantic_replay.py",
+)
 
 
 class SemanticBenchmarkTests(unittest.TestCase):
@@ -96,6 +100,20 @@ class SemanticBenchmarkTests(unittest.TestCase):
                                 "available": False,
                                 "submit_lag_ms": None,
                                 "post_submit_latency_ms": None,
+                            },
+                            "resource_counters": {
+                                "available": True,
+                                "source": "fixture",
+                                "cpu_time_ms": 1.0,
+                                "cpu_intensity": 0.5,
+                                "maxrss_kb": 1024,
+                                "read_bytes": 4096,
+                                "write_bytes": 4096,
+                                "network_bytes": 0,
+                                "memory_bytes_touched": 0,
+                                "dispatch_count": 0,
+                                "io_bandwidth_bytes_per_sec": 8192,
+                                "network_bandwidth_bytes_per_sec": None,
                             },
                         }
                         for bucket in semantic_catalog.DURATION_BUCKETS
@@ -164,6 +182,7 @@ class SemanticBenchmarkTests(unittest.TestCase):
         self.assertEqual(contract["trace_truth"]["time_unit"], "seconds")
         self.assertIn("duration", contract["trace_truth"]["fields"])
         self.assertIn("cpu-heavy", contract["semantic_mixes"])
+        self.assertIn("api-heavy", contract["semantic_mixes"])
         self.assertIn("balanced", contract["semantic_mixes"])
         self.assertNotIn("modeled_assumptions", contract)
         self.assertNotIn("non_claims", contract)
@@ -260,6 +279,35 @@ class SemanticBenchmarkTests(unittest.TestCase):
             self.assertEqual(trace_payload["window"]["base_ms"], 1000.0)
             self.assertEqual(trace_payload["invocations"][0]["at_ms"], 0.0)
 
+    def test_build_trace_ir_can_select_window_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trace = root / "azure2021.csv"
+            self._write_azure_2021_fixture(trace)
+            output = root / "out"
+
+            rc = build_trace_ir.main(
+                [
+                    "--trace-2021",
+                    str(trace),
+                    "--output-dir",
+                    str(output),
+                    "--window-start-ms",
+                    "0",
+                    "--window-end-ms",
+                    "1500",
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            trace_payload = json.loads((output / "trace_ir.json").read_text(encoding="utf-8"))
+            self.assertEqual(trace_payload["window"]["window_end_ms"], 1500.0)
+            self.assertEqual(len(trace_payload["invocations"]), 2)
+            self.assertEqual(
+                [item["function_id"] for item in trace_payload["invocations"]],
+                ["app-a:fn-hot", "app-a:fn-hot"],
+            )
+
     def test_build_trace_ir_records_downsample_selection_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -305,7 +353,14 @@ class SemanticBenchmarkTests(unittest.TestCase):
         self.assertIn("504.dna-visualisation", catalog["anchors"])
         self.assertEqual(
             set(catalog["semantic_mixes"]),
-            {"cpu-heavy", "io-heavy", "memory-heavy", "network-heavy", "balanced"},
+            {
+                "cpu-heavy",
+                "io-heavy",
+                "memory-heavy",
+                "network-heavy",
+                "api-heavy",
+                "balanced",
+            },
         )
 
         for anchor in catalog["anchors"].values():
@@ -321,12 +376,27 @@ class SemanticBenchmarkTests(unittest.TestCase):
             ):
                 self.assertIn(field, anchor)
             self.assertFalse(anchor["resource_hints"]["measured"])
-            self.assertEqual(anchor["resource_hints"]["source"], "sebs-anchor-semantics")
+            self.assertIn(
+                anchor["resource_hints"]["source"],
+                {"sebs-anchor-semantics", "synthetic-resource-shape-gap"},
+            )
+
+        self.assertEqual(catalog["anchors"]["010.sleep"]["resource_class"], "wait")
+        self.assertEqual(catalog["anchors"]["000.noop-dispatch"]["resource_class"], "control")
+        self.assertEqual(
+            catalog["anchors"]["041.db-network-wait"]["resource_class"],
+            "network_wait",
+        )
+        self.assertEqual(catalog["anchors"]["610.mixed-pipeline"]["resource_class"], "mixed")
+        self.assertEqual(
+            catalog["anchors"]["700.workflow-fanout"]["resource_class"],
+            "orchestration",
+        )
 
         for realization in catalog["realizations"].values():
             if not realization["uses_upstream_sebs_directly"]:
                 self.assertNotIn("python", realization["calibration_command"])
-                self.assertIn("semantic_kernel", realization["calibration_command"])
+                self.assertIn("benchmarks/semantic_benchmark/kernels/semantic_", realization["calibration_command"])
 
         covered = {
             (realization["resource_class"], bucket)
@@ -411,6 +481,40 @@ class SemanticBenchmarkTests(unittest.TestCase):
         self.assertFalse(
             any(item["duration_realization_uses_upstream_sebs"] for item in first["invocations"])
         )
+
+    def test_semantic_assignment_bucket_target_preserves_source_duration(self) -> None:
+        trace_payload = {
+            "version": 1,
+            "schema": "cosmos.semantic.azure-2021-trace-ir",
+            "invocations": [
+                {
+                    "invocation_id": 1,
+                    "event_id": "az2021ir-00000001",
+                    "app": "app-a",
+                    "func": "fn-hot",
+                    "function_id": "app-a:fn-hot",
+                    "source_start_ms": 0.0,
+                    "source_end_ms": 358411.0,
+                    "target_duration_ms": 358411,
+                    "at_ms": 0.0,
+                }
+            ],
+        }
+
+        assignments = build_semantic_assignments.build_assignments_payload(
+            trace_payload,
+            Path("trace_ir.json"),
+            "balanced",
+            42,
+            duration_target_mode="bucket-target",
+        )
+
+        item = assignments["invocations"][0]
+        self.assertEqual(item["source_duration_ms"], 358411)
+        self.assertEqual(item["source_duration_class"], "2s+")
+        self.assertEqual(item["target_duration_ms"], semantic_catalog.DEFAULT_BUCKET_TARGET_MS["2s+"])
+        self.assertEqual(item["duration_target_mode"], "bucket-target")
+        self.assertEqual(item["target_duration_class"], "2s+")
 
     def test_build_semantic_assignments_e2e_from_trace_ir_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -499,7 +603,7 @@ class SemanticBenchmarkTests(unittest.TestCase):
         self.assertEqual(build.returncode, 0, build.stderr)
 
         payload = build_calibration.build_calibration_payload(
-            kernel_path=kernel_dir / "semantic_kernel",
+            kernel_dir=kernel_dir,
             realizations=["cpu-spin-controllable"],
             buckets=["0-50ms"],
             bucket_targets_ms={"0-50ms": 5},
@@ -510,6 +614,9 @@ class SemanticBenchmarkTests(unittest.TestCase):
         bucket = payload["measurements"]["cpu-spin-controllable"]["buckets"]["0-50ms"]
         self.assertEqual(payload["schema"], "cosmos.semantic.duration-calibration")
         self.assertTrue(bucket["supported"])
+        self.assertTrue(bucket["resource_counters"]["available"])
+        self.assertIn("cpu_time_ms", bucket["resource_counters"])
+        self.assertIn("maxrss_kb", bucket["resource_counters"])
         self.assertEqual(bucket["isolated_warm_ms"]["count"], 1)
         self.assertGreaterEqual(bucket["isolated_warm_ms"]["p50"], 5.0)
 
@@ -702,6 +809,295 @@ class SemanticBenchmarkTests(unittest.TestCase):
             self.assertTrue(first["calibration_supports_slo"])
             self.assertEqual(first["workload"], first["duration_realization"])
             self.assertEqual(first["actual_workload_source"], "synthesized")
+            self.assertIn("cpu_intensity", first["profile_hints"])
+            self.assertIn("phase_sequence", first["profile_hints"])
+            self.assertIn("estimated_duration_ns", first["profile_hints"])
+            self.assertIn("measured", first["semantic_metadata"]["resource_profile"])
+            self.assertIn("cpu_intensity", first["semantic_metadata"]["resource_profile"]["measured"])
+            self.assertEqual(replay["scheduler_metadata"]["enabled_by_default"], True)
+            self.assertEqual(
+                replay["scheduler_metadata"]["metadata_target_default"],
+                "openwhisk-container",
+            )
+            self.assertEqual(
+                replay["scheduler_metadata"]["replay_runner"],
+                "benchmarks/semantic_benchmark/run_openwhisk_semantic_replay.py",
+            )
+            profile = profiles["profiles"][first["profile_id"]]
+            self.assertIn("cpu_intensity", profile)
+            self.assertIn("phase_sequence", profile)
+            self.assertIn("measured", profile)
+            self.assertIn("cpu_intensity", profile["measured"])
+
+    def test_openwhisk_semantic_replay_loader_maps_profiles_to_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            replay = Path(tmp) / "replay.json"
+            replay.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "invocations": [
+                            {
+                                "event_id": "semantic-1",
+                                "invocation_id": 7,
+                                "at_ms": 12.5,
+                                "function_id": "app:func",
+                                "profile_id": "profile_a",
+                                "workload": "cpu-spin-controllable",
+                                "target_duration_ms": 321,
+                                "deadline_us": 642000,
+                                "slo_class": 1,
+                                "profile_hints": {"cpu_intensity": 0.5},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            invocations = openwhisk_semantic_replay.load_replay(
+                replay,
+                {"profile_a": "ow_cpu_spin"},
+                None,
+            )
+
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0].action, "ow_cpu_spin")
+        self.assertEqual(invocations[0].target_duration_ms, 321)
+        self.assertEqual(invocations[0].profile_hints["cpu_intensity"], 0.5)
+
+    def test_warmup_invocation_uses_short_duration(self) -> None:
+        warmup = openwhisk_semantic_replay.warmup_invocation(
+            "ow_cpu_spin",
+            "cpu-spin-controllable",
+            1,
+            25,
+        )
+
+        self.assertEqual(warmup.target_duration_ms, 25)
+        self.assertEqual(warmup.deadline_source, "warmup")
+        self.assertEqual(warmup.payload["target_duration_class"], "warmup")
+        self.assertEqual(warmup.payload["resource_knobs"]["target_duration_ms"], 25)
+
+    def test_activation_timing_fields_extract_prefixed_activation_json(self) -> None:
+        parsed = openwhisk_semantic_replay.parse_prefixed_json(
+            "ok: ignored prefix\n"
+            + json.dumps(
+                {
+                    "duration": 42,
+                    "start": 1000,
+                    "end": 1042,
+                    "annotations": [{"key": "waitTime", "value": 7}],
+                    "response": {
+                        "result": {
+                            "elapsed_ms": 39.5,
+                            "kernel": {"elapsed_us": 12345},
+                        }
+                    },
+                }
+            )
+        )
+
+        fields = openwhisk_semantic_replay.activation_timing_fields(parsed)
+
+        self.assertEqual(fields["openwhisk_duration_ms"], 42.0)
+        self.assertEqual(fields["openwhisk_wait_time_ms"], 7.0)
+        self.assertEqual(fields["openwhisk_start_ms"], 1000.0)
+        self.assertEqual(fields["openwhisk_end_ms"], 1042.0)
+        self.assertEqual(fields["action_elapsed_ms"], 39.5)
+        self.assertAlmostEqual(fields["kernel_elapsed_ms"], 12.345)
+
+    def test_annotate_slo_metrics_can_use_openwhisk_duration(self) -> None:
+        result = {
+            "ok": True,
+            "deadline_us": 100_000,
+            "target_duration_ms": 50,
+            "latency_ms": 650,
+            "openwhisk_duration_ms": 75,
+        }
+
+        openwhisk_semantic_replay.annotate_slo_metrics(result, "openwhisk-duration")
+
+        self.assertEqual(result["slo_metric"], "openwhisk-duration")
+        self.assertEqual(result["slo_latency_ms"], 75.0)
+        self.assertTrue(result["slo_met"])
+        self.assertEqual(result["normalized_slowdown"], 1.5)
+
+    def test_replay_uses_calibrated_p99_per_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            replay = Path(tmp) / "replay.json"
+            replay.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "invocations": [
+                            {
+                                "event_id": "semantic-1",
+                                "invocation_id": 1,
+                                "at_ms": 0.0,
+                                "function_id": "app:func",
+                                "profile_id": "profile_a",
+                                "workload": "cpu-spin-controllable",
+                                "action": "ow_cpu_spin",
+                                "target_duration_ms": 125,
+                                "deadline_us": 250000,
+                                "deadline_source": "replay",
+                                "slo_class": 1,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calibration = Path(tmp) / "calibration.json"
+            calibration.write_text(
+                json.dumps(
+                    {
+                        "isolated_warm_p99_ms_by_action_target": {
+                            "ow_cpu_spin@125": 73.5,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            invocations = openwhisk_semantic_replay.load_replay(
+                replay,
+                {"profile_a": "ow_cpu_spin"},
+                None,
+                None,
+                openwhisk_semantic_replay.calibration_latencies_by_action_target(calibration),
+                2.0,
+            )
+
+        self.assertEqual(invocations[0].deadline_source, "isolated-warm-p99*k:2")
+        self.assertEqual(invocations[0].deadline_us, 147000)
+
+    def test_calibration_target_parser_merges_precomputed_and_raw_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            calibration = Path(tmp) / "calibration.json"
+            calibration.write_text(
+                json.dumps(
+                    {
+                        "isolated_warm_p99_ms_by_action_target": {
+                            "ow_cpu_spin@125": 73.5,
+                        },
+                        "actions": {
+                            "cpu-spin-controllable": {
+                                "action": "cpu-spin-controllable",
+                                "targets": {
+                                    "25": {
+                                        "target_ms": 25,
+                                        "results": [
+                                            {"ok": True, "latency_ms": 71.0},
+                                            {"ok": True, "latency_ms": 72.0},
+                                        ],
+                                    }
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            parsed = openwhisk_semantic_replay.calibration_latencies_by_action_target(
+                calibration
+            )
+
+        self.assertEqual(parsed[("ow_cpu_spin", 125)], 73.5)
+        self.assertIn(("cpu-spin-controllable", 25), parsed)
+
+    def test_non_client_calibration_recomputes_from_raw_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            calibration = Path(tmp) / "calibration.json"
+            calibration.write_text(
+                json.dumps(
+                    {
+                        "isolated_warm_p99_ms_by_action_target": {
+                            "ow_cpu_spin@125": 73.5,
+                        },
+                        "actions": {
+                            "cpu-spin-controllable": {
+                                "action": "cpu-spin-controllable",
+                                "targets": {
+                                    "25": {
+                                        "target_ms": 25,
+                                        "results": [
+                                            {
+                                                "ok": True,
+                                                "latency_ms": 700.0,
+                                                "openwhisk_duration_ms": 20.0,
+                                            },
+                                            {
+                                                "ok": True,
+                                                "latency_ms": 710.0,
+                                                "openwhisk_duration_ms": 22.0,
+                                            },
+                                        ],
+                                    }
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            parsed = openwhisk_semantic_replay.calibration_latencies_by_action_target(
+                calibration,
+                "openwhisk-duration",
+            )
+
+        self.assertNotIn(("ow_cpu_spin", 125), parsed)
+        self.assertAlmostEqual(parsed[("cpu-spin-controllable", 25)], 22.0)
+
+    def test_replay_requires_target_calibration_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            replay = Path(tmp) / "replay.json"
+            replay.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "invocations": [
+                            {
+                                "event_id": "semantic-1",
+                                "invocation_id": 1,
+                                "at_ms": 0.0,
+                                "function_id": "app:func",
+                                "profile_id": "profile_a",
+                                "workload": "cpu-spin-controllable",
+                                "action": "ow_cpu_spin",
+                                "target_duration_ms": 25,
+                                "deadline_us": 50000,
+                                "deadline_source": "replay",
+                                "slo_class": 1,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calibration = Path(tmp) / "calibration.json"
+            calibration.write_text(
+                json.dumps(
+                    {
+                        "isolated_warm_p99_ms_by_action": {
+                            "ow_cpu_spin": 73.5,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                openwhisk_semantic_replay.load_replay(
+                    replay,
+                    {"profile_a": "ow_cpu_spin"},
+                    None,
+                    openwhisk_semantic_replay.calibration_latencies_by_action(calibration),
+                    None,
+                    2.0,
+                    True,
+                    True,
+                )
 
     def test_native_controllable_kernel_builds_and_runs_under_50ms_cpu(self) -> None:
         kernel_dir = SEMANTIC_DIR / "kernels"
@@ -715,9 +1111,7 @@ class SemanticBenchmarkTests(unittest.TestCase):
 
         run = subprocess.run(
             [
-                str(kernel_dir / "semantic_kernel"),
-                "--mode",
-                "cpu",
+                str(kernel_dir / "semantic_cpu_spin"),
                 "--target-us",
                 "5000",
             ],
@@ -727,7 +1121,7 @@ class SemanticBenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(run.returncode, 0, run.stderr)
         payload = json.loads(run.stdout)
-        self.assertEqual(payload["mode"], "cpu")
+        self.assertEqual(payload["mode"], "cpu_spin")
         self.assertGreaterEqual(payload["elapsed_us"], 5000)
         self.assertGreater(payload["iterations"], 0)
 

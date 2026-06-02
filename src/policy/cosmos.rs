@@ -13,6 +13,7 @@ use crate::registry::{InvocationMeta, InvocationRegistry, PhaseSlackContext, Reg
 
 const NSEC_PER_USEC: u64 = 1_000;
 const TASK_STATE_TTL_NS: u64 = 60_000_000_000;
+const SYSTEM_GUARD_WAIT_NS: u64 = 500_000_000;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum TaskClass {
@@ -434,6 +435,34 @@ impl CosmosPolicy {
         slack <= self.tail_guard_threshold_ns.max(self.slice_ns_min)
     }
 
+    fn system_guard_applies(
+        &self,
+        task: &QueuedTask,
+        meta: Option<&InvocationMeta>,
+        now: u64,
+    ) -> bool {
+        meta.is_none()
+            && task.stop_ts > 0
+            && now.saturating_sub(task.stop_ts) >= SYSTEM_GUARD_WAIT_NS
+    }
+
+    fn apply_system_guard(
+        &self,
+        task: &QueuedTask,
+        score: u64,
+        meta: Option<&InvocationMeta>,
+        now: u64,
+    ) -> u64 {
+        if !self.system_guard_applies(task, meta, now) {
+            return score;
+        }
+        let boost = self
+            .slo_target_ns
+            .saturating_mul(4)
+            .saturating_add(self.cold_start_boost_ns);
+        score.saturating_sub(Self::scale_by_weight(task, boost))
+    }
+
     fn should_isolate_pools(
         &self,
         latency_depth: u64,
@@ -830,6 +859,7 @@ impl SchedulingPolicy for CosmosPolicy {
                 cpu_intensity,
                 effective_vtime,
             );
+            let score = self.apply_system_guard(task, score, meta, now);
             let effective_slo = self.task_slo_target(meta);
             let slice = self.slice_for(task, class, pool, effective_slo, cpu_intensity);
 
@@ -1379,10 +1409,7 @@ mod tests {
         let mut t = qt(1005, 105, "w", 1 * MS, 100);
         let (c, _, sc, _, _) = p.enqueue_test(&mut t, &r, now);
         assert_eq!(c, TaskClass::Background);
-        assert_eq!(
-            sc,
-            expected_heuristic(&p, &t, c).saturating_add(p.slice_ns)
-        );
+        assert_eq!(sc, expected_heuristic(&p, &t, c).saturating_add(p.slice_ns));
     }
     #[test]
     fn no_meta_heuristic() {
@@ -1395,6 +1422,47 @@ mod tests {
         assert_eq!(c, TaskClass::Background);
         assert_eq!(sc, expected_heuristic(&p, &t, c));
     }
+
+    #[test]
+    fn stale_unmetadata_task_gets_bounded_system_guard_boost() {
+        let o = opts();
+        let p = pl(&o);
+        let now = 1_000 * MS;
+        let mut t = qt(1007, 999, "udev", 1 * MS, 100);
+        t.stop_ts = now.saturating_sub(SYSTEM_GUARD_WAIT_NS);
+
+        assert!(p.system_guard_applies(&t, None, now));
+
+        let base_score = 100 * MS;
+        let boosted = p.apply_system_guard(&t, base_score, None, now);
+        assert_eq!(boosted, base_score.saturating_sub(60 * MS));
+    }
+
+    #[test]
+    fn metadata_task_does_not_use_system_guard() {
+        let o = opts();
+        let p = pl(&o);
+        let now = 1_000 * MS;
+        let mut t = qt(1008, 100, "w", 1 * MS, 100);
+        t.stop_ts = now.saturating_sub(SYSTEM_GUARD_WAIT_NS);
+        let meta = InvocationMeta {
+            id: 1,
+            tgid: 100,
+            deadline_ns: now + 10 * MS,
+            estimated_duration_ns: 0,
+            slo_class: SloClass::LatencyCritical,
+            is_cold_start: false,
+            profile_id: None,
+            created_at_ns: now,
+        };
+
+        assert!(!p.system_guard_applies(&t, Some(&meta), now));
+        assert_eq!(
+            p.apply_system_guard(&t, 100 * MS, Some(&meta), now),
+            100 * MS
+        );
+    }
+
     #[test]
     fn zero_deadline_heuristic() {
         let mut o = opts();

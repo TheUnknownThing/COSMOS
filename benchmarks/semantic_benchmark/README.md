@@ -71,6 +71,32 @@ The replay step emits:
 - `replay.json`: schedule consumed by the existing OpenWhisk replay driver.
 - `fidelity.json`: replay-level preservation summary.
 
+`replay.json` carries scheduler-facing metadata by default:
+
+- `profile_id`
+- COSMOS `profile_hints`
+- `slo_class`
+- `target_duration_ms`
+- `deadline_us`
+
+When you execute the replay against COSMOS, enable the metadata bridge so the
+scheduler ingests those fields:
+
+```bash
+python3 benchmarks/semantic_benchmark/run_openwhisk_semantic_replay.py \
+  --replay /tmp/cosmos-semantic/replay/replay.json \
+  --out-dir /tmp/cosmos-semantic/openwhisk \
+  --run-dir /tmp/cosmos-semantic/openwhisk \
+  --event-bridge-port 9731 \
+  --metadata-target openwhisk-container \
+  --slo-calibration /tmp/cosmos-semantic/calibration/calibration.json \
+  --slo-deadline-multiplier 2 \
+  --action-map cpu-spin-controllable=cpu-spin-controllable
+```
+
+For COSMOS local-harness runs, the metadata path is already enabled through the
+`--event-bridge-port` flag.
+
 The semantic assignment step emits:
 
 - `semantic_catalog.json`: SeBS anchor catalog and duration realization catalog.
@@ -99,7 +125,16 @@ Current executable workload provenance:
 | `io` | assigned SeBS anchor, for example `120.uploader` or `130.crud-api` when calibrated | `storage-io-controllable` | synthesized C kernel |
 | `memory` | assigned SeBS anchor, for example `411.image-recognition` or `504.dna-visualisation` when calibrated | `memory-scan-controllable` | synthesized C kernel |
 | `network` | assigned SeBS anchor, for example `020.network-benchmark`, `030.clock-synchronization`, or `040.server-reply` when calibrated | `network-transfer-controllable` | synthesized C kernel |
-| `balanced` | assigned SeBS anchor, for example `010.sleep`, `210.thumbnailer`, or `220.video-processing` when calibrated | `balanced-pipeline-controllable` | synthesized C kernel |
+| `control` | synthetic `000.noop-dispatch` or an assigned short dispatcher-like SeBS row | `noop-dispatch-controllable` | synthesized C kernel |
+| `wait` | assigned SeBS anchor `010.sleep` when calibrated | `passive-wait-controllable` | synthesized C kernel |
+| `network_wait` | synthetic `041.db-network-wait` or a blocked network-like row | `db-network-wait-controllable` | synthesized C kernel |
+| `cpu` | assigned SeBS anchor, for example `110.dynamic-html`, `311.compression`, `501.graph-pagerank`, `502.graph-mst`, or `503.graph-bfs` when calibrated | `cpu-loop-controllable` or `cpu-spin-controllable` | synthesized C kernel |
+| `io` | assigned SeBS anchor, for example `120.uploader` or `130.crud-api` when calibrated | `local-file-io-controllable` or `storage-io-controllable` | synthesized C kernel |
+| `memory` | assigned SeBS anchor, for example `411.image-recognition` or `504.dna-visualisation` when calibrated | `memory-touch-controllable` or `memory-scan-controllable` | synthesized C kernel |
+| `network` | assigned SeBS anchor, for example `020.network-benchmark`, `030.clock-synchronization`, or `040.server-reply` when calibrated | `network-transfer-controllable` | synthesized C kernel |
+| `balanced` | assigned SeBS anchor, for example `210.thumbnailer` or `220.video-processing` when calibrated | `balanced-pipeline-controllable` | synthesized C kernel |
+| `mixed` | synthetic `610.mixed-pipeline` | `mixed-pipeline-controllable` | synthesized C kernel |
+| `orchestration` | synthetic `700.workflow-fanout` | `workflow-fanout-controllable` | synthesized C kernel |
 
 The replay `workload` field is the actual selected workload: a SeBS benchmark
 ID when `actual_workload_source=upstream-sebs`, otherwise the synthesized
@@ -111,14 +146,22 @@ Register synthesized fallback kernels as OpenWhisk actions:
 benchmarks/semantic_benchmark/deploy_openwhisk_fallback_actions.sh
 ```
 
-This packages a statically linked `semantic_kernel` with a Node.js OpenWhisk
+This packages the statically linked per-family kernels with a Node.js OpenWhisk
 wrapper and registers actions named:
 
 - `cpu-spin-controllable`
+- `noop-dispatch-controllable`
+- `passive-wait-controllable`
+- `db-network-wait-controllable`
+- `local-file-io-controllable`
+- `memory-touch-controllable`
+- `cpu-loop-controllable`
 - `memory-scan-controllable`
 - `storage-io-controllable`
 - `network-transfer-controllable`
 - `balanced-pipeline-controllable`
+- `mixed-pipeline-controllable`
+- `workflow-fanout-controllable`
 
 Because the action names match replay fallback `workload` values, the replay
 driver can invoke fallback rows without extra `--action-map` entries.
@@ -129,6 +172,6 @@ SeBS benchmark semantics and source structure. Numeric timings, bandwidths,
 memory footprints, and cold-start penalties belong in Phase 5 calibration
 artifacts.
 
-The controllable kernels are implemented as a native C binary in `kernels/`.
+The controllable kernels are implemented as separate native C binaries in `kernels/`.
 Python is intentionally not used for sub-50ms realizations because interpreter
 startup and runtime overhead would dominate those workloads.

@@ -12,8 +12,26 @@ CATALOG_VERSION = 1
 CATALOG_SCHEMA = "cosmos.semantic.sebs-anchor-realization-catalog"
 ASSIGNMENT_SCHEMA = "cosmos.semantic.azure-2021-sebs-assignment"
 DURATION_BUCKETS = ("0-50ms", "50-200ms", "200-400ms", "400ms-2s", "2s+")
-RESOURCE_CLASSES = ("cpu", "io", "memory", "network", "balanced")
-SUPPORTED_MIXES = ("cpu-heavy", "io-heavy", "memory-heavy", "network-heavy", "balanced")
+RESOURCE_CLASSES = (
+    "control",
+    "wait",
+    "network_wait",
+    "cpu",
+    "io",
+    "memory",
+    "network",
+    "balanced",
+    "mixed",
+    "orchestration",
+)
+SUPPORTED_MIXES = (
+    "cpu-heavy",
+    "io-heavy",
+    "memory-heavy",
+    "network-heavy",
+    "api-heavy",
+    "balanced",
+)
 CALIBRATION_SCHEMA = "cosmos.semantic.duration-calibration"
 REPLAY_SCHEMA = "cosmos.semantic.azure-2021-openwhisk-replay"
 PROFILES_SCHEMA = "cosmos.semantic.azure-2021-openwhisk-profiles"
@@ -36,6 +54,14 @@ DEFAULT_BUCKET_TARGET_MS: dict[str, int] = {
 }
 
 KERNEL_MODE_BY_REALIZATION: dict[str, str] = {
+    "noop-dispatch-controllable": "control",
+    "passive-wait-controllable": "passive_wait",
+    "db-network-wait-controllable": "network_wait",
+    "local-file-io-controllable": "local_io",
+    "memory-touch-controllable": "memory_touch",
+    "cpu-loop-controllable": "cpu_loop",
+    "mixed-pipeline-controllable": "mixed_pipeline",
+    "workflow-fanout-controllable": "workflow_fanout",
     "cpu-spin-controllable": "cpu",
     "memory-scan-controllable": "memory",
     "storage-io-controllable": "io",
@@ -43,14 +69,40 @@ KERNEL_MODE_BY_REALIZATION: dict[str, str] = {
     "balanced-pipeline-controllable": "balanced",
 }
 
+KERNEL_EXECUTABLE_BY_REALIZATION: dict[str, str] = {
+    "noop-dispatch-controllable": "semantic_control",
+    "passive-wait-controllable": "semantic_passive_wait",
+    "db-network-wait-controllable": "semantic_network_wait",
+    "local-file-io-controllable": "semantic_local_io",
+    "memory-touch-controllable": "semantic_memory_touch",
+    "cpu-loop-controllable": "semantic_cpu_loop",
+    "mixed-pipeline-controllable": "semantic_mixed_pipeline",
+    "workflow-fanout-controllable": "semantic_workflow_fanout",
+    "cpu-spin-controllable": "semantic_cpu_spin",
+    "memory-scan-controllable": "semantic_memory_scan",
+    "storage-io-controllable": "semantic_storage_io",
+    "network-transfer-controllable": "semantic_network_transfer",
+    "balanced-pipeline-controllable": "semantic_balanced_pipeline",
+}
+
+KERNEL_PATH_BY_REALIZATION: dict[str, str] = {
+    realization_id: f"benchmarks/semantic_benchmark/kernels/{executable}"
+    for realization_id, executable in KERNEL_EXECUTABLE_BY_REALIZATION.items()
+}
+
 UPSTREAM_SEBS_REALIZATION_ID = "upstream-sebs-calibrated"
 
-CONTROLLABLE_REALIZATION_BY_RESOURCE_CLASS: dict[str, str] = {
-    "cpu": "cpu-spin-controllable",
-    "io": "storage-io-controllable",
-    "memory": "memory-scan-controllable",
-    "network": "network-transfer-controllable",
-    "balanced": "balanced-pipeline-controllable",
+CONTROLLABLE_REALIZATION_BY_RESOURCE_CLASS: dict[str, tuple[str, ...]] = {
+    "control": ("noop-dispatch-controllable",),
+    "wait": ("passive-wait-controllable", "db-network-wait-controllable"),
+    "network_wait": ("db-network-wait-controllable", "passive-wait-controllable"),
+    "cpu": ("cpu-loop-controllable", "cpu-spin-controllable"),
+    "io": ("local-file-io-controllable", "storage-io-controllable"),
+    "memory": ("memory-touch-controllable", "memory-scan-controllable"),
+    "network": ("network-transfer-controllable", "db-network-wait-controllable"),
+    "balanced": ("balanced-pipeline-controllable", "mixed-pipeline-controllable"),
+    "mixed": ("mixed-pipeline-controllable", "balanced-pipeline-controllable"),
+    "orchestration": ("workflow-fanout-controllable", "noop-dispatch-controllable"),
 }
 
 
@@ -59,17 +111,18 @@ SEBS_ANCHORS: dict[str, dict[str, Any]] = {
         "benchmark_id": "010.sleep",
         "action_name": "sebs_sleep",
         "benchmark_path": "000.microbenchmarks/010.sleep",
-        "resource_class": "balanced",
+        "resource_class": "wait",
         "runtime_options": ["python", "nodejs", "java", "cpp"],
         "input_size_options": ["test"],
         "resource_hints": {
             "source": "sebs-anchor-semantics",
             "measured": False,
-            "primary_resource": "balanced",
+            "primary_resource": "wait",
+            "secondary_resource": "passive-wall-clock",
         },
         "cold_warm_assumptions": {
             "cold_start": "runtime-only cold path; benchmark body is intentionally light",
-            "warm": "duration dominated by requested sleep interval",
+            "warm": "passive wall-clock delay with negligible CPU, memory, I/O, or network work",
         },
         "requires_storage": False,
         "requires_external_service": False,
@@ -340,6 +393,143 @@ SEBS_ANCHORS: dict[str, dict[str, Any]] = {
         "requires_storage": False,
         "requires_external_service": False,
     },
+    "000.noop-dispatch": {
+        "benchmark_id": "000.noop-dispatch",
+        "action_name": "synthetic_noop_dispatch",
+        "benchmark_path": "synthetic/000.noop-dispatch",
+        "resource_class": "control",
+        "runtime_options": ["cpp", "nodejs"],
+        "input_size_options": ["test"],
+        "resource_hints": {
+            "source": "synthetic-resource-shape-gap",
+            "measured": False,
+            "primary_resource": "control",
+        },
+        "cold_warm_assumptions": {
+            "cold_start": "runtime initialization can dominate the actual handler",
+            "warm": "empty event handler, cron heartbeat, queue poll, or dispatcher path",
+        },
+        "requires_storage": False,
+        "requires_external_service": False,
+    },
+    "041.db-network-wait": {
+        "benchmark_id": "041.db-network-wait",
+        "action_name": "synthetic_db_network_wait",
+        "benchmark_path": "synthetic/041.db-network-wait",
+        "resource_class": "network_wait",
+        "runtime_options": ["cpp", "nodejs"],
+        "input_size_options": ["cache", "db", "api", "slow", "long"],
+        "resource_hints": {
+            "source": "synthetic-resource-shape-gap",
+            "measured": False,
+            "primary_resource": "blocked-wall-clock",
+            "secondary_resource": "network",
+        },
+        "cold_warm_assumptions": {
+            "cold_start": "network client setup can appear before the blocking wait",
+            "warm": "low CPU service time with most wall time spent blocked on DB/API/cache wait",
+        },
+        "requires_storage": False,
+        "requires_external_service": True,
+    },
+    "121.local-file-io": {
+        "benchmark_id": "121.local-file-io",
+        "action_name": "synthetic_local_file_io",
+        "benchmark_path": "synthetic/121.local-file-io",
+        "resource_class": "io",
+        "runtime_options": ["cpp", "nodejs"],
+        "input_size_options": ["stat", "json", "log", "sort", "scan"],
+        "resource_hints": {
+            "source": "synthetic-resource-shape-gap",
+            "measured": False,
+            "primary_resource": "local-io",
+        },
+        "cold_warm_assumptions": {
+            "cold_start": "runtime initialization plus temp file setup",
+            "warm": "local file read/write/stat behavior with bounded CPU work",
+        },
+        "requires_storage": True,
+        "requires_external_service": False,
+    },
+    "410.memory-touch": {
+        "benchmark_id": "410.memory-touch",
+        "action_name": "synthetic_memory_touch",
+        "benchmark_path": "synthetic/410.memory-touch",
+        "resource_class": "memory",
+        "runtime_options": ["cpp", "nodejs"],
+        "input_size_options": ["small", "medium", "large", "churn"],
+        "resource_hints": {
+            "source": "synthetic-resource-shape-gap",
+            "measured": False,
+            "primary_resource": "memory",
+            "secondary_resource": "allocation-churn",
+        },
+        "cold_warm_assumptions": {
+            "cold_start": "allocator and runtime initialization can contribute",
+            "warm": "allocation churn, memory bandwidth, cache pressure, and page touching dominate",
+        },
+        "requires_storage": False,
+        "requires_external_service": False,
+    },
+    "313.cpu-loop": {
+        "benchmark_id": "313.cpu-loop",
+        "action_name": "synthetic_cpu_loop",
+        "benchmark_path": "synthetic/313.cpu-loop",
+        "resource_class": "cpu",
+        "runtime_options": ["cpp", "nodejs"],
+        "input_size_options": ["medium", "large", "long"],
+        "resource_hints": {
+            "source": "synthetic-resource-shape-gap",
+            "measured": False,
+            "primary_resource": "cpu",
+        },
+        "cold_warm_assumptions": {
+            "cold_start": "runtime initialization is separate from the steady CPU loop",
+            "warm": "clean CPU-only loop with stable memory and negligible I/O",
+        },
+        "requires_storage": False,
+        "requires_external_service": False,
+    },
+    "610.mixed-pipeline": {
+        "benchmark_id": "610.mixed-pipeline",
+        "action_name": "synthetic_mixed_pipeline",
+        "benchmark_path": "synthetic/610.mixed-pipeline",
+        "resource_class": "mixed",
+        "runtime_options": ["cpp", "nodejs"],
+        "input_size_options": ["small", "medium", "large"],
+        "resource_hints": {
+            "source": "synthetic-resource-shape-gap",
+            "measured": False,
+            "primary_resource": "mixed",
+            "secondary_resource": "read-compute-write",
+        },
+        "cold_warm_assumptions": {
+            "cold_start": "runtime and temp storage setup can be visible",
+            "warm": "read or fetch, CPU transform, and writeback phases",
+        },
+        "requires_storage": True,
+        "requires_external_service": True,
+    },
+    "700.workflow-fanout": {
+        "benchmark_id": "700.workflow-fanout",
+        "action_name": "synthetic_workflow_fanout",
+        "benchmark_path": "synthetic/700.workflow-fanout",
+        "resource_class": "orchestration",
+        "runtime_options": ["cpp", "nodejs"],
+        "input_size_options": ["dispatcher", "fanout-small", "fanout-worker"],
+        "resource_hints": {
+            "source": "synthetic-resource-shape-gap",
+            "measured": False,
+            "primary_resource": "orchestration",
+            "secondary_resource": "queue-event-dispatch",
+        },
+        "cold_warm_assumptions": {
+            "cold_start": "runtime initialization can dominate dispatcher rows",
+            "warm": "many short dispatch/fan-in operations with optional worker bursts",
+        },
+        "requires_storage": False,
+        "requires_external_service": True,
+    },
 }
 
 
@@ -348,10 +538,7 @@ REALIZATIONS: dict[str, dict[str, Any]] = {
         "semantic_source": "sebs-inspired-controllable",
         "resource_class": "cpu",
         "supported_duration_buckets": list(DURATION_BUCKETS),
-        "calibration_command": (
-            "benchmarks/semantic_benchmark/kernels/semantic_kernel "
-            "--mode cpu --target-us {target_duration_us}"
-        ),
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_cpu_spin --target-us {target_duration_us}",
         "expected_phase_sequence": [{"kind": "CpuBound", "duration_pct": 100}],
         "resource_knobs": {
             "loop_count": "calibrated from target_duration_ms",
@@ -359,17 +546,62 @@ REALIZATIONS: dict[str, dict[str, Any]] = {
         },
         "uses_upstream_sebs_directly": False,
     },
+    "noop-dispatch-controllable": {
+        "semantic_source": "sebs-inspired-controllable",
+        "resource_class": "control",
+        "supported_duration_buckets": ["0-50ms"],
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_control --target-us {target_duration_us}",
+        "expected_phase_sequence": [{"kind": "ControlPlane", "duration_pct": 100}],
+        "resource_knobs": {
+            "repeat_count": "calibrated from target_duration_ms",
+        },
+        "uses_upstream_sebs_directly": False,
+    },
+    "passive-wait-controllable": {
+        "semantic_source": "sebs-inspired-controllable",
+        "resource_class": "wait",
+        "supported_duration_buckets": list(DURATION_BUCKETS),
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_passive_wait --target-us {target_duration_us}",
+        "expected_phase_sequence": [{"kind": "WaitBound", "duration_pct": 100}],
+        "resource_knobs": {
+            "blocked_ms": "target_duration_ms - active_cpu_ms",
+            "repeat_count": "calibrated from target_duration_ms",
+        },
+        "uses_upstream_sebs_directly": False,
+    },
+    "db-network-wait-controllable": {
+        "semantic_source": "sebs-inspired-controllable",
+        "resource_class": "network_wait",
+        "supported_duration_buckets": list(DURATION_BUCKETS),
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_network_wait --target-us {target_duration_us}",
+        "expected_phase_sequence": [{"kind": "BlockedNetwork", "duration_pct": 100}],
+        "resource_knobs": {
+            "network_kb": "bucket- and anchor-derived request/response bytes",
+            "blocked_ms": "target_duration_ms - active_cpu_ms",
+            "repeat_count": "calibrated from target_duration_ms",
+        },
+        "uses_upstream_sebs_directly": False,
+    },
     "memory-scan-controllable": {
         "semantic_source": "sebs-inspired-controllable",
         "resource_class": "memory",
         "supported_duration_buckets": list(DURATION_BUCKETS),
-        "calibration_command": (
-            "benchmarks/semantic_benchmark/kernels/semantic_kernel "
-            "--mode memory --target-us {target_duration_us}"
-        ),
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_memory_scan --target-us {target_duration_us}",
         "expected_phase_sequence": [{"kind": "MemoryBound", "duration_pct": 100}],
         "resource_knobs": {
             "working_set_size": "bucket- and anchor-derived bytes",
+            "repeat_count": "calibrated from target_duration_ms",
+        },
+        "uses_upstream_sebs_directly": False,
+    },
+    "local-file-io-controllable": {
+        "semantic_source": "sebs-inspired-controllable",
+        "resource_class": "io",
+        "supported_duration_buckets": list(DURATION_BUCKETS),
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_local_io --target-us {target_duration_us}",
+        "expected_phase_sequence": [{"kind": "LocalFileIo", "duration_pct": 100}],
+        "resource_knobs": {
+            "bytes": "bucket- and anchor-derived file bytes",
             "repeat_count": "calibrated from target_duration_ms",
         },
         "uses_upstream_sebs_directly": False,
@@ -378,10 +610,7 @@ REALIZATIONS: dict[str, dict[str, Any]] = {
         "semantic_source": "sebs-inspired-controllable",
         "resource_class": "io",
         "supported_duration_buckets": list(DURATION_BUCKETS),
-        "calibration_command": (
-            "benchmarks/semantic_benchmark/kernels/semantic_kernel "
-            "--mode io --target-us {target_duration_us}"
-        ),
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_storage_io --target-us {target_duration_us}",
         "expected_phase_sequence": [{"kind": "IoBound", "duration_pct": 100}],
         "resource_knobs": {
             "bytes": "bucket- and anchor-derived byte count",
@@ -390,17 +619,38 @@ REALIZATIONS: dict[str, dict[str, Any]] = {
         },
         "uses_upstream_sebs_directly": False,
     },
+    "memory-touch-controllable": {
+        "semantic_source": "sebs-inspired-controllable",
+        "resource_class": "memory",
+        "supported_duration_buckets": list(DURATION_BUCKETS),
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_memory_touch --target-us {target_duration_us}",
+        "expected_phase_sequence": [{"kind": "MemoryPressure", "duration_pct": 100}],
+        "resource_knobs": {
+            "working_set_size": "bucket- and anchor-derived bytes",
+            "repeat_count": "calibrated from target_duration_ms",
+        },
+        "uses_upstream_sebs_directly": False,
+    },
     "network-transfer-controllable": {
         "semantic_source": "sebs-inspired-controllable",
         "resource_class": "network",
         "supported_duration_buckets": list(DURATION_BUCKETS),
-        "calibration_command": (
-            "benchmarks/semantic_benchmark/kernels/semantic_kernel "
-            "--mode network --target-us {target_duration_us}"
-        ),
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_network_transfer --target-us {target_duration_us}",
         "expected_phase_sequence": [{"kind": "NetworkBound", "duration_pct": 100}],
         "resource_knobs": {
             "transfer_size": "bucket- and anchor-derived payload bytes",
+            "repeat_count": "calibrated from target_duration_ms",
+        },
+        "uses_upstream_sebs_directly": False,
+    },
+    "cpu-loop-controllable": {
+        "semantic_source": "sebs-inspired-controllable",
+        "resource_class": "cpu",
+        "supported_duration_buckets": ["200-400ms", "400ms-2s", "2s+"],
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_cpu_loop --target-us {target_duration_us}",
+        "expected_phase_sequence": [{"kind": "CpuOnlyLong", "duration_pct": 100}],
+        "resource_knobs": {
+            "loop_count": "bucket- and anchor-derived loop count",
             "repeat_count": "calibrated from target_duration_ms",
         },
         "uses_upstream_sebs_directly": False,
@@ -409,10 +659,7 @@ REALIZATIONS: dict[str, dict[str, Any]] = {
         "semantic_source": "sebs-inspired-controllable",
         "resource_class": "balanced",
         "supported_duration_buckets": list(DURATION_BUCKETS),
-        "calibration_command": (
-            "benchmarks/semantic_benchmark/kernels/semantic_kernel "
-            "--mode balanced --target-us {target_duration_us}"
-        ),
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_balanced_pipeline --target-us {target_duration_us}",
         "expected_phase_sequence": [
             {"kind": "IoBound", "duration_pct": 30},
             {"kind": "CpuBound", "duration_pct": 40},
@@ -422,6 +669,37 @@ REALIZATIONS: dict[str, dict[str, Any]] = {
             "bytes": "bucket- and anchor-derived byte count",
             "loop_count": "calibrated from target_duration_ms",
             "working_set_size": "bounded by anchor memory hint",
+            "repeat_count": "calibrated from target_duration_ms",
+        },
+        "uses_upstream_sebs_directly": False,
+    },
+    "mixed-pipeline-controllable": {
+        "semantic_source": "sebs-inspired-controllable",
+        "resource_class": "mixed",
+        "supported_duration_buckets": ["200-400ms", "400ms-2s", "2s+"],
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_mixed_pipeline --target-us {target_duration_us}",
+        "expected_phase_sequence": [
+            {"kind": "NetworkOrIoBound", "duration_pct": 25},
+            {"kind": "CpuBound", "duration_pct": 50},
+            {"kind": "WriteBack", "duration_pct": 25},
+        ],
+        "resource_knobs": {
+            "bytes": "bucket- and anchor-derived bytes",
+            "loop_count": "bucket- and anchor-derived loop count",
+            "working_set_size": "bucket- and anchor-derived bytes",
+            "repeat_count": "calibrated from target_duration_ms",
+        },
+        "uses_upstream_sebs_directly": False,
+    },
+    "workflow-fanout-controllable": {
+        "semantic_source": "sebs-inspired-controllable",
+        "resource_class": "orchestration",
+        "supported_duration_buckets": ["0-50ms", "50-200ms", "200-400ms"],
+        "calibration_command": "benchmarks/semantic_benchmark/kernels/semantic_workflow_fanout --target-us {target_duration_us}",
+        "expected_phase_sequence": [{"kind": "FanOutFanIn", "duration_pct": 100}],
+        "resource_knobs": {
+            "fanout": "bucket-derived child invocation count",
+            "dispatch_count": "bucket-derived dispatch count",
             "repeat_count": "calibrated from target_duration_ms",
         },
         "uses_upstream_sebs_directly": False,
@@ -449,11 +727,78 @@ REALIZATIONS: dict[str, dict[str, Any]] = {
 
 
 MIX_POLICIES: dict[str, dict[str, int]] = {
-    "cpu-heavy": {"cpu": 70, "io": 8, "memory": 8, "network": 6, "balanced": 8},
-    "io-heavy": {"cpu": 8, "io": 68, "memory": 8, "network": 8, "balanced": 8},
-    "memory-heavy": {"cpu": 8, "io": 8, "memory": 68, "network": 8, "balanced": 8},
-    "network-heavy": {"cpu": 8, "io": 8, "memory": 8, "network": 68, "balanced": 8},
-    "balanced": {"cpu": 24, "io": 20, "memory": 18, "network": 20, "balanced": 18},
+    "cpu-heavy": {
+        "control": 2,
+        "wait": 2,
+        "network_wait": 3,
+        "cpu": 58,
+        "io": 7,
+        "memory": 8,
+        "network": 5,
+        "balanced": 6,
+        "mixed": 7,
+        "orchestration": 2,
+    },
+    "io-heavy": {
+        "control": 3,
+        "wait": 4,
+        "network_wait": 6,
+        "cpu": 7,
+        "io": 48,
+        "memory": 7,
+        "network": 6,
+        "balanced": 6,
+        "mixed": 10,
+        "orchestration": 3,
+    },
+    "memory-heavy": {
+        "control": 2,
+        "wait": 3,
+        "network_wait": 5,
+        "cpu": 7,
+        "io": 6,
+        "memory": 50,
+        "network": 5,
+        "balanced": 7,
+        "mixed": 10,
+        "orchestration": 5,
+    },
+    "network-heavy": {
+        "control": 4,
+        "wait": 5,
+        "network_wait": 36,
+        "cpu": 6,
+        "io": 5,
+        "memory": 5,
+        "network": 24,
+        "balanced": 4,
+        "mixed": 6,
+        "orchestration": 5,
+    },
+    "api-heavy": {
+        "control": 8,
+        "wait": 6,
+        "network_wait": 22,
+        "cpu": 10,
+        "io": 10,
+        "memory": 8,
+        "network": 18,
+        "balanced": 6,
+        "mixed": 4,
+        "orchestration": 8,
+    },
+    "balanced": {
+        "control": 8,
+        "wait": 8,
+        "network_wait": 12,
+        "cpu": 16,
+        "io": 14,
+        "memory": 12,
+        "network": 8,
+        "balanced": 10,
+        "mixed": 8,
+        "orchestration": 4,
+    },
 }
 
 
@@ -583,12 +928,16 @@ def controllable_realization_candidates(anchor_id: str, target_duration_ms: int)
     bucket = duration_bucket(target_duration_ms)
     anchor = SEBS_ANCHORS[anchor_id]
     resource_class = anchor["resource_class"]
-    preferred = CONTROLLABLE_REALIZATION_BY_RESOURCE_CLASS[resource_class]
-    if bucket in REALIZATIONS[preferred]["supported_duration_buckets"]:
-        return [preferred]
-    fallback = CONTROLLABLE_REALIZATION_BY_RESOURCE_CLASS["balanced"]
-    if bucket in REALIZATIONS[fallback]["supported_duration_buckets"]:
-        return [fallback]
+    candidates = [
+        realization_id
+        for realization_id in CONTROLLABLE_REALIZATION_BY_RESOURCE_CLASS[resource_class]
+        if bucket in REALIZATIONS[realization_id]["supported_duration_buckets"]
+    ]
+    if candidates:
+        return candidates
+    for fallback in CONTROLLABLE_REALIZATION_BY_RESOURCE_CLASS["balanced"]:
+        if bucket in REALIZATIONS[fallback]["supported_duration_buckets"]:
+            return [fallback]
     return []
 
 

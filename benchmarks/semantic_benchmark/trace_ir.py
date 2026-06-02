@@ -358,6 +358,7 @@ def select_trace_window(
     trace_path: Path,
     window_start_ms: float,
     window_ms: float | None,
+    window_end_ms: float | None,
     scale: float,
     limit: int | None,
     downsample_mode: str,
@@ -376,7 +377,11 @@ def select_trace_window(
         if normalize_to_first_start
         else window_start_ms
     )
-    end_ms = base_ms + window_ms if window_ms is not None else None
+    end_ms = window_end_ms if window_end_ms is not None else (
+        base_ms + window_ms if window_ms is not None else None
+    )
+    if end_ms is not None and end_ms <= base_ms:
+        raise ValueError("window end must be greater than window start")
     window_rows = collect_window_rows(trace_path, base_ms, end_ms)
     total_window_invocations = len(window_rows)
     if total_window_invocations == 0:

@@ -11,8 +11,11 @@ make -C "$KERNEL_DIR" static >/dev/null
 
 rm -f "$PACKAGE"
 cp "$ACTION_DIR/semantic_kernel_action.js" "$ACTION_DIR/index.js"
-cp "$KERNEL_DIR/semantic_kernel_static" "$ACTION_DIR/semantic_kernel"
-chmod 755 "$ACTION_DIR/semantic_kernel"
+for static_kernel in "$KERNEL_DIR"/semantic_*_static; do
+  kernel_name="$(basename "$static_kernel" _static)"
+  cp "$static_kernel" "$ACTION_DIR/$kernel_name"
+  chmod 755 "$ACTION_DIR/$kernel_name"
+done
 python3 - "$ACTION_DIR" "$PACKAGE" <<'PY'
 import sys
 import zipfile
@@ -21,14 +24,25 @@ from pathlib import Path
 action_dir = Path(sys.argv[1])
 package = Path(sys.argv[2])
 with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-    for name, mode in (("index.js", 0o644), ("semantic_kernel", 0o755)):
+    entries = [("index.js", 0o644)]
+    entries.extend((path.name, 0o755) for path in sorted(action_dir.glob("semantic_*")))
+    for name, mode in entries:
         info = zipfile.ZipInfo(name)
         info.external_attr = (mode & 0xFFFF) << 16
         zf.writestr(info, (action_dir / name).read_bytes())
 PY
-rm -f "$ACTION_DIR/index.js" "$ACTION_DIR/semantic_kernel"
+rm -f "$ACTION_DIR/index.js"
+find "$ACTION_DIR" -maxdepth 1 -type f -name 'semantic_*' ! -name 'semantic_kernel_action.js' -delete
 
 actions=(
+  noop-dispatch-controllable
+  passive-wait-controllable
+  db-network-wait-controllable
+  local-file-io-controllable
+  memory-touch-controllable
+  cpu-loop-controllable
+  mixed-pipeline-controllable
+  workflow-fanout-controllable
   cpu-spin-controllable
   memory-scan-controllable
   storage-io-controllable
@@ -43,4 +57,4 @@ for action in "${actions[@]}"; do
     --memory 512 >/dev/null
 done
 
-"$WSK" action list | grep -E 'cpu-spin-controllable|memory-scan-controllable|storage-io-controllable|network-transfer-controllable|balanced-pipeline-controllable'
+"$WSK" action list | grep -E 'noop-dispatch-controllable|passive-wait-controllable|db-network-wait-controllable|local-file-io-controllable|memory-touch-controllable|cpu-loop-controllable|mixed-pipeline-controllable|workflow-fanout-controllable|cpu-spin-controllable|memory-scan-controllable|storage-io-controllable|network-transfer-controllable|balanced-pipeline-controllable'

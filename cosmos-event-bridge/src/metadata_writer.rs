@@ -9,6 +9,8 @@ use cosmos_metadata_model::{MetadataDelete, MetadataWrite, ProfileHints};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::OnceLock;
+use std::thread;
+use std::time::Duration;
 
 static METADATA_PORT: OnceLock<u16> = OnceLock::new();
 
@@ -22,6 +24,30 @@ fn get_addr() -> String {
 }
 
 pub fn write_meta(
+    tgid: u32,
+    deadline_ns: u64,
+    estimated_duration_ns: u64,
+    slo_class: u32,
+    is_cold_start: u32,
+    invocation_id: u64,
+    profile_id: Option<&str>,
+    profile_hints: Option<&ProfileHints>,
+) -> Result<()> {
+    retry_metadata_op(|| {
+        write_meta_once(
+            tgid,
+            deadline_ns,
+            estimated_duration_ns,
+            slo_class,
+            is_cold_start,
+            invocation_id,
+            profile_id,
+            profile_hints,
+        )
+    })
+}
+
+fn write_meta_once(
     tgid: u32,
     deadline_ns: u64,
     estimated_duration_ns: u64,
@@ -65,6 +91,10 @@ pub fn write_meta(
 }
 
 pub fn delete_meta(tgid: u32) -> Result<()> {
+    retry_metadata_op(|| delete_meta_once(tgid))
+}
+
+fn delete_meta_once(tgid: u32) -> Result<()> {
     let addr = get_addr();
     let mut stream = TcpStream::connect(&addr)
         .with_context(|| format!("failed to connect to metadata endpoint at {}", addr))?;
@@ -87,4 +117,23 @@ pub fn delete_meta(tgid: u32) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn retry_metadata_op<F>(mut op: F) -> Result<()>
+where
+    F: FnMut() -> Result<()>,
+{
+    let mut last_err = None;
+    for attempt in 0..5 {
+        match op() {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < 4 {
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+    }
+    Err(last_err.expect("metadata retry loop always records an error"))
 }

@@ -30,6 +30,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--window-start-ms", type=float, default=0.0)
     parser.add_argument("--window-ms", type=float)
+    parser.add_argument(
+        "--window-end-ms",
+        type=float,
+        help="End of the trace window in trace-relative milliseconds. Overrides --window-ms.",
+    )
     parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--limit", type=int)
     parser.add_argument(
@@ -56,6 +61,7 @@ def build_trace_ir_payload(
     output_dir: Path,
     window_start_ms: float,
     window_ms: float | None,
+    window_end_ms: float | None,
     scale: float,
     limit: int | None,
     downsample_mode: str,
@@ -66,6 +72,7 @@ def build_trace_ir_payload(
         trace_2021,
         window_start_ms,
         window_ms,
+        window_end_ms,
         scale,
         limit,
         downsample_mode,
@@ -95,6 +102,7 @@ def build_trace_ir_payload(
             "base_ms": base_ms,
             "window_start_ms": window_start_ms,
             "window_ms": window_ms,
+            "window_end_ms": window_end_ms,
             "scale": scale,
             "limit": limit,
             "downsample_mode": downsample_mode,
@@ -135,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             window_start_ms=args.window_start_ms,
             window_ms=args.window_ms,
+            window_end_ms=args.window_end_ms,
             scale=args.scale,
             limit=args.limit,
             downsample_mode=args.downsample_mode,
