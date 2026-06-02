@@ -21,6 +21,7 @@ pub struct PolicyCounters {
     pub nr_pool_latency: u64,
     pub nr_pool_batch: u64,
     pub nr_tail_guard_dispatches: u64,
+    pub nr_starvation_guard_dispatches: u64,
     pub nr_slo_violations: u64,
     pub nr_pool_migrations: u64,
     pub nr_pool_overflow: u64,
@@ -38,9 +39,17 @@ pub struct DispatchDecision {
 
 pub trait SchedulingPolicy {
     type Stats: Clone;
-    fn schedule(&mut self, resolved_meta: &[Option<InvocationMeta>], raw_tasks: &[QueuedTask], topology: &Topology, now_ns: u64) -> Vec<DispatchDecision>;
+    fn schedule(
+        &mut self,
+        resolved_meta: &[Option<InvocationMeta>],
+        raw_tasks: &[QueuedTask],
+        topology: &Topology,
+        now_ns: u64,
+    ) -> Vec<DispatchDecision>;
     fn tick(&mut self, _registry: &InvocationRegistry, _now_ns: u64) {}
     fn init(&mut self, _nr_cpus: usize, _tail_guard_cpus: u32) {}
     fn stats(&self) -> Self::Stats;
-    fn counters(&self) -> PolicyCounters { PolicyCounters::default() }
+    fn counters(&self) -> PolicyCounters {
+        PolicyCounters::default()
+    }
 }

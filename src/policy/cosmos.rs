@@ -49,6 +49,7 @@ pub struct CosmosCounters {
     pub nr_pool_latency: u64,
     pub nr_pool_batch: u64,
     pub nr_tail_guard_dispatches: u64,
+    pub nr_starvation_guard_dispatches: u64,
     pub nr_slo_violations: u64,
     pub nr_pool_migrations: u64,
     pub nr_pool_overflow: u64,
@@ -67,6 +68,7 @@ impl From<CosmosCounters> for PolicyCounters {
             nr_pool_latency: c.nr_pool_latency,
             nr_pool_batch: c.nr_pool_batch,
             nr_tail_guard_dispatches: c.nr_tail_guard_dispatches,
+            nr_starvation_guard_dispatches: c.nr_starvation_guard_dispatches,
             nr_slo_violations: c.nr_slo_violations,
             nr_pool_migrations: c.nr_pool_migrations,
             nr_pool_overflow: c.nr_pool_overflow,
@@ -83,6 +85,7 @@ pub struct CosmosPolicy {
     cold_start_boost_ns: u64,
     invocation_comm: Vec<String>,
     pub tail_guard_threshold_ns: u64,
+    pub starvation_guard_threshold_ns: u64,
     pub pools_enabled: bool,
     percpu_local: bool,
     pub deadline_scoring_enabled: bool,
@@ -110,6 +113,7 @@ pub struct CosmosPolicy {
     nr_pool_latency: u64,
     nr_pool_batch: u64,
     nr_tail_guard_dispatches: u64,
+    nr_starvation_guard_dispatches: u64,
     nr_slo_violations: u64,
     nr_pool_overflow: u64,
 }
@@ -130,6 +134,7 @@ impl CosmosPolicy {
             cold_start_boost_ns: opts.cold_start_boost_us * NSEC_PER_USEC,
             invocation_comm: opts.invocation_comm.clone(),
             tail_guard_threshold_ns: tg_thr_ns,
+            starvation_guard_threshold_ns: opts.starvation_guard_threshold_us * NSEC_PER_USEC,
             pools_enabled: !opts.disable_pools,
             percpu_local: opts.percpu_local,
             deadline_scoring_enabled: !opts.disable_deadline_scoring,
@@ -157,6 +162,7 @@ impl CosmosPolicy {
             nr_pool_latency: 0,
             nr_pool_batch: 0,
             nr_tail_guard_dispatches: 0,
+            nr_starvation_guard_dispatches: 0,
             nr_slo_violations: 0,
             nr_pool_overflow: 0,
         }
@@ -375,7 +381,44 @@ impl CosmosPolicy {
         fair.saturating_sub(Self::scale_by_weight(task, boost))
     }
 
-    fn slice_for(&self, task: &QueuedTask, class: TaskClass, pool: TaskPool, effective_slo: u64) -> u64 {
+    fn cap_vtime_lead(&self, vtime: u64) -> (u64, bool) {
+        if self.starvation_guard_threshold_ns == 0 {
+            return (vtime, false);
+        }
+        let max_vtime = self
+            .vruntime_now
+            .saturating_add(self.starvation_guard_threshold_ns);
+        if vtime > max_vtime {
+            (max_vtime, true)
+        } else {
+            (vtime, false)
+        }
+    }
+
+    fn runnable_age_ns(&self, task: &QueuedTask, now: u64) -> u64 {
+        if task.stop_ts > 0 {
+            now.saturating_sub(task.stop_ts)
+        } else {
+            0
+        }
+    }
+
+    fn guarded_score(&self) -> u64 {
+        self.vruntime_now.saturating_sub(self.slice_ns)
+    }
+
+    fn should_force_starvation_guard(&self, task: &QueuedTask, now: u64) -> bool {
+        self.starvation_guard_threshold_ns > 0
+            && self.runnable_age_ns(task, now) >= self.starvation_guard_threshold_ns
+    }
+
+    fn slice_for(
+        &self,
+        task: &QueuedTask,
+        class: TaskClass,
+        pool: TaskPool,
+        effective_slo: u64,
+    ) -> u64 {
         if pool == TaskPool::TailGuard {
             return effective_slo.max(self.slice_ns_min);
         }
@@ -465,9 +508,18 @@ impl CosmosPolicy {
 
         self.update_task_state(task, meta, now);
         let pool = self.choose_pool(task, class, meta, now);
-        let score = self.score_for_vtime(task, class, now, meta, task.vtime);
+        let (guarded_vtime, vtime_capped) = self.cap_vtime_lead(task.vtime);
+        let mut score = self.score_for_vtime(task, class, now, meta, guarded_vtime);
+        let force_guard = self.should_force_starvation_guard(task, now);
+        if force_guard {
+            score = self.guarded_score();
+        }
         let effective_slo = self.task_slo_target(meta);
         let slice = self.slice_for(task, class, pool, effective_slo);
+        if vtime_capped || force_guard {
+            self.nr_starvation_guard_dispatches =
+                self.nr_starvation_guard_dispatches.saturating_add(1);
+        }
 
         if has_meta {
             self.nr_metadata_classified = self.nr_metadata_classified.saturating_add(1);
@@ -534,7 +586,7 @@ impl SchedulingPolicy for CosmosPolicy {
         _topo: &Topology,
         now: u64,
     ) -> Vec<DispatchDecision> {
-        let mut decisions: Vec<(u64, u8, bool, u64, i32, i32, TaskPool, u64, u64, u64)> =
+        let mut decisions: Vec<(u8, u64, u8, bool, u64, i32, i32, TaskPool, u64, u64, u64)> =
             Vec::with_capacity(raw.len());
         let mut lat = 0u64;
         let mut bat = 0u64;
@@ -550,14 +602,31 @@ impl SchedulingPolicy for CosmosPolicy {
                 task.vtime
                     .max(self.vruntime_now.saturating_sub(self.slice_ns))
             };
+            let (effective_vtime, vtime_capped) = self.cap_vtime_lead(effective_vtime);
             let vs = Self::inv_scale(task, task.stop_ts.saturating_sub(task.start_ts));
             let effective_vtime = effective_vtime.saturating_add(vs);
+            let (effective_vtime, delta_vtime_capped) = self.cap_vtime_lead(effective_vtime);
             self.vruntime_now = self.vruntime_now.saturating_add(vs);
 
             self.update_task_state(task, meta, now);
-            let pool = self.choose_pool(task, class, meta, now);
-            let score = self.score_for_vtime(task, class, now, meta, effective_vtime);
+            let mut pool = self.choose_pool(task, class, meta, now);
+            let mut score = self.score_for_vtime(task, class, now, meta, effective_vtime);
             let effective_slo = self.task_slo_target(meta);
+            let force_guard = self.should_force_starvation_guard(task, now);
+            let guard = force_guard || vtime_capped || delta_vtime_capped;
+            if guard {
+                pool = TaskPool::None;
+                score = if force_guard {
+                    self.guarded_score()
+                } else {
+                    score.min(
+                        self.vruntime_now
+                            .saturating_add(self.starvation_guard_threshold_ns),
+                    )
+                };
+                self.nr_starvation_guard_dispatches =
+                    self.nr_starvation_guard_dispatches.saturating_add(1);
+            }
             let slice = self.slice_for(task, class, pool, effective_slo);
 
             if has_meta {
@@ -591,6 +660,7 @@ impl SchedulingPolicy for CosmosPolicy {
             }
 
             decisions.push((
+                if guard { 0 } else { 1 },
                 score,
                 class_rank(class),
                 has_meta,
@@ -607,10 +677,11 @@ impl SchedulingPolicy for CosmosPolicy {
         decisions.sort_by(|a, b| {
             a.0.cmp(&b.0)
                 .then_with(|| a.1.cmp(&b.1))
-                .then_with(|| b.2.cmp(&a.2))
-                .then_with(|| a.3.cmp(&b.3))
-                .then_with(|| a.9.cmp(&b.9))
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| b.3.cmp(&a.3))
                 .then_with(|| a.4.cmp(&b.4))
+                .then_with(|| a.10.cmp(&b.10))
+                .then_with(|| a.5.cmp(&b.5))
         });
 
         let pending = decisions.len() as u64;
@@ -628,7 +699,9 @@ impl SchedulingPolicy for CosmosPolicy {
         let mut overflow = 0u64;
 
         let mut out = Vec::with_capacity(decisions.len());
-        for (_score, _cr, _hm, _obs, pid, task_cpu, pool, slice, enq_flags, enq_cnt) in decisions {
+        for (_guard_rank, _score, _cr, _hm, _obs, pid, task_cpu, pool, slice, enq_flags, enq_cnt) in
+            decisions
+        {
             let cpu = if self.percpu_local {
                 task_cpu
             } else {
@@ -737,6 +810,7 @@ impl SchedulingPolicy for CosmosPolicy {
             nr_pool_latency: self.nr_pool_latency,
             nr_pool_batch: self.nr_pool_batch,
             nr_tail_guard_dispatches: self.nr_tail_guard_dispatches,
+            nr_starvation_guard_dispatches: self.nr_starvation_guard_dispatches,
             nr_slo_violations: self.nr_slo_violations,
             nr_pool_migrations: self.pool_mgr.as_ref().map_or(0, |m| m.nr_pool_migrations),
             nr_pool_overflow: self.nr_pool_overflow,
@@ -755,6 +829,7 @@ impl SchedulingPolicy for CosmosPolicy {
             nr_pool_latency: self.nr_pool_latency,
             nr_pool_batch: self.nr_pool_batch,
             nr_tail_guard_dispatches: self.nr_tail_guard_dispatches,
+            nr_starvation_guard_dispatches: self.nr_starvation_guard_dispatches,
             nr_slo_violations: self.nr_slo_violations,
             nr_pool_migrations: self.pool_mgr.as_ref().map_or(0, |m| m.nr_pool_migrations),
             nr_pool_overflow: self.nr_pool_overflow,
@@ -777,6 +852,7 @@ mod tests {
             invocation_comm: vec![],
             percpu_local: false,
             tail_guard_threshold_us: None,
+            starvation_guard_threshold_us: 2_000_000,
             disable_pools: false,
             disable_deadline_scoring: false,
             latency_pool_pct: 50,
@@ -1020,6 +1096,28 @@ mod tests {
             p.select_cpu_for_pool(TaskPool::None),
             crate::bpf::RL_CPU_ANY
         );
+    }
+
+    #[test]
+    fn starvation_guard_caps_vtime_lead() {
+        let o = opts();
+        let mut p = pl(&o);
+        p.vruntime_now = 1_000 * MS;
+        let (vtime, guarded) = p.cap_vtime_lead(5_000 * MS);
+        assert!(guarded);
+        assert_eq!(vtime, 3_000 * MS);
+    }
+
+    #[test]
+    fn starvation_guard_forces_old_runnable_task() {
+        let o = opts();
+        let mut p = pl(&o);
+        p.vruntime_now = 1_000 * MS;
+        let now = 5_000 * MS;
+        let mut t = qt(3000, 300, "w", 1 * MS, 100);
+        t.stop_ts = now - 3_000 * MS;
+        assert!(p.should_force_starvation_guard(&t, now));
+        assert_eq!(p.guarded_score(), 980 * MS);
     }
 
     #[test]

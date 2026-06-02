@@ -164,13 +164,11 @@ fn run_metadata_listener(registry: RegistryHandle, port: u16) -> Result<()> {
         match stream {
             Ok(stream) => {
                 if HAS_INVOCATION_FD.get().is_none() {
-                    let fd = open_pinned_map_with_retry(
-                        HAS_INVOCATION_MAP_PATH,
-                        Duration::from_secs(5),
-                    )
-                    .with_context(|| {
-                        format!("failed to open {}", HAS_INVOCATION_MAP_PATH)
-                    })?;
+                    let fd =
+                        open_pinned_map_with_retry(HAS_INVOCATION_MAP_PATH, Duration::from_secs(5))
+                            .with_context(|| {
+                                format!("failed to open {}", HAS_INVOCATION_MAP_PATH)
+                            })?;
                     let _ = HAS_INVOCATION_FD.set(fd);
                 }
                 let reg = registry.clone();

@@ -383,9 +383,24 @@ mod tests {
         reg.upsert(meta(2, 102, 12 * MS));
         reg.upsert(meta(3, 103, 16 * MS));
 
-        let _ = policy.schedule_internal(&resolve_meta(&reg, &[qt(1001, 101, 0, 0)]), &[qt(1001, 101, 0, 0)], 10 * MS, 4);
-        let _ = policy.schedule_internal(&resolve_meta(&reg, &[qt(1002, 102, 0, 0)]), &[qt(1002, 102, 0, 0)], 12 * MS, 4);
-        let _ = policy.schedule_internal(&resolve_meta(&reg, &[qt(1003, 103, 0, 0)]), &[qt(1003, 103, 0, 0)], 16 * MS, 4);
+        let _ = policy.schedule_internal(
+            &resolve_meta(&reg, &[qt(1001, 101, 0, 0)]),
+            &[qt(1001, 101, 0, 0)],
+            10 * MS,
+            4,
+        );
+        let _ = policy.schedule_internal(
+            &resolve_meta(&reg, &[qt(1002, 102, 0, 0)]),
+            &[qt(1002, 102, 0, 0)],
+            12 * MS,
+            4,
+        );
+        let _ = policy.schedule_internal(
+            &resolve_meta(&reg, &[qt(1003, 103, 0, 0)]),
+            &[qt(1003, 103, 0, 0)],
+            16 * MS,
+            4,
+        );
 
         assert_eq!(policy.threshold.current_ns, 12 * MS);
     }
@@ -396,10 +411,20 @@ mod tests {
         let mut reg = InvocationRegistry::new();
         reg.upsert(meta(1, 200, 1 * MS));
 
-        let _ = policy.schedule_internal(&resolve_meta(&reg, &[qt(2001, 200, 2 * MS, 0)]), &[qt(2001, 200, 2 * MS, 0)], 2 * MS, 4);
+        let _ = policy.schedule_internal(
+            &resolve_meta(&reg, &[qt(2001, 200, 2 * MS, 0)]),
+            &[qt(2001, 200, 2 * MS, 0)],
+            2 * MS,
+            4,
+        );
         let before_sleep = policy.task_state.get(&200).unwrap().remaining_credit_ns;
 
-        let _ = policy.schedule_internal(&resolve_meta(&reg, &[qt(2001, 200, 500_000, 0)]), &[qt(2001, 200, 500_000, 0)], 5 * MS, 4);
+        let _ = policy.schedule_internal(
+            &resolve_meta(&reg, &[qt(2001, 200, 500_000, 0)]),
+            &[qt(2001, 200, 500_000, 0)],
+            5 * MS,
+            4,
+        );
         let after_wakeup = policy.task_state.get(&200).unwrap().remaining_credit_ns;
 
         assert_eq!(before_sleep.saturating_sub(500_000), after_wakeup);
@@ -411,7 +436,12 @@ mod tests {
         let mut reg = InvocationRegistry::new();
         reg.upsert(meta(1, 300, 1 * MS));
 
-        let _ = policy.schedule_internal(&resolve_meta(&reg, &[qt(3001, 300, 7 * MS, 0)]), &[qt(3001, 300, 7 * MS, 0)], 8 * MS, 4);
+        let _ = policy.schedule_internal(
+            &resolve_meta(&reg, &[qt(3001, 300, 7 * MS, 0)]),
+            &[qt(3001, 300, 7 * MS, 0)],
+            8 * MS,
+            4,
+        );
         let state = policy.task_state.get(&300).unwrap();
 
         assert!(state.demoted);
@@ -423,11 +453,21 @@ mod tests {
         let mut policy = SfsPolicy::new(&opts());
         let mut reg = InvocationRegistry::new();
         reg.upsert(meta(1, 400, 1 * MS));
-        let _ = policy.schedule_internal(&resolve_meta(&reg, &[qt(4001, 400, 7 * MS, 0)]), &[qt(4001, 400, 7 * MS, 0)], 8 * MS, 4);
+        let _ = policy.schedule_internal(
+            &resolve_meta(&reg, &[qt(4001, 400, 7 * MS, 0)]),
+            &[qt(4001, 400, 7 * MS, 0)],
+            8 * MS,
+            4,
+        );
         assert!(policy.task_state.get(&400).unwrap().demoted);
 
         reg.upsert(meta(2, 400, 20 * MS));
-        let _ = policy.schedule_internal(&resolve_meta(&reg, &[qt(4001, 400, 0, 0)]), &[qt(4001, 400, 0, 0)], 20 * MS, 4);
+        let _ = policy.schedule_internal(
+            &resolve_meta(&reg, &[qt(4001, 400, 0, 0)]),
+            &[qt(4001, 400, 0, 0)],
+            20 * MS,
+            4,
+        );
         let state = policy.task_state.get(&400).unwrap();
 
         assert!(!state.demoted);

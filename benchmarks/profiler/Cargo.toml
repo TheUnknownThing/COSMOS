@@ -9,6 +9,10 @@ description = "COSMOS benchmark profiling harness"
 name = "cosmos-bench-profiler"
 path = "src/main.rs"
 
+[[bin]]
+name = "generate_top_functions_config"
+path = "../azure_trace/generate_top_functions_config.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env", "unicode", "wrap_help"] }

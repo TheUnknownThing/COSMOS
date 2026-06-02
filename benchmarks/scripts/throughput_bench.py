@@ -140,7 +140,7 @@ def start_scheduler(config: str, deadline_us: int, log_path: Path) -> subprocess
 def start_event_bridge(port: int, log_path: Path) -> subprocess.Popen:
     log_file = log_path.open("w", encoding="utf-8")
     return subprocess.Popen(
-        [str(EVENT_BRIDGE_BIN), "--listen-port", str(port)],
+        [str(EVENT_BRIDGE_BIN), "--port", str(port)],
         stdout=log_file,
         stderr=subprocess.STDOUT,
         cwd=str(REPO_ROOT),

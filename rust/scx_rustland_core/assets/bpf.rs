@@ -172,7 +172,7 @@ impl EnqueuedMessage {
             vtime: self.inner.vtime,
             enq_cnt: self.inner.enq_cnt,
             comm: self.inner.comm,
-            tgid: 0, // resolved later by adapter
+            tgid: self.inner.tgid,
         }
     }
 }

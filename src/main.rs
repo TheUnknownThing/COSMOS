@@ -163,6 +163,10 @@ struct Opts {
     #[clap(long)]
     tail_guard_threshold_us: Option<u64>,
 
+    /// Runnable age / vtime lead threshold before forcing watchdog-safe dispatch. 0 disables.
+    #[clap(long, default_value = "2000000")]
+    starvation_guard_threshold_us: u64,
+
     /// Enable stats monitoring with the specified interval.
     #[clap(long)]
     stats: Option<f64>,
@@ -197,6 +201,7 @@ pub struct CosmosOpts {
     pub invocation_comm: Vec<String>,
     pub percpu_local: bool,
     pub tail_guard_threshold_us: Option<u64>,
+    pub starvation_guard_threshold_us: u64,
     pub disable_pools: bool,
     pub disable_deadline_scoring: bool,
     pub latency_pool_pct: u32,
@@ -213,6 +218,7 @@ impl From<&Opts> for CosmosOpts {
             invocation_comm: opts.invocation_comm.clone(),
             percpu_local: opts.percpu_local,
             tail_guard_threshold_us: opts.tail_guard_threshold_us,
+            starvation_guard_threshold_us: opts.starvation_guard_threshold_us,
             disable_pools: opts.disable_pools,
             disable_deadline_scoring: opts.disable_deadline_scoring,
             latency_pool_pct: opts.latency_pool_pct,

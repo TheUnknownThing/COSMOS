@@ -1,0 +1,38 @@
+input=benchmarks/azure_trace/pool_mixed_p75_cap10000.json
+invocations=100000
+bucket_ms=100
+duration_cap_ms=10000
+min_ms=1
+p25_ms=27.00
+p50_ms=207.00
+p75_ms=1175.00
+p90_ms=1699.00
+p95_ms=2106.00
+p99_ms=10000.00
+max_ms=10000
+mean_ms=681.09977
+total_cpu_time_ms=68109977
+
+top_frequency_buckets:
+1-100ms count=43136 pct=43.1360% total_cpu_ms=1443418 cpu_pct=2.1192%
+201-300ms count=15352 pct=15.3520% total_cpu_ms=4095871 cpu_pct=6.0136%
+101-200ms count=6399 pct=6.3990% total_cpu_ms=970872 cpu_pct=1.4254%
+301-400ms count=5005 pct=5.0050% total_cpu_ms=1751043 cpu_pct=2.5709%
+1401-1500ms count=4510 pct=4.5100% total_cpu_ms=6540380 cpu_pct=9.6027%
+1601-1700ms count=4290 pct=4.2900% total_cpu_ms=7079231 cpu_pct=10.3938%
+1501-1600ms count=4267 pct=4.2670% total_cpu_ms=6609062 cpu_pct=9.7035%
+1701-1800ms count=1476 pct=1.4760% total_cpu_ms=2569340 cpu_pct=3.7723%
+1301-1400ms count=1293 pct=1.2930% total_cpu_ms=1775469 cpu_pct=2.6068%
+401-500ms count=1288 pct=1.2880% total_cpu_ms=559076 cpu_pct=0.8208%
+
+top_cpu_time_buckets:
+9901-10000ms count=1166 pct=1.1660% total_cpu_ms=11659571 cpu_pct=17.1187%
+1601-1700ms count=4290 pct=4.2900% total_cpu_ms=7079231 cpu_pct=10.3938%
+1501-1600ms count=4267 pct=4.2670% total_cpu_ms=6609062 cpu_pct=9.7035%
+1401-1500ms count=4510 pct=4.5100% total_cpu_ms=6540380 cpu_pct=9.6027%
+201-300ms count=15352 pct=15.3520% total_cpu_ms=4095871 cpu_pct=6.0136%
+1701-1800ms count=1476 pct=1.4760% total_cpu_ms=2569340 cpu_pct=3.7723%
+2201-2300ms count=1096 pct=1.0960% total_cpu_ms=2464663 cpu_pct=3.6187%
+2001-2100ms count=1199 pct=1.1990% total_cpu_ms=2459194 cpu_pct=3.6106%
+2101-2200ms count=1141 pct=1.1410% total_cpu_ms=2453999 cpu_pct=3.6030%
+1901-2000ms count=1094 pct=1.0940% total_cpu_ms=2133815 cpu_pct=3.1329%

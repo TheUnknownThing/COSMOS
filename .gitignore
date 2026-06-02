@@ -7,4 +7,6 @@
 /main.bpf.c
 /intf.h
 
+.codex/
+
 *.ignore.md
