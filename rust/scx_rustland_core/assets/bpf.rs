@@ -58,6 +58,8 @@ const TASK_COMM_LEN: usize = 16;
 // The task will be dispatched to the global shared DSQ and it will run on the first CPU available.
 #[allow(dead_code)]
 pub const RL_CPU_ANY: i32 = bpf_intf::RL_CPU_ANY as i32;
+pub const RL_DISPATCH_PREEMPT: u64 = bpf_intf::RL_DISPATCH_PREEMPT as u64;
+pub const RL_DISPATCH_FORCE_PREEMPT: u64 = bpf_intf::RL_DISPATCH_FORCE_PREEMPT as u64;
 
 /// High-level Rust abstraction to interact with a generic sched-ext BPF component.
 ///
@@ -113,6 +115,7 @@ pub struct DispatchedTask {
     pub pid: i32,      // pid that uniquely identifies a task
     pub cpu: i32, // target CPU selected by the scheduler (RL_CPU_ANY = dispatch on the first CPU available)
     pub flags: u64, // task's enqueue flags
+    pub dispatch_flags: u64, // RL_DISPATCH_* policy/mechanism flags
     pub slice_ns: u64, // time slice in nanoseconds assigned to the task (0 = use default time slice)
     pub vtime: u64, // this value can be used to send the task's vruntime or deadline directly to the underlying BPF dispatcher
     pub enq_cnt: u64,
@@ -128,6 +131,7 @@ impl DispatchedTask {
             pid: task.pid,
             cpu: task.cpu,
             flags: task.flags,
+            dispatch_flags: 0,
             slice_ns: 0, // use default time slice
             vtime: 0,
             enq_cnt: task.enq_cnt,
@@ -216,6 +220,7 @@ impl<'cb> BpfScheduler<'cb> {
         open_opts: Option<bpf_object_open_opts>,
         exit_dump_len: u32,
         partial: bool,
+        usersched_cfs: bool,
         debug: bool,
         builtin_idle: bool,
         numa_local: bool,
@@ -320,8 +325,10 @@ impl<'cb> BpfScheduler<'cb> {
 
         let struct_ops = Some(scx_ops_attach!(skel, rustland)?);
 
-        // Make sure to use the SCHED_EXT class at least for the scheduler itself.
-        if partial {
+        // Partial mode normally switches the scheduler thread into SCHED_EXT so
+        // BPF can run it from SCHED_DSQ. Reserved control-plane runs keep it on
+        // CFS and pin it to isolated CPUs instead.
+        if partial && !usersched_cfs {
             let err = Self::use_sched_ext();
             if err < 0 {
                 return Err(anyhow::Error::msg(format!(
@@ -509,6 +516,18 @@ impl<'cb> BpfScheduler<'cb> {
             .nr_has_invocation_enqueues
     }
 
+    // Counter of BPF dispatches that handled short/preempt-marked work.
+    #[allow(dead_code)]
+    pub fn nr_preempt_dispatches_mut(&mut self) -> &mut u64 {
+        &mut self
+            .skel
+            .maps
+            .bss_data
+            .as_mut()
+            .unwrap()
+            .nr_preempt_dispatches
+    }
+
     // Refresh invocation metadata from the map in case user space populated it
     // after the BPF enqueue snapshot was captured.
     fn task_tgid(pid: i32) -> u32 {
@@ -617,6 +636,7 @@ impl<'cb> BpfScheduler<'cb> {
             pid,
             cpu,
             flags,
+            dispatch_flags,
             slice_ns,
             vtime,
             enq_cnt,
@@ -626,6 +646,7 @@ impl<'cb> BpfScheduler<'cb> {
         *pid = task.pid;
         *cpu = task.cpu;
         *flags = task.flags;
+        *dispatch_flags = task.dispatch_flags;
         *slice_ns = task.slice_ns;
         *vtime = task.vtime;
         *enq_cnt = task.enq_cnt;

@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.config == "cfs-default":
         command = ["python3", str(SCRIPT_DIR / "run_baseline.py")]
-    elif args.config in {"cosmos-heuristic", "cosmos-metadata", "cosmos-pooled", "cosmos-full", "sfs"}:
+    elif args.config in {"cosmos-heuristic", "cosmos-metadata", "cosmos-full", "sfs"}:
         command = ["python3", str(SCRIPT_DIR / "run_cosmos.py")]
     else:
         raise SystemExit(f"unknown benchmark config: {args.config}")

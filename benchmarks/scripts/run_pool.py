@@ -22,7 +22,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "cfs-default",
             "cosmos-heuristic",
             "cosmos-metadata",
-            "cosmos-pooled",
             "cosmos-full",
             "sfs",
         ],

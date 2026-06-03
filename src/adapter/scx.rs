@@ -47,13 +47,15 @@ impl CpuAdapter for ScxAdapter<'_> {
         cpu: i32,
         slice_ns: u64,
         vtime: u64,
-        _enq_flags: u64,
+        enq_flags: u64,
+        dispatch_flags: u64,
         enq_cnt: u64,
     ) -> bool {
         let d = DispatchedTask {
             pid,
             cpu,
-            flags: 0,
+            flags: enq_flags,
+            dispatch_flags,
             slice_ns,
             vtime,
             enq_cnt,
@@ -87,6 +89,7 @@ impl CpuAdapter for ScxAdapter<'_> {
             nr_failed_dispatches: *self.bpf.nr_failed_dispatches_mut(),
             nr_sched_congested: *self.bpf.nr_sched_congested_mut(),
             nr_has_invocation_enqueues: *self.bpf.nr_has_invocation_enqueues_mut(),
+            nr_preempt_dispatches: *self.bpf.nr_preempt_dispatches_mut(),
         }
     }
 

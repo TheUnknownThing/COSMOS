@@ -286,7 +286,9 @@ impl SfsPolicy {
                     slice_ns,
                     vtime: score,
                     enq_flags,
+                    dispatch_flags: 0,
                     enq_cnt,
+                    preempt: false,
                 },
             )
             .collect()

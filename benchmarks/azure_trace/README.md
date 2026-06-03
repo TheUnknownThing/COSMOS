@@ -93,8 +93,7 @@ This:
 - `cfs-default` - Linux CFS (no COSMOS)
 - `sfs` - Shortest-First Scheduling
 - `cosmos-metadata` - COSMOS with metadata only
-- `cosmos-pooled` - COSMOS with pools
-- `cosmos-full` - Full COSMOS with all features
+- `cosmos-full` - COSMOS with metadata, deadline scoring, and short-task preemption
 
 **Output:**
 - `manifest.json` - Run configuration

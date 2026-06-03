@@ -22,6 +22,7 @@ pub struct BpfCounters {
     pub nr_failed_dispatches: u64,
     pub nr_sched_congested: u64,
     pub nr_has_invocation_enqueues: u64,
+    pub nr_preempt_dispatches: u64,
 }
 
 /// Pure mechanism: abstracts over the kernel scheduling interface.
@@ -37,6 +38,7 @@ pub trait CpuAdapter {
         slice_ns: u64,
         vtime: u64,
         enq_flags: u64,
+        dispatch_flags: u64,
         enq_cnt: u64,
     ) -> bool;
 

@@ -82,7 +82,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "cfs-default",
             "cosmos-heuristic",
             "cosmos-metadata",
-            "cosmos-pooled",
             "cosmos-full",
             "sfs",
         ],
@@ -203,6 +202,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--event-bridge-port", type=int, default=harness.DEFAULT_EVENT_BRIDGE_PORT
+    )
+    parser.add_argument(
+        "--control-plane-cpus",
+        default=None,
+        help="CPU set for scheduler/event-bridge/stats control-plane processes, e.g. 62-63.",
+    )
+    parser.add_argument(
+        "--reserve-control-plane-cpus",
+        type=int,
+        default=0,
+        help="Reserve the last N available CPUs for control-plane work.",
     )
     parser.add_argument("--scheduler-flag", action="append", default=[])
     return parser.parse_args(argv)
@@ -846,6 +856,8 @@ def run_invocation_task(
     item: ScheduledInvocation,
     use_metadata: bool,
     metadata_bridge_port: int | None,
+    workload_cpus: list[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     submitted_ns = time.monotonic_ns()
     spec = invocation_spec_from_schedule(config, item, submitted_ns)
@@ -854,6 +866,8 @@ def run_invocation_task(
         spec,
         use_metadata,
         metadata_bridge_port,
+        workload_cpus=workload_cpus,
+        workload_sched_ext=workload_sched_ext,
     )
 
 
@@ -871,6 +885,7 @@ def start_scheduler_stack(
     scheduler_flags: list[str],
     use_metadata: bool,
     run_dir: Path,
+    control_plane_cpus: list[int] | None = None,
 ) -> tuple[
     subprocess.Popen[bytes] | None,
     subprocess.Popen[bytes] | None,
@@ -884,8 +899,12 @@ def start_scheduler_stack(
     harness.remove_stale_unix_socket(stats_socket)
     scheduler_log = run_dir / "scheduler.log"
     with scheduler_log.open("w", encoding="utf-8") as f:
-        scheduler = subprocess.Popen(
+        scheduler_cmd = harness.with_cpu_affinity(
             [str(scheduler_bin), *scheduler_flags],
+            control_plane_cpus,
+        )
+        scheduler = subprocess.Popen(
+            scheduler_cmd,
             stdout=f,
             stderr=subprocess.STDOUT,
             cwd=harness.REPO_ROOT,
@@ -895,11 +914,19 @@ def start_scheduler_stack(
     event_bridge = None
     if use_metadata:
         eb_log = run_dir / "event_bridge.log"
-        event_bridge = harness.start_event_bridge(eb_log, event_bridge_port)
+        event_bridge = harness.start_event_bridge(
+            eb_log,
+            event_bridge_port,
+            control_plane_cpus=control_plane_cpus,
+        )
         harness.wait_for_event_bridge(event_bridge_port, event_bridge, eb_log)
 
     stats_path = run_dir / "scheduler_stats.jsonl"
-    stats_capture = harness.start_scheduler_stats_capture(stats_path, stats_socket)
+    stats_capture = harness.start_scheduler_stats_capture(
+        stats_path,
+        stats_socket,
+        control_plane_cpus=control_plane_cpus,
+    )
     harness.wait_for_scheduler_stats_sample(stats_path, stats_capture)
     return scheduler, event_bridge, stats_capture
 
@@ -1233,6 +1260,9 @@ def write_manifest(
     deadline_floor_ms: float,
     launcher_workers: int,
     pool_json: Path | None = None,
+    control_plane_cpus: list[int] | None = None,
+    workload_cpus: list[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> None:
     max_dl = max(
         (
@@ -1254,6 +1284,9 @@ def write_manifest(
         "warmup_duration_ms": int(round(warmup_duration_s * 1000)),
         "deadline_us": max_dl,
         "cpu_cores": cpu_cores,
+        "control_plane_cpus": harness.format_cpu_set(control_plane_cpus),
+        "workload_cpus": harness.format_cpu_set(workload_cpus),
+        "workload_sched_ext": workload_sched_ext,
         "metadata_mode": metadata_mode,
         "scheduler_flags": scheduler_flags,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1297,7 +1330,13 @@ def run_single_rate(
     run_dir = sweep_dir / f"rate_{rate:.6f}_rep_{repetition}"
     run_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
-    cpu_cores = pool.cpu_cores if pool is not None else (os.cpu_count() or 1)
+    control_plane_cpus = getattr(args, "control_plane_cpu_list", None)
+    workload_cpus = getattr(args, "workload_cpu_list", None)
+    cpu_cores = (
+        len(workload_cpus)
+        if workload_cpus
+        else (pool.cpu_cores if pool is not None else (os.cpu_count() or 1))
+    )
     weighted_mean_ms = (
         pool.weighted_mean_time_ms if pool is not None else weighted_mean_time_ms(profiles)
     )
@@ -1317,6 +1356,11 @@ def run_single_rate(
             weighted_expected_p50_ms(profiles),
         )
         scheduler_flags = [*scheduler_flags, *args.scheduler_flag]
+        if control_plane_cpus:
+            for flag in ("--partial", "--partial-usersched-cfs"):
+                if flag not in scheduler_flags:
+                    scheduler_flags.append(flag)
+    workload_sched_ext = bool(control_plane_cpus and args.config != "cfs-default")
 
     workers = estimate_worker_requirement(
         profiles,
@@ -1348,6 +1392,9 @@ def run_single_rate(
         deadline_floor_ms=args.deadline_floor_ms,
         launcher_workers=workers,
         pool_json=pool_json,
+        control_plane_cpus=control_plane_cpus,
+        workload_cpus=workload_cpus,
+        workload_sched_ext=workload_sched_ext,
     )
 
     harness.ensure_benchmark_workload_build()
@@ -1366,6 +1413,7 @@ def run_single_rate(
             scheduler_flags=scheduler_flags,
             use_metadata=use_metadata,
             run_dir=run_dir,
+            control_plane_cpus=control_plane_cpus,
         )
         if args.scheduler_settle_s > 0:
             time.sleep(args.scheduler_settle_s)
@@ -1426,6 +1474,8 @@ def run_single_rate(
                             item,
                             use_metadata,
                             args.event_bridge_port if use_metadata else None,
+                            workload_cpus,
+                            workload_sched_ext,
                         )
                     )
 
@@ -1476,7 +1526,13 @@ def run_load_sweep(
     pool: InvocationPool | None = None,
     pool_json: Path | None = None,
 ) -> dict[str, Any]:
-    cpu_cores = pool.cpu_cores if pool is not None else (os.cpu_count() or 1)
+    workload_cpus = getattr(args, "workload_cpu_list", None)
+    control_plane_cpus = getattr(args, "control_plane_cpu_list", None)
+    cpu_cores = (
+        len(workload_cpus)
+        if workload_cpus
+        else (pool.cpu_cores if pool is not None else (os.cpu_count() or 1))
+    )
     weighted_mean_ms = (
         pool.weighted_mean_time_ms if pool is not None else weighted_mean_time_ms(profiles)
     )
@@ -1586,6 +1642,8 @@ def run_load_sweep(
         "single_rate_mode": single_rate,
         "repeats": repeats,
         "cpu_cores": cpu_cores,
+        "control_plane_cpus": harness.format_cpu_set(control_plane_cpus),
+        "workload_cpus": harness.format_cpu_set(workload_cpus),
         "weighted_mean_time_ms": weighted_mean_ms,
         "weighted_mean_duration_ms": weighted_mean_ms,
         "actual_mean_time_ms": actual_mean_ms,
@@ -1618,6 +1676,12 @@ def run_load_sweep(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    control_plane_cpus, workload_cpus = harness.resolve_cpu_partition(
+        args.control_plane_cpus,
+        args.reserve_control_plane_cpus,
+    )
+    args.control_plane_cpu_list = control_plane_cpus
+    args.workload_cpu_list = workload_cpus if control_plane_cpus else None
     if args.warmup_duration_s < 0:
         raise SystemExit("--warmup-duration-s must be non-negative")
     if args.run_duration_s <= args.warmup_duration_s:

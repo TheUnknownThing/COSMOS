@@ -38,6 +38,7 @@ fn main() {
 
 fn run() -> AppResult<()> {
     let args = parse_args(env::args().skip(1))?;
+    maybe_enter_sched_ext()?;
     let target = Duration::from_millis(args.duration_ms);
     match args.workload.as_str() {
         "cpu_burst" => run_cpu_burst(target),
@@ -92,6 +93,22 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> AppResult<Args> {
 
 fn print_usage() {
     eprintln!("Usage: cosmos-benchmark-workload --workload <name> [--duration-ms <ms>]");
+}
+
+fn maybe_enter_sched_ext() -> AppResult<()> {
+    if env::var_os("COSMOS_BENCH_SCHED_EXT").is_none() {
+        return Ok(());
+    }
+
+    let param = SchedParam { sched_priority: 0 };
+    let rc = unsafe { sched_setscheduler(0, SCHED_EXT, &param) };
+    if rc != 0 {
+        return Err(format!(
+            "sched_setscheduler(SCHED_EXT) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 fn execute_calibrated_wall_time<F>(target: Duration, mut unit: F) -> AppResult<()>
@@ -591,8 +608,15 @@ struct Timespec {
     tv_nsec: i64,
 }
 
+#[repr(C)]
+struct SchedParam {
+    sched_priority: i32,
+}
+
 const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
+const SCHED_EXT: i32 = 7;
 
 unsafe extern "C" {
     fn clock_gettime(clk_id: i32, tp: *mut Timespec) -> i32;
+    fn sched_setscheduler(pid: i32, policy: i32, param: *const SchedParam) -> i32;
 }

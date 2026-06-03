@@ -56,11 +56,10 @@ latency-aware behavior.
 | `--slo-target-us` | 10000 | Target invocation SLO (us) |
 | `--cold-start-boost-us` | 20000 | Extra boost for cold-start tasks (us) |
 | `--invocation-comm` | — | Comma-separated comm patterns for invocation workers |
-| `--disable-pools` | false | Disable CPU pool partitioning |
 | `--disable-builtin-idle` | false | Disable direct idle-CPU dispatch |
 | `--disable-deadline-scoring` | false | Use vtime scoring only |
-| `--tail-guard-threshold-us` | — | Slack threshold for tail guard promotion |
-| `--latency-pool-pct` | 50 | % of CPUs in latency pool |
+| `--short-task-threshold-us` | `--slice-us` | Runtime threshold for short-task preemption |
+| `--disable-short-preemption` | false | Disable preempt kicks for short latency-sensitive tasks |
 | `--sfs-threshold-window` | 100 | Arrival samples per SFS threshold update |
 | `--sfs-min-credit-us` | 6000 | Minimum SFS short-job credit (us) |
 | `--sfs-queue-delay-factor` | 3 | SFS demotion factor relative to threshold |
@@ -77,8 +76,8 @@ Seven synthetic workloads via `cosmos-benchmark-workload`:
 `cpu_burst`, `sleep_short`, `io_mixed`, `memory_heavy`, `network_heavy`,
 `compression_mixed`, `graph_bfs`.
 
-Six configs: `cfs-default`, `cosmos-heuristic`, `cosmos-metadata`,
-`cosmos-pooled`, `cosmos-full`, `sfs`.
+Five configs: `cfs-default`, `cosmos-heuristic`, `cosmos-metadata`,
+`cosmos-full`, `sfs`.
 
 ```sh
 # Build everything

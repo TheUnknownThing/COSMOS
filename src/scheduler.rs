@@ -63,6 +63,7 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
                     dec.slice_ns,
                     dec.vtime,
                     dec.enq_flags,
+                    dec.dispatch_flags,
                     dec.enq_cnt,
                 );
             }
@@ -117,13 +118,10 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             nr_heuristic_classified: policy.nr_heuristic_classified,
             nr_metadata_refreshed: 0,
             nr_has_invocation_enqueues: bpf.nr_has_invocation_enqueues,
-            nr_pool_latency: policy.nr_pool_latency,
-            nr_pool_batch: policy.nr_pool_batch,
-            nr_tail_guard_dispatches: policy.nr_tail_guard_dispatches,
+            nr_short_preemptions: policy.nr_short_preemptions,
+            nr_preempt_dispatches: bpf.nr_preempt_dispatches,
             nr_starvation_guard_dispatches: policy.nr_starvation_guard_dispatches,
             nr_slo_violations: policy.nr_slo_violations,
-            nr_pool_migrations: policy.nr_pool_migrations,
-            nr_pool_overflow: policy.nr_pool_overflow,
         }
     }
     fn get_page_faults() -> Result<u64, io::Error> {

@@ -66,6 +66,7 @@ UEI_DEFINE(uei);
 const volatile u32 usersched_pid; /* User-space scheduler PID */
 const volatile u32 khugepaged_pid; /* khugepaged PID */
 u64 usersched_last_run_at; /* Timestamp of the last user-space scheduler execution */
+static s32 usersched_cpu = -1; /* Last CPU where the user-space scheduler ran */
 static u64 nr_cpu_ids; /* Maximum possible CPU number */
 
 /*
@@ -98,6 +99,24 @@ volatile u64 nr_running, nr_online_cpus;
 /* Dispatch statistics */
 volatile u64 nr_user_dispatches, nr_kernel_dispatches,
 	     nr_cancel_dispatches, nr_bounce_dispatches;
+volatile u64 nr_preempt_dispatches;
+
+struct preempt_cpu_guard {
+	u64 pending;
+	u64 last_kick_at;
+};
+
+/*
+ * Per-CPU preempt kick guard. A preempt kick clears the current SCX task's
+ * slice and forces a scheduling cycle; don't issue another preempt kick to the
+ * same CPU before that CPU has actually entered dispatch again.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, MAX_CPUS);
+	__type(key, u32);
+	__type(value, struct preempt_cpu_guard);
+} preempt_cpu_guards SEC(".maps");
 
 /* Failure statistics */
 volatile u64 nr_failed_dispatches, nr_sched_congested;
@@ -532,6 +551,44 @@ static void kick_task_cpu(const struct task_struct *p, s32 cpu)
 	scx_bpf_kick_cpu(cpu, SCX_KICK_IDLE);
 }
 
+static bool can_force_preempt_cpu(const struct task_struct *p, s32 cpu)
+{
+	struct preempt_cpu_guard *guard;
+	u64 now;
+	u32 cpu_idx;
+
+	if (cpu < 0 || cpu >= MAX_CPUS)
+		return false;
+	cpu_idx = (u32)cpu;
+	guard = bpf_map_lookup_elem(&preempt_cpu_guards, &cpu_idx);
+	if (!guard)
+		return false;
+
+	if (!bpf_cpumask_test_cpu(cpu, p->cpus_ptr))
+		return false;
+
+	/* If there is idle capacity, let idle dispatch pick up the task. */
+	if (nr_running < nr_online_cpus)
+		return false;
+
+	/* Don't preempt the scheduler/control-plane CPU. */
+	if (cpu == usersched_cpu)
+		return false;
+
+	/* Don't stack preempt kicks before this CPU has dispatched again. */
+	if (guard->pending)
+		return false;
+
+	now = scx_bpf_now();
+	if (guard->last_kick_at &&
+	    time_delta(now, guard->last_kick_at) < slice_ns)
+		return false;
+
+	guard->pending = 1;
+	guard->last_kick_at = now;
+	return true;
+}
+
 /*
  * Dispatch a task to a target per-CPU DSQ, waking up the corresponding CPU, if
  * needed.
@@ -541,12 +598,44 @@ static void dispatch_task(const struct dispatched_task_ctx *task)
 	struct task_ctx *tctx;
 	struct task_struct *p;
 	s32 prev_cpu, cpu = task->cpu;
+	bool preempt = task->dispatch_flags & RL_DISPATCH_PREEMPT;
+	bool force_preempt = task->dispatch_flags & RL_DISPATCH_FORCE_PREEMPT;
 
 	/* Ignore entry if the task doesn't exist anymore */
 	p = bpf_task_from_pid(task->pid);
 	if (!p)
 		return;
 	prev_cpu = scx_bpf_task_cpu(p);
+
+	if (preempt) {
+		s32 kick_cpu = task->cpu == RL_CPU_ANY ? prev_cpu : task->cpu;
+
+		scx_bpf_dsq_insert_vtime(p, SHARED_DSQ,
+					 task->slice_ns, task->vtime, task->flags);
+
+		/*
+		 * Keep the same stale-enqueue cancellation guard as normal
+		 * dispatches. A task may dequeue and enqueue again while the
+		 * userspace scheduler is still holding an older dispatch
+		 * decision.
+		 */
+		tctx = try_lookup_task_ctx(p);
+		if (!tctx || tctx->enq_cnt > task->enq_cnt) {
+			scx_bpf_dispatch_cancel();
+			__sync_fetch_and_add(&nr_cancel_dispatches, 1);
+			goto out_release;
+		}
+
+		if (!bpf_cpumask_test_cpu(kick_cpu, p->cpus_ptr))
+			kick_cpu = prev_cpu;
+		__sync_fetch_and_add(&nr_preempt_dispatches, 1);
+		if (force_preempt && can_force_preempt_cpu(p, kick_cpu)) {
+			scx_bpf_kick_cpu(kick_cpu, SCX_KICK_PREEMPT);
+		} else {
+			scx_bpf_kick_cpu(kick_cpu, SCX_KICK_IDLE);
+		}
+		goto out_release;
+	}
 
 	/*
 	 * Dispatch task to the shared DSQ if the user-space scheduler
@@ -945,6 +1034,14 @@ static long handle_dispatched_task(struct bpf_dynptr *dynptr, void *context)
  */
 void BPF_STRUCT_OPS(rustland_dispatch, s32 cpu, struct task_struct *prev)
 {
+	if (cpu >= 0 && cpu < MAX_CPUS) {
+		struct preempt_cpu_guard *guard;
+		u32 cpu_idx = (u32)cpu;
+		guard = bpf_map_lookup_elem(&preempt_cpu_guards, &cpu_idx);
+		if (guard)
+			guard->pending = 0;
+	}
+
 	/*
 	 * Consume all tasks from the @dispatched list and immediately
 	 * dispatch them on the target CPU decided by the user-space
@@ -1012,6 +1109,7 @@ void BPF_STRUCT_OPS(rustland_running, struct task_struct *p)
 
 	if (is_usersched_task(p)) {
 		usersched_last_run_at = scx_bpf_now();
+		usersched_cpu = cpu;
 		return;
 	}
 

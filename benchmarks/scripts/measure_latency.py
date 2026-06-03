@@ -38,14 +38,11 @@ SCHEDULER_TOTAL_FIELDS = (
     "nr_metadata_classified",
     "nr_metadata_refreshed",
     "nr_has_invocation_enqueues",
-    "nr_pool_batch",
-    "nr_pool_latency",
-    "nr_pool_migrations",
-    "nr_pool_overflow",
+    "nr_preempt_dispatches",
     "nr_sched_congested",
+    "nr_short_preemptions",
     "nr_slo_boosted",
     "nr_slo_violations",
-    "nr_tail_guard_dispatches",
     "nr_user_dispatches",
 )
 

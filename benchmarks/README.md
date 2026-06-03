@@ -126,12 +126,11 @@ sudo cosmos-bench-profiler standalone \
 
 `burst_benchmark.py` is the single dispatcher. It routes by config:
 
-| config | runner | scheduler | metadata | pools | needs root |
+| config | runner | scheduler | metadata | short preemption | needs root |
 |---|---|---|---|---|---|
 | `cfs-default` | `run_baseline.py` | CFS | no | no | no |
 | `cosmos-heuristic` | `run_cosmos.py` | COSMOS | no | no | yes |
 | `cosmos-metadata` | `run_cosmos.py` | COSMOS | yes | no | yes |
-| `cosmos-pooled` | `run_cosmos.py` | COSMOS | yes | yes | yes |
 | `cosmos-full` | `run_cosmos.py` | COSMOS | yes | yes | yes |
 | `sfs` | `run_cosmos.py` | SFS-inspired | yes | no | yes |
 
@@ -148,7 +147,7 @@ Options:
 
 ```
 --config           required, one of: cfs-default | cosmos-heuristic |
-                   cosmos-metadata | cosmos-pooled | cosmos-full | sfs
+                   cosmos-metadata | cosmos-full | sfs
 --workload         required, one of: cpu_burst | sleep_short | io_mixed |
                    memory_heavy | network_heavy | compression_mixed | graph_bfs
 --concurrency      parallel invocations (default 1)

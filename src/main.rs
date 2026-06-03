@@ -115,6 +115,10 @@ struct Opts {
     #[clap(short = 'p', long, action = clap::ArgAction::SetTrue)]
     partial: bool,
 
+    /// In partial mode, keep the userspace scheduler thread on CFS.
+    #[clap(long, action = clap::ArgAction::SetTrue)]
+    partial_usersched_cfs: bool,
+
     /// Exit debug dump buffer length. 0 indicates default.
     #[clap(long, default_value = "0")]
     exit_dump_len: u32,
@@ -122,18 +126,6 @@ struct Opts {
     /// Enable verbose output, including libbpf details.
     #[clap(short = 'v', long, action = clap::ArgAction::SetTrue)]
     verbose: bool,
-
-    /// Percentage of CPUs to assign to the latency pool.
-    #[clap(long, default_value = "50")]
-    latency_pool_pct: u32,
-
-    /// Number of CPUs to reserve for the tail guard pool (0 = disabled).
-    #[clap(long, default_value = "0")]
-    tail_guard_cpus: u32,
-
-    /// Pool rebalance interval in milliseconds.
-    #[clap(long, default_value = "500")]
-    pool_rebalance_ms: u64,
 
     /// Arrival samples per SFS threshold update.
     #[clap(long, default_value = "100")]
@@ -147,10 +139,6 @@ struct Opts {
     #[clap(long, default_value = "3")]
     sfs_queue_delay_factor: u64,
 
-    /// Keep every task on the legacy shared DSQ path and disable pool rebalancing.
-    #[clap(long, action = clap::ArgAction::SetTrue)]
-    disable_pools: bool,
-
     /// Disable direct idle-CPU dispatch so user space can refresh late metadata before dispatch.
     #[clap(long, action = clap::ArgAction::SetTrue)]
     disable_builtin_idle: bool,
@@ -159,9 +147,13 @@ struct Opts {
     #[clap(long, action = clap::ArgAction::SetTrue)]
     disable_deadline_scoring: bool,
 
-    /// Slack threshold in microseconds below which tasks are promoted to tail guard.
+    /// Runtime threshold in microseconds for short-task preemption (defaults to --slice-us).
     #[clap(long)]
-    tail_guard_threshold_us: Option<u64>,
+    short_task_threshold_us: Option<u64>,
+
+    /// Disable preempt kicks for short latency-sensitive tasks.
+    #[clap(long, action = clap::ArgAction::SetTrue)]
+    disable_short_preemption: bool,
 
     /// Runnable age / vtime lead threshold before forcing watchdog-safe dispatch. 0 disables.
     #[clap(long, default_value = "2000000")]
@@ -200,12 +192,10 @@ pub struct CosmosOpts {
     pub cold_start_boost_us: u64,
     pub invocation_comm: Vec<String>,
     pub percpu_local: bool,
-    pub tail_guard_threshold_us: Option<u64>,
     pub starvation_guard_threshold_us: u64,
-    pub disable_pools: bool,
     pub disable_deadline_scoring: bool,
-    pub latency_pool_pct: u32,
-    pub pool_rebalance_ms: u64,
+    pub short_task_threshold_us: u64,
+    pub disable_short_preemption: bool,
 }
 
 impl From<&Opts> for CosmosOpts {
@@ -217,12 +207,10 @@ impl From<&Opts> for CosmosOpts {
             cold_start_boost_us: opts.cold_start_boost_us,
             invocation_comm: opts.invocation_comm.clone(),
             percpu_local: opts.percpu_local,
-            tail_guard_threshold_us: opts.tail_guard_threshold_us,
             starvation_guard_threshold_us: opts.starvation_guard_threshold_us,
-            disable_pools: opts.disable_pools,
             disable_deadline_scoring: opts.disable_deadline_scoring,
-            latency_pool_pct: opts.latency_pool_pct,
-            pool_rebalance_ms: opts.pool_rebalance_ms,
+            short_task_threshold_us: opts.short_task_threshold_us.unwrap_or(opts.slice_us),
+            disable_short_preemption: opts.disable_short_preemption,
         }
     }
 }
@@ -273,13 +261,6 @@ impl SchedulingPolicy for RuntimePolicy {
         match self {
             Self::Cosmos(policy) => policy.tick(registry, now_ns),
             Self::Sfs(policy) => policy.tick(registry, now_ns),
-        }
-    }
-
-    fn init(&mut self, nr_cpus: usize, tail_guard_cpus: u32) {
-        match self {
-            Self::Cosmos(policy) => policy.init(nr_cpus, tail_guard_cpus),
-            Self::Sfs(policy) => policy.init(nr_cpus, tail_guard_cpus),
         }
     }
 
@@ -345,11 +326,12 @@ fn main() -> Result<()> {
     loop {
         let stats_server = StatsServer::new(stats::server_data()).launch()?;
 
-        let mut bpf = BpfScheduler::init(
+        let bpf = BpfScheduler::init(
             &mut open_object,
             opts.libbpf.clone().into_bpf_open_opts(),
             opts.exit_dump_len,
             opts.partial,
+            opts.partial_usersched_cfs,
             opts.verbose,
             !opts.disable_builtin_idle,
             opts.numa_local,
@@ -358,9 +340,6 @@ fn main() -> Result<()> {
             "cosmos",
         )?;
 
-        let nr_cpus = *bpf.nr_online_cpus_mut() as usize;
-        let auto_disable_small = nr_cpus <= 4;
-
         info!(
             "{} version {} - scx_rustland_core {}",
             SCHEDULER_NAME,
@@ -368,26 +347,10 @@ fn main() -> Result<()> {
             scx_rustland_core::VERSION
         );
 
-        if auto_disable_small {
-            info!(
-                "Auto-disabling pools on {}-CPU host to avoid partitioning limited CPU capacity",
-                nr_cpus
-            );
-        }
-
-        let mut policy = match opts.policy {
-            PolicyKind::Cosmos => {
-                let mut policy = CosmosPolicy::new(&cosmos_opts);
-                if auto_disable_small {
-                    policy.pools_enabled = false;
-                    policy.deadline_scoring_enabled = false;
-                }
-                RuntimePolicy::Cosmos(policy)
-            }
+        let policy = match opts.policy {
+            PolicyKind::Cosmos => RuntimePolicy::Cosmos(CosmosPolicy::new(&cosmos_opts)),
             PolicyKind::Sfs => RuntimePolicy::Sfs(SfsPolicy::new(&sfs_opts)),
         };
-
-        policy.init(nr_cpus, opts.tail_guard_cpus);
 
         let adapter = ScxAdapter::new(bpf)?;
 

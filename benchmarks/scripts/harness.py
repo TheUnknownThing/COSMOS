@@ -42,6 +42,107 @@ GATE_SCRIPT = 'IFS= read -r _ <&"$COSMOS_START_FD"; exec "$@"'
 STOP_SCRIPT = 'kill -STOP $$; exec "$@"'
 
 
+def available_cpus() -> list[int]:
+    try:
+        return sorted(os.sched_getaffinity(0))
+    except AttributeError:
+        return list(range(os.cpu_count() or 1))
+
+
+def parse_cpu_set(spec: str | None) -> list[int]:
+    if spec is None or spec.strip() == "":
+        return []
+    cpus: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_s, end_s = part.split("-", 1)
+            start = int(start_s)
+            end = int(end_s)
+            if end < start:
+                raise ValueError(f"invalid CPU range: {part}")
+            cpus.update(range(start, end + 1))
+        else:
+            cpus.add(int(part))
+    if any(cpu < 0 for cpu in cpus):
+        raise ValueError(f"CPU set contains a negative CPU: {spec}")
+    return sorted(cpus)
+
+
+def format_cpu_set(cpus: Iterable[int] | None) -> str | None:
+    ordered = sorted(dict.fromkeys(cpus or []))
+    if not ordered:
+        return None
+
+    ranges: list[str] = []
+    start = prev = ordered[0]
+    for cpu in ordered[1:]:
+        if cpu == prev + 1:
+            prev = cpu
+            continue
+        ranges.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = cpu
+    ranges.append(str(start) if start == prev else f"{start}-{prev}")
+    return ",".join(ranges)
+
+
+def resolve_cpu_partition(
+    control_plane_cpu_spec: str | None,
+    reserve_control_plane_cpus: int,
+) -> tuple[list[int], list[int]]:
+    if reserve_control_plane_cpus < 0:
+        raise ValueError("--reserve-control-plane-cpus must be non-negative")
+
+    allowed = available_cpus()
+    allowed_set = set(allowed)
+    control = parse_cpu_set(control_plane_cpu_spec)
+    if control and reserve_control_plane_cpus:
+        raise ValueError(
+            "use either --control-plane-cpus or --reserve-control-plane-cpus, not both"
+        )
+    if control:
+        unknown = sorted(set(control) - allowed_set)
+        if unknown:
+            raise ValueError(f"control-plane CPUs are outside allowed affinity: {unknown}")
+    elif reserve_control_plane_cpus:
+        if reserve_control_plane_cpus >= len(allowed):
+            raise ValueError("cannot reserve all available CPUs for control-plane work")
+        control = allowed[-reserve_control_plane_cpus:]
+
+    control_set = set(control)
+    workload = [cpu for cpu in allowed if cpu not in control_set]
+    if control and not workload:
+        raise ValueError("control-plane CPU reservation leaves no workload CPUs")
+    return control, workload
+
+
+def with_cpu_affinity(
+    command: list[str],
+    cpus: Iterable[int] | None,
+) -> list[str]:
+    cpu_set = format_cpu_set(cpus)
+    if cpu_set is None:
+        return command
+    if command and command[0] == str(TIME_BIN):
+        time_prefix = command[:3]
+        payload = command[3:]
+        return [*time_prefix, "taskset", "-c", cpu_set, *payload]
+    return ["taskset", "-c", cpu_set, *command]
+
+
+def workload_env(
+    sched_ext: bool,
+    base: dict[str, str] | None = None,
+) -> dict[str, str] | None:
+    if not sched_ext:
+        return base
+    env = dict(base) if base is not None else os.environ.copy()
+    env["COSMOS_BENCH_SCHED_EXT"] = "1"
+    return env
+
+
 @dataclass(frozen=True)
 class WorkloadSpec:
     name: str
@@ -453,7 +554,6 @@ def ensure_release_build() -> None:
     sources = [
         REPO_ROOT / "src" / "main.rs",
         REPO_ROOT / "src" / "bpf.rs",
-        REPO_ROOT / "src" / "policy" / "cosmos_pool.rs",
         REPO_ROOT / "src" / "policy" / "cosmos.rs",
         REPO_ROOT / "src" / "policy" / "sfs.rs",
         REPO_ROOT / "src" / "policy" / "mod.rs",
@@ -523,6 +623,8 @@ def run_workload_invocation(
     use_metadata: bool,
     config: str,
     metadata_bridge_port: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     spec = InvocationSpec(
         invocation_id=invocation_id,
@@ -536,6 +638,8 @@ def run_workload_invocation(
         spec,
         use_metadata,
         metadata_bridge_port,
+        workload_cpus=workload_cpus,
+        workload_sched_ext=workload_sched_ext,
     )
 
 
@@ -544,14 +648,19 @@ def run_invocation_spec(
     spec: InvocationSpec,
     use_metadata: bool,
     metadata_bridge_port: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     stderr_path = output_json.with_suffix(".stderr")
-    command = workload_command(spec.workload, spec.actual_duration_ms)
+    command = with_cpu_affinity(
+        workload_command(spec.workload, spec.actual_duration_ms),
+        workload_cpus,
+    )
     workload = workload_spec(spec.workload)
     launch_start_ns = time.monotonic_ns()
     start_ns = launch_start_ns
     metadata_ready_ns = None
-    env = None
+    env = workload_env(workload_sched_ext)
     process: subprocess.Popen[bytes] | None = None
     metadata_tgid = None
     metadata_tgids: list[int] = []
@@ -560,7 +669,7 @@ def run_invocation_spec(
     if use_metadata:
         if metadata_bridge_port is None:
             raise RuntimeError("metadata invocations require a running event bridge")
-        env = os.environ.copy()
+        env = workload_env(workload_sched_ext, os.environ.copy())
         command = stopped_workload_command(command)
 
     try:
@@ -651,6 +760,8 @@ def stage_metadata_bridge_invocation(
     invocation_id: int,
     config: str,
     metadata_bridge_port: int,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> StagedInvocation:
     spec = InvocationSpec(
         invocation_id=invocation_id,
@@ -659,17 +770,28 @@ def stage_metadata_bridge_invocation(
         deadline_us=deadline_us,
         config=config,
     )
-    return stage_invocation_spec(output_json, spec, metadata_bridge_port)
+    return stage_invocation_spec(
+        output_json,
+        spec,
+        metadata_bridge_port,
+        workload_cpus=workload_cpus,
+        workload_sched_ext=workload_sched_ext,
+    )
 
 
 def stage_invocation_spec(
     output_json: Path,
     spec: InvocationSpec,
     metadata_bridge_port: int,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> StagedInvocation:
     stderr_path = output_json.with_suffix(".stderr")
     command = stopped_workload_command(
-        workload_command(spec.workload, spec.actual_duration_ms)
+        with_cpu_affinity(
+            workload_command(spec.workload, spec.actual_duration_ms),
+            workload_cpus,
+        )
     )
     workload = workload_spec(spec.workload)
     launch_start_ns = time.monotonic_ns()
@@ -678,7 +800,7 @@ def stage_invocation_spec(
     try:
         process = subprocess.Popen(
             command,
-            env=os.environ.copy(),
+            env=workload_env(workload_sched_ext, os.environ.copy()),
             stdout=subprocess.DEVNULL,
             stderr=stderr_file,
         )
@@ -782,6 +904,8 @@ def run_metadata_bridge_invocations(
     deadline_us: int,
     config: str,
     metadata_bridge_port: int,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     staged_invocations: list[StagedInvocation] = []
     try:
@@ -796,6 +920,8 @@ def run_metadata_bridge_invocations(
                     invocation_id,
                     config,
                     metadata_bridge_port,
+                    workload_cpus,
+                    workload_sched_ext,
                 )
                 for invocation_id in range(1, concurrency + 1)
             ]
@@ -845,6 +971,8 @@ def run_mixed_metadata_bridge_invocations(
     deadline_us: int,
     config: str,
     metadata_bridge_port: int,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     total = sum(count for _, count in mix_specs)
     staged_invocations: list[StagedInvocation] = []
@@ -866,6 +994,8 @@ def run_mixed_metadata_bridge_invocations(
                             inv_id,
                             config,
                             metadata_bridge_port,
+                            workload_cpus,
+                            workload_sched_ext,
                         )
                     )
                     inv_id += 1
@@ -904,6 +1034,8 @@ def run_mixed_direct_invocations(
     use_metadata: bool,
     config: str,
     metadata_bridge_port: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     total = sum(count for _, count in mix_specs)
     failures = 0
@@ -925,6 +1057,8 @@ def run_mixed_direct_invocations(
                         use_metadata,
                         config,
                         metadata_bridge_port,
+                        workload_cpus,
+                        workload_sched_ext,
                     )
                 )
                 inv_id += 1
@@ -1023,6 +1157,8 @@ def run_invocations(
     use_metadata: bool,
     config: str,
     metadata_bridge_port: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     run_dir.joinpath("invocations").mkdir(parents=True, exist_ok=True)
     ensure_benchmark_workload_build()
@@ -1034,11 +1170,24 @@ def run_invocations(
         mix_specs = parse_mix_spec(workload)
         if use_metadata and metadata_bridge_port is not None:
             failures = run_mixed_metadata_bridge_invocations(
-                run_dir, mix_specs, deadline_us, config, metadata_bridge_port
+                run_dir,
+                mix_specs,
+                deadline_us,
+                config,
+                metadata_bridge_port,
+                workload_cpus,
+                workload_sched_ext,
             )
         else:
             failures = run_mixed_direct_invocations(
-                run_dir, mix_specs, deadline_us, use_metadata, config, metadata_bridge_port
+                run_dir,
+                mix_specs,
+                deadline_us,
+                use_metadata,
+                config,
+                metadata_bridge_port,
+                workload_cpus,
+                workload_sched_ext,
             )
         write_client_latency_csv(run_dir)
         return failures
@@ -1052,6 +1201,8 @@ def run_invocations(
             deadline_us,
             config,
             metadata_bridge_port,
+            workload_cpus,
+            workload_sched_ext,
         )
         write_client_latency_csv(run_dir)
         return failures
@@ -1069,6 +1220,8 @@ def run_invocations(
                 use_metadata,
                 config,
                 metadata_bridge_port,
+                workload_cpus,
+                workload_sched_ext,
             )
             for invocation_id in range(1, concurrency + 1)
         ]
@@ -1084,6 +1237,8 @@ def run_invocation_specs(
     invocations: list[InvocationSpec],
     use_metadata: bool,
     metadata_bridge_port: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     run_dir.joinpath("invocations").mkdir(parents=True, exist_ok=True)
     ensure_benchmark_workload_build()
@@ -1103,6 +1258,8 @@ def run_invocation_specs(
                         run_dir / "invocations" / f"{spec.invocation_id}.json",
                         spec,
                         metadata_bridge_port,
+                        workload_cpus,
+                        workload_sched_ext,
                     )
                     for spec in invocations
                 ]
@@ -1143,6 +1300,8 @@ def run_invocation_specs(
                     spec,
                     use_metadata,
                     metadata_bridge_port,
+                    workload_cpus=workload_cpus,
+                    workload_sched_ext=workload_sched_ext,
                 )
                 for spec in invocations
             ]
@@ -1195,9 +1354,11 @@ def remove_stale_unix_socket(socket_path: Path) -> None:
 
 
 def start_scheduler_stats_capture(
-    output_path: Path, socket_path: Path
+    output_path: Path,
+    socket_path: Path,
+    control_plane_cpus: Iterable[int] | None = None,
 ) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
+    command = with_cpu_affinity(
         [
             "python3",
             str(SCRIPT_DIR / "measure_latency.py"),
@@ -1209,6 +1370,10 @@ def start_scheduler_stats_capture(
             "--interval-ms",
             "100",
         ],
+        control_plane_cpus,
+    )
+    return subprocess.Popen(
+        command,
         cwd=REPO_ROOT,
     )
 
@@ -1229,15 +1394,23 @@ def wait_for_scheduler_stats_sample(
         time.sleep(0.02)
 
 
-def start_event_bridge(log_path: Path, port: int) -> subprocess.Popen[bytes]:
+def start_event_bridge(
+    log_path: Path,
+    port: int,
+    control_plane_cpus: Iterable[int] | None = None,
+) -> subprocess.Popen[bytes]:
     ensure_event_bridge_build()
     with log_path.open("w", encoding="utf-8") as log_file:
-        return subprocess.Popen(
+        command = with_cpu_affinity(
             [
                 str(REPO_ROOT / "target" / "release" / "cosmos-event-bridge"),
                 "--port",
                 str(port),
             ],
+            control_plane_cpus,
+        )
+        return subprocess.Popen(
+            command,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             cwd=REPO_ROOT,

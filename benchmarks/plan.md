@@ -37,19 +37,15 @@ See `profiler/README.md`.
 
 ## Configs
 
-| config              | scheduler | metadata | pools | deadline scoring | tail guard |
-|---------------------|-----------|----------|-------|------------------|------------|
-| `cfs-default`       | CFS       | no       | no    | no               | no         |
-| `cosmos-heuristic`  | COSMOS    | no       | no    | no               | no         |
-| `cosmos-metadata`   | COSMOS    | yes      | no    | no               | no         |
-| `cosmos-pooled`     | COSMOS    | yes      | yes   | no               | no         |
-| `cosmos-full`       | COSMOS    | yes      | yes   | yes              | opt-in     |
+| config              | scheduler | metadata | deadline scoring | short preemption |
+|---------------------|-----------|----------|------------------|------------------|
+| `cfs-default`       | CFS       | no       | no               | no               |
+| `cosmos-heuristic`  | COSMOS    | no       | no               | no               |
+| `cosmos-metadata`   | COSMOS    | yes      | no               | no               |
+| `cosmos-full`       | COSMOS    | yes      | yes              | yes              |
 
 `cosmos-heuristic` relies on the scheduler's built-in heuristic classification.
-`cosmos-full` enables metadata, pools, and deadline scoring. Tail guard is
-available through scheduler flags but is not reserved by default; keeping an
-idle tail-guard lane for standard-only local benchmark runs distorted fair-load
-memory results.
+`cosmos-full` enables metadata, deadline scoring, and short-task preemption.
 
 ## Workloads
 
@@ -118,7 +114,7 @@ CPU demand comes from `/usr/bin/time` when available, falling back to
 For scheduler evaluation, the key comparison metrics are:
 - Client-side p99 latency and SLO hit rate
 - Per-invocation CPU time (from `/usr/bin/time`)
-- Scheduler counters: SLO violations, dispatch failures, boosts, pool migrations
+- Scheduler counters: SLO violations, dispatch failures, boosts, preemptions
 - Load ratio and fairness class
 
 ## Build system note
