@@ -75,7 +75,6 @@ def main(argv: list[str] | None = None) -> int:
     elif args.config in {
         "cosmos-heuristic",
         "cosmos-metadata",
-        "cosmos-pooled",
         "cosmos-full",
         "cosmos-slack-only",
         "cosmos-slack+xres",

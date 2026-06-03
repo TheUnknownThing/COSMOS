@@ -56,12 +56,11 @@ latency-aware behavior.
 | `--slo-target-us` | 10000 | Target invocation SLO (us) |
 | `--cold-start-boost-us` | 20000 | Extra boost for cold-start tasks (us) |
 | `--invocation-comm` | — | Comma-separated comm patterns for invocation workers |
-| `--disable-pools` | false | Disable CPU pool partitioning |
 | `--disable-builtin-idle` | false | Disable direct idle-CPU dispatch |
 | `--disable-deadline-scoring` | false | Use vtime scoring only |
-| `--tail-guard-threshold-us` | — | Slack threshold for tail guard promotion |
 | `--profile-catalog` | — | Static JSON profile catalog loaded once at startup |
-| `--latency-pool-pct` | 50 | % of CPUs in latency pool |
+| `--short-task-threshold-us` | `--slice-us` | Runtime threshold for short-task preemption |
+| `--disable-short-preemption` | false | Disable preempt kicks for short latency-sensitive tasks |
 | `--sfs-threshold-window` | 100 | Arrival samples per SFS threshold update |
 | `--sfs-min-credit-us` | 6000 | Minimum SFS short-job credit (us) |
 | `--sfs-queue-delay-factor` | 3 | SFS demotion factor relative to threshold |
@@ -86,8 +85,8 @@ resource allocations from the invocation registry.
 
 Active benchmark tooling lives under two explicit paths:
 
-- `benchmarks/azure_trace/` builds Azure-derived replay plans and replays them
-  against OpenWhisk actions.
+- `benchmarks/azure_trace/` keeps Azure Functions 2019 CPU top-functions
+  configs and pool artifacts for local CPU replay.
 - `benchmarks/local_harness/` runs local CFS, COSMOS, and SFS-style scheduler
   experiments with the same workload kernels.
 
@@ -96,7 +95,7 @@ The local harness supports these synthetic workload shapes via
 `memory_heavy`, `network_heavy`, `compression_mixed`, `graph_bfs`.
 
 Supported local configs: `cfs-default`, `cosmos-heuristic`,
-`cosmos-metadata`, `cosmos-pooled`, `cosmos-full`, `sfs`.
+`cosmos-metadata`, `cosmos-full`, `sfs`.
 
 Mixed co-scheduling scenarios are first-class in the local harness through
 `--mix`, with per-SLO-class summaries for p50/p95/p99 latency, SLO violations,
@@ -135,26 +134,24 @@ benchmark cgroup root so child cgroups expose the `cpu`, `io`, `memory`,
 sudo benchmarks/scripts/prepare_cosmos_cgroup_root.sh
 ```
 
-Build an Azure replay plan:
+Build an Azure CPU top-functions config:
 
 ```sh
-python3 benchmarks/azure_trace/build_azure_trace_benchmark.py \
-    --trace-2021 benchmarks/third_party/AzurePublicDataset/data/AzureFunctionsInvocationTraceForTwoWeeksJan2021.rar \
-    --window-ms 5400000 \
-    --scale 45 \
-    --output-dir /tmp/cosmos-azure-90m
+cargo run --release -p cosmos-offline --bin generate_top_functions_config -- \
+    --dataset-dir benchmarks/third_party/AzurePublicDataset/data/azurefunctions-dataset2019 \
+    --output benchmarks/azure_trace/results/top20_p75.json \
+    --top-functions 20 \
+    --expected-time-percentile p75
 ```
 
-Replay it through OpenWhisk:
+Replay the CPU top-functions workload locally:
 
 ```sh
-python3 benchmarks/azure_trace/run_openwhisk_azure_replay.py \
-    --replay /tmp/cosmos-azure-90m/replay.json \
-    --action-map cpu_burst=ow_cpu_burst \
-    --action-map pipeline=ow_pipeline \
-    --action-map memory_heavy=ow_memory_heavy \
-    --action-map io_mixed=ow_io_mixed \
-    --action-map network_heavy=ow_network_heavy
+python3 benchmarks/scripts/replay_top_functions.py \
+    --config-json benchmarks/azure_trace/top20_mixed_p75.json \
+    --config cosmos-full \
+    --run-duration-s 30 \
+    --warmup-duration-s 5
 ```
 
 ### OpenWhisk Testbed Setup
@@ -180,7 +177,8 @@ defaults so 768 MB and 2048 MB actions can run. The default script settings are
 `OPENWHISK_ACTION_MEMORY_MAX=2048m`, `OPENWHISK_ACTION_MEMORY_STD=256m`, and
 `OPENWHISK_INVOKER_USER_MEMORY=4096m`.
 
-Deploy the synthetic and SeBS-mapped OpenWhisk actions used by Azure replay:
+Deploy the synthetic and SeBS-mapped OpenWhisk actions used by compatibility
+experiments:
 
 ```sh
 cd /opt/COSMOS
@@ -217,13 +215,9 @@ SeBS-mapped action map:
 --action-map 504.dna-visualisation=sebs_dna_visualisation
 ```
 
-The OpenWhisk actions above are COSMOS compatibility actions for the Azure
-replay interface. The Azure-to-SeBS classified generator currently emits the
-eight validated IDs `010.sleep`, `110.dynamic-html`, `120.uploader`,
-`210.thumbnailer`, `220.video-processing`, `311.compression`,
-`411.image-recognition`, and `503.graph-bfs`. The remaining SeBS IDs are
-deployed as action aliases so custom replay plans can target them. These replay
-actions are intentionally separate from the full upstream SeBS benchmarks below.
+The OpenWhisk actions above are COSMOS compatibility actions for external
+replay experiments. They are intentionally separate from the full upstream SeBS
+benchmarks below.
 
 For full upstream SeBS behavior on OpenWhisk, prepare the SeBS virtualenv and
 self-hosted storage services separately:
@@ -307,10 +301,7 @@ Additional validation performed on `amd006`:
 - all seven local workload kernels under `cfs-default`
 - all seven local workload kernels under `cosmos-full`
 - bounded local replay under CFS and COSMOS
-- Azure classified synthetic replay through OpenWhisk, all five synthetic action
-  targets, `failures=0`
-- Azure classified SeBS replay through OpenWhisk, all eight SeBS-mapped action
-  targets, `failures=0`
+- Azure CPU top-functions local replay under CFS and COSMOS
 - upstream SeBS OpenWhisk E2E validation for all 15 workload types, including
   MinIO-backed, ScyllaDB-backed, model/data-backed, network, and high-memory
   workloads
@@ -350,7 +341,7 @@ COSMOS eliminated two-thirds of SLO violations while cutting mean latency 14%.
 ├── intf.h             # Shared BPF/user-space structs
 ├── cosmos-event-bridge/  # OpenWhisk/local events → scheduler metadata TCP
 ├── benchmarks/
-│   ├── azure_trace/      # Azure trace builder + OpenWhisk replay driver
+│   ├── azure_trace/      # Azure CPU top-functions configs and artifacts
 │   ├── local_harness/    # CFS/COSMOS/SFS local benchmark harness
 │   ├── scripts/          # testbed cgroup/OpenWhisk setup scripts
 │   ├── workloads/runner/ # Rust workload binary (7 synthetic workloads)

@@ -18,12 +18,8 @@ def cosmos_config(config: str, deadline_us: int, duration_ms: int) -> tuple[list
             [
                 "--slo-target-us",
                 str(slo_target_us),
-                "--disable-pools",
                 "--disable-deadline-scoring",
-                "--tail-guard-cpus",
-                "0",
-                "--tail-guard-threshold-us",
-                "0",
+                "--disable-short-preemption",
             ],
             "heuristic-fallback",
             False,
@@ -33,34 +29,16 @@ def cosmos_config(config: str, deadline_us: int, duration_ms: int) -> tuple[list
             [
                 "--slo-target-us",
                 str(slo_target_us),
-                "--disable-pools",
                 "--disable-deadline-scoring",
-                "--tail-guard-cpus",
-                "0",
-                "--tail-guard-threshold-us",
-                "0",
+                "--disable-short-preemption",
             ],
             "metadata-only",
-            True,
-        )
-    if config == "cosmos-pooled":
-        return (
-            [
-                "--slo-target-us",
-                str(slo_target_us),
-                "--disable-deadline-scoring",
-                "--tail-guard-cpus",
-                "0",
-                "--tail-guard-threshold-us",
-                "0",
-            ],
-            "metadata-with-pools",
             True,
         )
     if config == "cosmos-full":
         return (
             ["--slo-target-us", str(slo_target_us)],
-            "metadata-full",
+            "metadata-deadline-preempt",
             True,
         )
     if config == "cosmos-slack-only":
@@ -130,7 +108,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[
             "cosmos-heuristic",
             "cosmos-metadata",
-            "cosmos-pooled",
             "cosmos-full",
             "cosmos-slack-only",
             "cosmos-slack+xres",

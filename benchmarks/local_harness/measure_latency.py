@@ -38,14 +38,11 @@ SCHEDULER_TOTAL_FIELDS = (
     "nr_metadata_classified",
     "nr_metadata_refreshed",
     "nr_has_invocation_enqueues",
-    "nr_pool_batch",
-    "nr_pool_latency",
-    "nr_pool_migrations",
-    "nr_pool_overflow",
+    "nr_preempt_dispatches",
     "nr_sched_congested",
+    "nr_short_preemptions",
     "nr_slo_boosted",
     "nr_slo_violations",
-    "nr_tail_guard_dispatches",
     "nr_user_dispatches",
 )
 
@@ -394,7 +391,7 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
 
     per_slo_class: dict[int, dict[str, Any]] = {}
     for row in rows:
-        if "slo_class" not in row:
+        if row.get("slo_class") in (None, ""):
             continue
         slo = int(row["slo_class"])
         if slo not in per_slo_class:

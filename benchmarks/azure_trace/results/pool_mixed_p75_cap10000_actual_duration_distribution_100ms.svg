@@ -1,0 +1,258 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820">
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#20242a}.muted{fill:#667085;font-size:13px}.label{font-size:14px}.title{font-size:22px;font-weight:700}.axis{stroke:#98a2b3;stroke-width:1}.grid{stroke:#e4e7ec;stroke-width:1}.bar1{fill:#2563eb}.bar2{fill:#c2410c}.tick{font-size:12px;fill:#667085}</style>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text class="title" x="92" y="34">Actual duration distribution: pool_mixed_p75_cap10000.json</text>
+<text class="muted" x="92" y="56">100ms buckets, 100,000 invocations, total CPU time 68,109,977 ms, mean 681.10 ms. Linear y-axis.</text>
+<text class="label" x="92" y="52">Frequency by actual duration bucket</text>
+<text class="tick" x="18" y="210.0" transform="rotate(-90 18 210.0)">frequency count</text>
+<line class="grid" x1="92" y1="350.0" x2="1372" y2="350.0"/>
+<text class="tick" x="82" y="354.0" text-anchor="end">0</text>
+<line class="grid" x1="92" y1="280.0" x2="1372" y2="280.0"/>
+<text class="tick" x="82" y="284.0" text-anchor="end">10,784</text>
+<line class="grid" x1="92" y1="210.0" x2="1372" y2="210.0"/>
+<text class="tick" x="82" y="214.0" text-anchor="end">21,568</text>
+<line class="grid" x1="92" y1="140.0" x2="1372" y2="140.0"/>
+<text class="tick" x="82" y="144.0" text-anchor="end">32,352</text>
+<line class="grid" x1="92" y1="70.0" x2="1372" y2="70.0"/>
+<text class="tick" x="82" y="74.0" text-anchor="end">43,136</text>
+<line class="axis" x1="92" y1="350" x2="1372" y2="350"/>
+<line class="axis" x1="92" y1="70" x2="92" y2="350"/>
+<rect class="bar1" x="92.00" y="70.00" width="11.80" height="280.00"><title>1-100ms: 43,136 (43.136%)</title></rect>
+<rect class="bar1" x="104.80" y="308.46" width="11.80" height="41.54"><title>101-200ms: 6,399 (6.399%)</title></rect>
+<rect class="bar1" x="117.60" y="250.35" width="11.80" height="99.65"><title>201-300ms: 15,352 (15.352%)</title></rect>
+<rect class="bar1" x="130.40" y="317.51" width="11.80" height="32.49"><title>301-400ms: 5,005 (5.005%)</title></rect>
+<rect class="bar1" x="143.20" y="341.64" width="11.80" height="8.36"><title>401-500ms: 1,288 (1.288%)</title></rect>
+<rect class="bar1" x="156.00" y="346.33" width="11.80" height="3.67"><title>501-600ms: 566 (0.566%)</title></rect>
+<rect class="bar1" x="168.80" y="346.51" width="11.80" height="3.49"><title>601-700ms: 538 (0.538%)</title></rect>
+<rect class="bar1" x="181.60" y="346.30" width="11.80" height="3.70"><title>701-800ms: 570 (0.570%)</title></rect>
+<rect class="bar1" x="194.40" y="346.19" width="11.80" height="3.81"><title>801-900ms: 587 (0.587%)</title></rect>
+<rect class="bar1" x="207.20" y="346.30" width="11.80" height="3.70"><title>901-1000ms: 570 (0.570%)</title></rect>
+<rect class="bar1" x="220.00" y="346.21" width="11.80" height="3.79"><title>1001-1100ms: 584 (0.584%)</title></rect>
+<rect class="bar1" x="232.80" y="346.51" width="11.80" height="3.49"><title>1101-1200ms: 538 (0.538%)</title></rect>
+<rect class="bar1" x="245.60" y="346.25" width="11.80" height="3.75"><title>1201-1300ms: 577 (0.577%)</title></rect>
+<rect class="bar1" x="258.40" y="341.61" width="11.80" height="8.39"><title>1301-1400ms: 1,293 (1.293%)</title></rect>
+<rect class="bar1" x="271.20" y="320.73" width="11.80" height="29.27"><title>1401-1500ms: 4,510 (4.510%)</title></rect>
+<rect class="bar1" x="284.00" y="322.30" width="11.80" height="27.70"><title>1501-1600ms: 4,267 (4.267%)</title></rect>
+<rect class="bar1" x="296.80" y="322.15" width="11.80" height="27.85"><title>1601-1700ms: 4,290 (4.290%)</title></rect>
+<rect class="bar1" x="309.60" y="340.42" width="11.80" height="9.58"><title>1701-1800ms: 1,476 (1.476%)</title></rect>
+<rect class="bar1" x="322.40" y="342.92" width="11.80" height="7.08"><title>1801-1900ms: 1,091 (1.091%)</title></rect>
+<rect class="bar1" x="335.20" y="342.90" width="11.80" height="7.10"><title>1901-2000ms: 1,094 (1.094%)</title></rect>
+<rect class="bar1" x="348.00" y="342.22" width="11.80" height="7.78"><title>2001-2100ms: 1,199 (1.199%)</title></rect>
+<rect class="bar1" x="360.80" y="342.59" width="11.80" height="7.41"><title>2101-2200ms: 1,141 (1.141%)</title></rect>
+<rect class="bar1" x="373.60" y="342.89" width="11.80" height="7.11"><title>2201-2300ms: 1,096 (1.096%)</title></rect>
+<rect class="bar1" x="386.40" y="345.67" width="11.80" height="4.33"><title>2301-2400ms: 667 (0.667%)</title></rect>
+<rect class="bar1" x="399.20" y="349.20" width="11.80" height="0.80"><title>2401-2500ms: 22 (0.022%)</title></rect>
+<rect class="bar1" x="412.00" y="349.20" width="11.80" height="0.80"><title>2501-2600ms: 17 (0.017%)</title></rect>
+<rect class="bar1" x="424.80" y="349.20" width="11.80" height="0.80"><title>2601-2700ms: 19 (0.019%)</title></rect>
+<rect class="bar1" x="437.60" y="349.20" width="11.80" height="0.80"><title>2701-2800ms: 18 (0.018%)</title></rect>
+<rect class="bar1" x="450.40" y="349.20" width="11.80" height="0.80"><title>2801-2900ms: 21 (0.021%)</title></rect>
+<rect class="bar1" x="463.20" y="349.20" width="11.80" height="0.80"><title>2901-3000ms: 13 (0.013%)</title></rect>
+<rect class="bar1" x="476.00" y="349.20" width="11.80" height="0.80"><title>3001-3100ms: 18 (0.018%)</title></rect>
+<rect class="bar1" x="488.80" y="349.20" width="11.80" height="0.80"><title>3101-3200ms: 19 (0.019%)</title></rect>
+<rect class="bar1" x="501.60" y="349.20" width="11.80" height="0.80"><title>3201-3300ms: 19 (0.019%)</title></rect>
+<rect class="bar1" x="514.40" y="349.20" width="11.80" height="0.80"><title>3301-3400ms: 17 (0.017%)</title></rect>
+<rect class="bar1" x="527.20" y="349.20" width="11.80" height="0.80"><title>3401-3500ms: 22 (0.022%)</title></rect>
+<rect class="bar1" x="540.00" y="349.20" width="11.80" height="0.80"><title>3501-3600ms: 10 (0.010%)</title></rect>
+<rect class="bar1" x="552.80" y="349.20" width="11.80" height="0.80"><title>3601-3700ms: 24 (0.024%)</title></rect>
+<rect class="bar1" x="565.60" y="349.20" width="11.80" height="0.80"><title>3701-3800ms: 16 (0.016%)</title></rect>
+<rect class="bar1" x="578.40" y="349.20" width="11.80" height="0.80"><title>3801-3900ms: 19 (0.019%)</title></rect>
+<rect class="bar1" x="591.20" y="349.20" width="11.80" height="0.80"><title>3901-4000ms: 21 (0.021%)</title></rect>
+<rect class="bar1" x="604.00" y="349.20" width="11.80" height="0.80"><title>4001-4100ms: 14 (0.014%)</title></rect>
+<rect class="bar1" x="616.80" y="349.20" width="11.80" height="0.80"><title>4101-4200ms: 11 (0.011%)</title></rect>
+<rect class="bar1" x="629.60" y="349.20" width="11.80" height="0.80"><title>4201-4300ms: 13 (0.013%)</title></rect>
+<rect class="bar1" x="642.40" y="349.20" width="11.80" height="0.80"><title>4301-4400ms: 14 (0.014%)</title></rect>
+<rect class="bar1" x="655.20" y="349.20" width="11.80" height="0.80"><title>4401-4500ms: 9 (0.009%)</title></rect>
+<rect class="bar1" x="668.00" y="349.20" width="11.80" height="0.80"><title>4501-4600ms: 10 (0.010%)</title></rect>
+<rect class="bar1" x="680.80" y="349.20" width="11.80" height="0.80"><title>4601-4700ms: 11 (0.011%)</title></rect>
+<rect class="bar1" x="693.60" y="349.20" width="11.80" height="0.80"><title>4701-4800ms: 11 (0.011%)</title></rect>
+<rect class="bar1" x="706.40" y="349.20" width="11.80" height="0.80"><title>4801-4900ms: 9 (0.009%)</title></rect>
+<rect class="bar1" x="719.20" y="349.20" width="11.80" height="0.80"><title>4901-5000ms: 13 (0.013%)</title></rect>
+<rect class="bar1" x="732.00" y="349.20" width="11.80" height="0.80"><title>5001-5100ms: 15 (0.015%)</title></rect>
+<rect class="bar1" x="744.80" y="349.20" width="11.80" height="0.80"><title>5101-5200ms: 15 (0.015%)</title></rect>
+<rect class="bar1" x="757.60" y="349.20" width="11.80" height="0.80"><title>5201-5300ms: 12 (0.012%)</title></rect>
+<rect class="bar1" x="770.40" y="349.20" width="11.80" height="0.80"><title>5301-5400ms: 12 (0.012%)</title></rect>
+<rect class="bar1" x="783.20" y="349.20" width="11.80" height="0.80"><title>5401-5500ms: 13 (0.013%)</title></rect>
+<rect class="bar1" x="796.00" y="349.20" width="11.80" height="0.80"><title>5501-5600ms: 8 (0.008%)</title></rect>
+<rect class="bar1" x="808.80" y="349.20" width="11.80" height="0.80"><title>5601-5700ms: 8 (0.008%)</title></rect>
+<rect class="bar1" x="821.60" y="349.20" width="11.80" height="0.80"><title>5701-5800ms: 14 (0.014%)</title></rect>
+<rect class="bar1" x="834.40" y="349.20" width="11.80" height="0.80"><title>5801-5900ms: 15 (0.015%)</title></rect>
+<rect class="bar1" x="847.20" y="349.20" width="11.80" height="0.80"><title>5901-6000ms: 8 (0.008%)</title></rect>
+<rect class="bar1" x="860.00" y="349.20" width="11.80" height="0.80"><title>6001-6100ms: 9 (0.009%)</title></rect>
+<rect class="bar1" x="872.80" y="349.20" width="11.80" height="0.80"><title>6101-6200ms: 20 (0.020%)</title></rect>
+<rect class="bar1" x="885.60" y="349.20" width="11.80" height="0.80"><title>6201-6300ms: 12 (0.012%)</title></rect>
+<rect class="bar1" x="898.40" y="349.20" width="11.80" height="0.80"><title>6301-6400ms: 12 (0.012%)</title></rect>
+<rect class="bar1" x="911.20" y="349.20" width="11.80" height="0.80"><title>6401-6500ms: 11 (0.011%)</title></rect>
+<rect class="bar1" x="924.00" y="349.20" width="11.80" height="0.80"><title>6501-6600ms: 6 (0.006%)</title></rect>
+<rect class="bar1" x="936.80" y="349.20" width="11.80" height="0.80"><title>6601-6700ms: 12 (0.012%)</title></rect>
+<rect class="bar1" x="949.60" y="349.20" width="11.80" height="0.80"><title>6701-6800ms: 8 (0.008%)</title></rect>
+<rect class="bar1" x="962.40" y="349.20" width="11.80" height="0.80"><title>6801-6900ms: 19 (0.019%)</title></rect>
+<rect class="bar1" x="975.20" y="349.20" width="11.80" height="0.80"><title>6901-7000ms: 14 (0.014%)</title></rect>
+<rect class="bar1" x="988.00" y="349.20" width="11.80" height="0.80"><title>7001-7100ms: 7 (0.007%)</title></rect>
+<rect class="bar1" x="1000.80" y="349.20" width="11.80" height="0.80"><title>7101-7200ms: 12 (0.012%)</title></rect>
+<rect class="bar1" x="1013.60" y="349.20" width="11.80" height="0.80"><title>7201-7300ms: 10 (0.010%)</title></rect>
+<rect class="bar1" x="1026.40" y="349.20" width="11.80" height="0.80"><title>7301-7400ms: 9 (0.009%)</title></rect>
+<rect class="bar1" x="1039.20" y="349.20" width="11.80" height="0.80"><title>7401-7500ms: 7 (0.007%)</title></rect>
+<rect class="bar1" x="1052.00" y="349.20" width="11.80" height="0.80"><title>7501-7600ms: 4 (0.004%)</title></rect>
+<rect class="bar1" x="1064.80" y="349.20" width="11.80" height="0.80"><title>7601-7700ms: 11 (0.011%)</title></rect>
+<rect class="bar1" x="1077.60" y="349.20" width="11.80" height="0.80"><title>7701-7800ms: 11 (0.011%)</title></rect>
+<rect class="bar1" x="1090.40" y="349.20" width="11.80" height="0.80"><title>7801-7900ms: 14 (0.014%)</title></rect>
+<rect class="bar1" x="1103.20" y="349.20" width="11.80" height="0.80"><title>7901-8000ms: 11 (0.011%)</title></rect>
+<rect class="bar1" x="1116.00" y="349.20" width="11.80" height="0.80"><title>8001-8100ms: 7 (0.007%)</title></rect>
+<rect class="bar1" x="1128.80" y="349.20" width="11.80" height="0.80"><title>8101-8200ms: 12 (0.012%)</title></rect>
+<rect class="bar1" x="1141.60" y="349.20" width="11.80" height="0.80"><title>8201-8300ms: 10 (0.010%)</title></rect>
+<rect class="bar1" x="1154.40" y="349.20" width="11.80" height="0.80"><title>8301-8400ms: 15 (0.015%)</title></rect>
+<rect class="bar1" x="1167.20" y="349.20" width="11.80" height="0.80"><title>8401-8500ms: 16 (0.016%)</title></rect>
+<rect class="bar1" x="1180.00" y="349.20" width="11.80" height="0.80"><title>8501-8600ms: 11 (0.011%)</title></rect>
+<rect class="bar1" x="1192.80" y="349.20" width="11.80" height="0.80"><title>8601-8700ms: 17 (0.017%)</title></rect>
+<rect class="bar1" x="1205.60" y="349.20" width="11.80" height="0.80"><title>8701-8800ms: 19 (0.019%)</title></rect>
+<rect class="bar1" x="1218.40" y="349.20" width="11.80" height="0.80"><title>8801-8900ms: 8 (0.008%)</title></rect>
+<rect class="bar1" x="1231.20" y="349.20" width="11.80" height="0.80"><title>8901-9000ms: 13 (0.013%)</title></rect>
+<rect class="bar1" x="1244.00" y="349.20" width="11.80" height="0.80"><title>9001-9100ms: 18 (0.018%)</title></rect>
+<rect class="bar1" x="1256.80" y="349.20" width="11.80" height="0.80"><title>9101-9200ms: 18 (0.018%)</title></rect>
+<rect class="bar1" x="1269.60" y="349.20" width="11.80" height="0.80"><title>9201-9300ms: 6 (0.006%)</title></rect>
+<rect class="bar1" x="1282.40" y="349.20" width="11.80" height="0.80"><title>9301-9400ms: 9 (0.009%)</title></rect>
+<rect class="bar1" x="1295.20" y="349.20" width="11.80" height="0.80"><title>9401-9500ms: 11 (0.011%)</title></rect>
+<rect class="bar1" x="1308.00" y="349.20" width="11.80" height="0.80"><title>9501-9600ms: 15 (0.015%)</title></rect>
+<rect class="bar1" x="1320.80" y="349.20" width="11.80" height="0.80"><title>9601-9700ms: 13 (0.013%)</title></rect>
+<rect class="bar1" x="1333.60" y="349.20" width="11.80" height="0.80"><title>9701-9800ms: 18 (0.018%)</title></rect>
+<rect class="bar1" x="1346.40" y="349.20" width="11.80" height="0.80"><title>9801-9900ms: 15 (0.015%)</title></rect>
+<rect class="bar1" x="1359.20" y="342.43" width="11.80" height="7.57"><title>9901-10000ms: 1,166 (1.166%)</title></rect>
+<text class="label" x="92" y="424">Total CPU time by actual duration bucket</text>
+<text class="tick" x="18" y="582.0" transform="rotate(-90 18 582.0)">total CPU time (ms)</text>
+<line class="grid" x1="92" y1="722.0" x2="1372" y2="722.0"/>
+<text class="tick" x="82" y="726.0" text-anchor="end">0</text>
+<line class="grid" x1="92" y1="652.0" x2="1372" y2="652.0"/>
+<text class="tick" x="82" y="656.0" text-anchor="end">2,914,893</text>
+<line class="grid" x1="92" y1="582.0" x2="1372" y2="582.0"/>
+<text class="tick" x="82" y="586.0" text-anchor="end">5,829,786</text>
+<line class="grid" x1="92" y1="512.0" x2="1372" y2="512.0"/>
+<text class="tick" x="82" y="516.0" text-anchor="end">8,744,678</text>
+<line class="grid" x1="92" y1="442.0" x2="1372" y2="442.0"/>
+<text class="tick" x="82" y="446.0" text-anchor="end">11,659,571</text>
+<line class="axis" x1="92" y1="722" x2="1372" y2="722"/>
+<line class="axis" x1="92" y1="442" x2="92" y2="722"/>
+<rect class="bar2" x="92.00" y="687.34" width="11.80" height="34.66"><title>1-100ms: 1,443,418 (2.119%)</title></rect>
+<rect class="bar2" x="104.80" y="698.68" width="11.80" height="23.32"><title>101-200ms: 970,872 (1.425%)</title></rect>
+<rect class="bar2" x="117.60" y="623.64" width="11.80" height="98.36"><title>201-300ms: 4,095,871 (6.014%)</title></rect>
+<rect class="bar2" x="130.40" y="679.95" width="11.80" height="42.05"><title>301-400ms: 1,751,043 (2.571%)</title></rect>
+<rect class="bar2" x="143.20" y="708.57" width="11.80" height="13.43"><title>401-500ms: 559,076 (0.821%)</title></rect>
+<rect class="bar2" x="156.00" y="714.54" width="11.80" height="7.46"><title>501-600ms: 310,604 (0.456%)</title></rect>
+<rect class="bar2" x="168.80" y="713.62" width="11.80" height="8.38"><title>601-700ms: 348,957 (0.512%)</title></rect>
+<rect class="bar2" x="181.60" y="711.71" width="11.80" height="10.29"><title>701-800ms: 428,318 (0.629%)</title></rect>
+<rect class="bar2" x="194.40" y="710.05" width="11.80" height="11.95"><title>801-900ms: 497,707 (0.731%)</title></rect>
+<rect class="bar2" x="207.20" y="709.00" width="11.80" height="13.00"><title>901-1000ms: 541,423 (0.795%)</title></rect>
+<rect class="bar2" x="220.00" y="707.26" width="11.80" height="14.74"><title>1001-1100ms: 613,909 (0.901%)</title></rect>
+<rect class="bar2" x="232.80" y="707.15" width="11.80" height="14.85"><title>1101-1200ms: 618,509 (0.908%)</title></rect>
+<rect class="bar2" x="245.60" y="704.66" width="11.80" height="17.34"><title>1201-1300ms: 722,246 (1.060%)</title></rect>
+<rect class="bar2" x="258.40" y="679.36" width="11.80" height="42.64"><title>1301-1400ms: 1,775,469 (2.607%)</title></rect>
+<rect class="bar2" x="271.20" y="564.94" width="11.80" height="157.06"><title>1401-1500ms: 6,540,380 (9.603%)</title></rect>
+<rect class="bar2" x="284.00" y="563.29" width="11.80" height="158.71"><title>1501-1600ms: 6,609,062 (9.704%)</title></rect>
+<rect class="bar2" x="296.80" y="552.00" width="11.80" height="170.00"><title>1601-1700ms: 7,079,231 (10.394%)</title></rect>
+<rect class="bar2" x="309.60" y="660.30" width="11.80" height="61.70"><title>1701-1800ms: 2,569,340 (3.772%)</title></rect>
+<rect class="bar2" x="322.40" y="673.49" width="11.80" height="48.51"><title>1801-1900ms: 2,019,948 (2.966%)</title></rect>
+<rect class="bar2" x="335.20" y="670.76" width="11.80" height="51.24"><title>1901-2000ms: 2,133,815 (3.133%)</title></rect>
+<rect class="bar2" x="348.00" y="662.94" width="11.80" height="59.06"><title>2001-2100ms: 2,459,194 (3.611%)</title></rect>
+<rect class="bar2" x="360.80" y="663.07" width="11.80" height="58.93"><title>2101-2200ms: 2,453,999 (3.603%)</title></rect>
+<rect class="bar2" x="373.60" y="662.81" width="11.80" height="59.19"><title>2201-2300ms: 2,464,663 (3.619%)</title></rect>
+<rect class="bar2" x="386.40" y="684.77" width="11.80" height="37.23"><title>2301-2400ms: 1,550,307 (2.276%)</title></rect>
+<rect class="bar2" x="399.20" y="720.71" width="11.80" height="1.29"><title>2401-2500ms: 53,860 (0.079%)</title></rect>
+<rect class="bar2" x="412.00" y="720.96" width="11.80" height="1.04"><title>2501-2600ms: 43,482 (0.064%)</title></rect>
+<rect class="bar2" x="424.80" y="720.79" width="11.80" height="1.21"><title>2601-2700ms: 50,216 (0.074%)</title></rect>
+<rect class="bar2" x="437.60" y="720.81" width="11.80" height="1.19"><title>2701-2800ms: 49,539 (0.073%)</title></rect>
+<rect class="bar2" x="450.40" y="720.56" width="11.80" height="1.44"><title>2801-2900ms: 59,994 (0.088%)</title></rect>
+<rect class="bar2" x="463.20" y="721.08" width="11.80" height="0.92"><title>2901-3000ms: 38,165 (0.056%)</title></rect>
+<rect class="bar2" x="476.00" y="720.69" width="11.80" height="1.31"><title>3001-3100ms: 54,618 (0.080%)</title></rect>
+<rect class="bar2" x="488.80" y="720.57" width="11.80" height="1.43"><title>3101-3200ms: 59,644 (0.088%)</title></rect>
+<rect class="bar2" x="501.60" y="720.51" width="11.80" height="1.49"><title>3201-3300ms: 61,862 (0.091%)</title></rect>
+<rect class="bar2" x="514.40" y="720.63" width="11.80" height="1.37"><title>3301-3400ms: 56,975 (0.084%)</title></rect>
+<rect class="bar2" x="527.20" y="720.17" width="11.80" height="1.83"><title>3401-3500ms: 76,184 (0.112%)</title></rect>
+<rect class="bar2" x="540.00" y="721.15" width="11.80" height="0.85"><title>3501-3600ms: 35,526 (0.052%)</title></rect>
+<rect class="bar2" x="552.80" y="719.90" width="11.80" height="2.10"><title>3601-3700ms: 87,591 (0.129%)</title></rect>
+<rect class="bar2" x="565.60" y="720.56" width="11.80" height="1.44"><title>3701-3800ms: 60,070 (0.088%)</title></rect>
+<rect class="bar2" x="578.40" y="720.24" width="11.80" height="1.76"><title>3801-3900ms: 73,164 (0.107%)</title></rect>
+<rect class="bar2" x="591.20" y="720.01" width="11.80" height="1.99"><title>3901-4000ms: 83,039 (0.122%)</title></rect>
+<rect class="bar2" x="604.00" y="720.64" width="11.80" height="1.36"><title>4001-4100ms: 56,772 (0.083%)</title></rect>
+<rect class="bar2" x="616.80" y="720.91" width="11.80" height="1.09"><title>4101-4200ms: 45,460 (0.067%)</title></rect>
+<rect class="bar2" x="629.60" y="720.67" width="11.80" height="1.33"><title>4201-4300ms: 55,438 (0.081%)</title></rect>
+<rect class="bar2" x="642.40" y="720.54" width="11.80" height="1.46"><title>4301-4400ms: 60,874 (0.089%)</title></rect>
+<rect class="bar2" x="655.20" y="721.04" width="11.80" height="0.96"><title>4401-4500ms: 39,974 (0.059%)</title></rect>
+<rect class="bar2" x="668.00" y="720.91" width="11.80" height="1.09"><title>4501-4600ms: 45,523 (0.067%)</title></rect>
+<rect class="bar2" x="680.80" y="720.77" width="11.80" height="1.23"><title>4601-4700ms: 51,117 (0.075%)</title></rect>
+<rect class="bar2" x="693.60" y="720.74" width="11.80" height="1.26"><title>4701-4800ms: 52,307 (0.077%)</title></rect>
+<rect class="bar2" x="706.40" y="720.96" width="11.80" height="1.04"><title>4801-4900ms: 43,478 (0.064%)</title></rect>
+<rect class="bar2" x="719.20" y="720.45" width="11.80" height="1.55"><title>4901-5000ms: 64,476 (0.095%)</title></rect>
+<rect class="bar2" x="732.00" y="720.19" width="11.80" height="1.81"><title>5001-5100ms: 75,472 (0.111%)</title></rect>
+<rect class="bar2" x="744.80" y="720.15" width="11.80" height="1.85"><title>5101-5200ms: 77,200 (0.113%)</title></rect>
+<rect class="bar2" x="757.60" y="720.49" width="11.80" height="1.51"><title>5201-5300ms: 62,880 (0.092%)</title></rect>
+<rect class="bar2" x="770.40" y="720.46" width="11.80" height="1.54"><title>5301-5400ms: 64,176 (0.094%)</title></rect>
+<rect class="bar2" x="783.20" y="720.30" width="11.80" height="1.70"><title>5401-5500ms: 70,890 (0.104%)</title></rect>
+<rect class="bar2" x="796.00" y="720.94" width="11.80" height="1.06"><title>5501-5600ms: 44,302 (0.065%)</title></rect>
+<rect class="bar2" x="808.80" y="720.91" width="11.80" height="1.09"><title>5601-5700ms: 45,196 (0.066%)</title></rect>
+<rect class="bar2" x="821.60" y="720.06" width="11.80" height="1.94"><title>5701-5800ms: 80,596 (0.118%)</title></rect>
+<rect class="bar2" x="834.40" y="719.89" width="11.80" height="2.11"><title>5801-5900ms: 87,761 (0.129%)</title></rect>
+<rect class="bar2" x="847.20" y="720.85" width="11.80" height="1.15"><title>5901-6000ms: 47,738 (0.070%)</title></rect>
+<rect class="bar2" x="860.00" y="720.69" width="11.80" height="1.31"><title>6001-6100ms: 54,487 (0.080%)</title></rect>
+<rect class="bar2" x="872.80" y="719.04" width="11.80" height="2.96"><title>6101-6200ms: 123,207 (0.181%)</title></rect>
+<rect class="bar2" x="885.60" y="720.20" width="11.80" height="1.80"><title>6201-6300ms: 75,000 (0.110%)</title></rect>
+<rect class="bar2" x="898.40" y="720.17" width="11.80" height="1.83"><title>6301-6400ms: 76,299 (0.112%)</title></rect>
+<rect class="bar2" x="911.20" y="720.29" width="11.80" height="1.71"><title>6401-6500ms: 71,106 (0.104%)</title></rect>
+<rect class="bar2" x="924.00" y="721.06" width="11.80" height="0.94"><title>6501-6600ms: 39,129 (0.057%)</title></rect>
+<rect class="bar2" x="936.80" y="720.08" width="11.80" height="1.92"><title>6601-6700ms: 79,916 (0.117%)</title></rect>
+<rect class="bar2" x="949.60" y="720.70" width="11.80" height="1.30"><title>6701-6800ms: 53,947 (0.079%)</title></rect>
+<rect class="bar2" x="962.40" y="718.87" width="11.80" height="3.13"><title>6801-6900ms: 130,415 (0.191%)</title></rect>
+<rect class="bar2" x="975.20" y="719.67" width="11.80" height="2.33"><title>6901-7000ms: 97,187 (0.143%)</title></rect>
+<rect class="bar2" x="988.00" y="720.81" width="11.80" height="1.19"><title>7001-7100ms: 49,377 (0.072%)</title></rect>
+<rect class="bar2" x="1000.80" y="719.94" width="11.80" height="2.06"><title>7101-7200ms: 85,944 (0.126%)</title></rect>
+<rect class="bar2" x="1013.60" y="720.26" width="11.80" height="1.74"><title>7201-7300ms: 72,478 (0.106%)</title></rect>
+<rect class="bar2" x="1026.40" y="720.41" width="11.80" height="1.59"><title>7301-7400ms: 66,176 (0.097%)</title></rect>
+<rect class="bar2" x="1039.20" y="720.75" width="11.80" height="1.25"><title>7401-7500ms: 52,126 (0.077%)</title></rect>
+<rect class="bar2" x="1052.00" y="721.20" width="11.80" height="0.80"><title>7501-7600ms: 30,232 (0.044%)</title></rect>
+<rect class="bar2" x="1064.80" y="719.98" width="11.80" height="2.02"><title>7601-7700ms: 84,119 (0.124%)</title></rect>
+<rect class="bar2" x="1077.60" y="719.95" width="11.80" height="2.05"><title>7701-7800ms: 85,313 (0.125%)</title></rect>
+<rect class="bar2" x="1090.40" y="719.36" width="11.80" height="2.64"><title>7801-7900ms: 109,883 (0.161%)</title></rect>
+<rect class="bar2" x="1103.20" y="719.90" width="11.80" height="2.10"><title>7901-8000ms: 87,373 (0.128%)</title></rect>
+<rect class="bar2" x="1116.00" y="720.65" width="11.80" height="1.35"><title>8001-8100ms: 56,311 (0.083%)</title></rect>
+<rect class="bar2" x="1128.80" y="719.65" width="11.80" height="2.35"><title>8101-8200ms: 97,715 (0.143%)</title></rect>
+<rect class="bar2" x="1141.60" y="720.02" width="11.80" height="1.98"><title>8201-8300ms: 82,409 (0.121%)</title></rect>
+<rect class="bar2" x="1154.40" y="718.99" width="11.80" height="3.01"><title>8301-8400ms: 125,215 (0.184%)</title></rect>
+<rect class="bar2" x="1167.20" y="718.75" width="11.80" height="3.25"><title>8401-8500ms: 135,255 (0.199%)</title></rect>
+<rect class="bar2" x="1180.00" y="719.74" width="11.80" height="2.26"><title>8501-8600ms: 93,922 (0.138%)</title></rect>
+<rect class="bar2" x="1192.80" y="718.47" width="11.80" height="3.53"><title>8601-8700ms: 146,937 (0.216%)</title></rect>
+<rect class="bar2" x="1205.60" y="718.01" width="11.80" height="3.99"><title>8701-8800ms: 166,153 (0.244%)</title></rect>
+<rect class="bar2" x="1218.40" y="720.30" width="11.80" height="1.70"><title>8801-8900ms: 70,820 (0.104%)</title></rect>
+<rect class="bar2" x="1231.20" y="719.21" width="11.80" height="2.79"><title>8901-9000ms: 116,358 (0.171%)</title></rect>
+<rect class="bar2" x="1244.00" y="718.08" width="11.80" height="3.92"><title>9001-9100ms: 163,066 (0.239%)</title></rect>
+<rect class="bar2" x="1256.80" y="718.05" width="11.80" height="3.95"><title>9101-9200ms: 164,445 (0.241%)</title></rect>
+<rect class="bar2" x="1269.60" y="720.67" width="11.80" height="1.33"><title>9201-9300ms: 55,420 (0.081%)</title></rect>
+<rect class="bar2" x="1282.40" y="719.98" width="11.80" height="2.02"><title>9301-9400ms: 84,132 (0.124%)</title></rect>
+<rect class="bar2" x="1295.20" y="719.50" width="11.80" height="2.50"><title>9401-9500ms: 103,973 (0.153%)</title></rect>
+<rect class="bar2" x="1308.00" y="718.56" width="11.80" height="3.44"><title>9501-9600ms: 143,066 (0.210%)</title></rect>
+<rect class="bar2" x="1320.80" y="718.99" width="11.80" height="3.01"><title>9601-9700ms: 125,507 (0.184%)</title></rect>
+<rect class="bar2" x="1333.60" y="717.78" width="11.80" height="4.22"><title>9701-9800ms: 175,566 (0.258%)</title></rect>
+<rect class="bar2" x="1346.40" y="718.46" width="11.80" height="3.54"><title>9801-9900ms: 147,502 (0.217%)</title></rect>
+<rect class="bar2" x="1359.20" y="442.00" width="11.80" height="280.00"><title>9901-10000ms: 11,659,571 (17.119%)</title></rect>
+<line class="axis" x1="92.0" y1="722" x2="92.0" y2="728"/>
+<text class="tick" x="92.0" y="744" text-anchor="middle">1ms</text>
+<line class="axis" x1="207.2" y1="722" x2="207.2" y2="728"/>
+<text class="tick" x="207.2" y="744" text-anchor="middle">1s</text>
+<line class="axis" x1="335.2" y1="722" x2="335.2" y2="728"/>
+<text class="tick" x="335.2" y="744" text-anchor="middle">2s</text>
+<line class="axis" x1="463.2" y1="722" x2="463.2" y2="728"/>
+<text class="tick" x="463.2" y="744" text-anchor="middle">3s</text>
+<line class="axis" x1="591.2" y1="722" x2="591.2" y2="728"/>
+<text class="tick" x="591.2" y="744" text-anchor="middle">4s</text>
+<line class="axis" x1="719.2" y1="722" x2="719.2" y2="728"/>
+<text class="tick" x="719.2" y="744" text-anchor="middle">5s</text>
+<line class="axis" x1="847.2" y1="722" x2="847.2" y2="728"/>
+<text class="tick" x="847.2" y="744" text-anchor="middle">6s</text>
+<line class="axis" x1="975.2" y1="722" x2="975.2" y2="728"/>
+<text class="tick" x="975.2" y="744" text-anchor="middle">7s</text>
+<line class="axis" x1="1103.2" y1="722" x2="1103.2" y2="728"/>
+<text class="tick" x="1103.2" y="744" text-anchor="middle">8s</text>
+<line class="axis" x1="1231.2" y1="722" x2="1231.2" y2="728"/>
+<text class="tick" x="1231.2" y="744" text-anchor="middle">9s</text>
+<line class="axis" x1="1359.2" y1="722" x2="1359.2" y2="728"/>
+<text class="tick" x="1359.2" y="744" text-anchor="middle">10s</text>
+<text class="label" x="732.0" y="772" text-anchor="middle">actual_duration_ms bucket</text>
+<text class="muted" x="92" y="790">Bucket definition: 1-100ms, 101-200ms, ..., 9901-10000ms. Exact bucket values are in the CSV.</text>
+</svg>

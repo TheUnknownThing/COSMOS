@@ -13,7 +13,7 @@ import stat
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, TextIO
@@ -50,6 +50,107 @@ INLINE_PROFILE_HINTS = os.environ.get("COSMOS_BENCH_INLINE_PROFILE_HINTS") == "1
 BENCH_CGROUPS_ENABLED = os.environ.get("COSMOS_BENCH_CGROUPS", "1") != "0"
 
 
+def available_cpus() -> list[int]:
+    try:
+        return sorted(os.sched_getaffinity(0))
+    except AttributeError:
+        return list(range(os.cpu_count() or 1))
+
+
+def parse_cpu_set(spec: str | None) -> list[int]:
+    if spec is None or spec.strip() == "":
+        return []
+    cpus: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_s, end_s = part.split("-", 1)
+            start = int(start_s)
+            end = int(end_s)
+            if end < start:
+                raise ValueError(f"invalid CPU range: {part}")
+            cpus.update(range(start, end + 1))
+        else:
+            cpus.add(int(part))
+    if any(cpu < 0 for cpu in cpus):
+        raise ValueError(f"CPU set contains a negative CPU: {spec}")
+    return sorted(cpus)
+
+
+def format_cpu_set(cpus: Iterable[int] | None) -> str | None:
+    ordered = sorted(dict.fromkeys(cpus or []))
+    if not ordered:
+        return None
+
+    ranges: list[str] = []
+    start = prev = ordered[0]
+    for cpu in ordered[1:]:
+        if cpu == prev + 1:
+            prev = cpu
+            continue
+        ranges.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = cpu
+    ranges.append(str(start) if start == prev else f"{start}-{prev}")
+    return ",".join(ranges)
+
+
+def resolve_cpu_partition(
+    control_plane_cpu_spec: str | None,
+    reserve_control_plane_cpus: int,
+) -> tuple[list[int], list[int]]:
+    if reserve_control_plane_cpus < 0:
+        raise ValueError("--reserve-control-plane-cpus must be non-negative")
+
+    allowed = available_cpus()
+    allowed_set = set(allowed)
+    control = parse_cpu_set(control_plane_cpu_spec)
+    if control and reserve_control_plane_cpus:
+        raise ValueError(
+            "use either --control-plane-cpus or --reserve-control-plane-cpus, not both"
+        )
+    if control:
+        unknown = sorted(set(control) - allowed_set)
+        if unknown:
+            raise ValueError(f"control-plane CPUs are outside allowed affinity: {unknown}")
+    elif reserve_control_plane_cpus:
+        if reserve_control_plane_cpus >= len(allowed):
+            raise ValueError("cannot reserve all available CPUs for control-plane work")
+        control = allowed[-reserve_control_plane_cpus:]
+
+    control_set = set(control)
+    workload = [cpu for cpu in allowed if cpu not in control_set]
+    if control and not workload:
+        raise ValueError("control-plane CPU reservation leaves no workload CPUs")
+    return control, workload
+
+
+def with_cpu_affinity(
+    command: list[str],
+    cpus: Iterable[int] | None,
+) -> list[str]:
+    cpu_set = format_cpu_set(cpus)
+    if cpu_set is None:
+        return command
+    if command and command[0] == str(TIME_BIN):
+        time_prefix = command[:3]
+        payload = command[3:]
+        return [*time_prefix, "taskset", "-c", cpu_set, *payload]
+    return ["taskset", "-c", cpu_set, *command]
+
+
+def workload_env(
+    sched_ext: bool,
+    base: dict[str, str] | None = None,
+) -> dict[str, str] | None:
+    if not sched_ext:
+        return base
+    env = dict(base) if base is not None else os.environ.copy()
+    env["COSMOS_BENCH_SCHED_EXT"] = "1"
+    return env
+
+
 @dataclass(frozen=True)
 class WorkloadSpec:
     name: str
@@ -61,15 +162,25 @@ class WorkloadSpec:
     description: str
 
 
+@dataclass(frozen=True)
+class InvocationSpec:
+    invocation_id: int
+    workload: str
+    actual_duration_ms: int
+    deadline_us: int
+    config: str
+    expected_duration_ms: int | None = None
+    action_name: str | None = None
+    slo_class: int | None = None
+    record_fields: dict[str, object] = field(default_factory=dict)
+
+
 @dataclass
 class StagedInvocation:
     output_json: Path
     stderr_file: TextIO
     process: subprocess.Popen[bytes]
-    invocation_id: int
-    workload: str
-    config: str
-    deadline_us: int
+    spec: InvocationSpec
     launch_start_ns: int
     metadata_ready_ns: int
     metadata_tgid: int
@@ -240,6 +351,74 @@ def workload_command(
             *command,
         ]
     return command
+
+
+def invocation_output_payload(
+    spec: InvocationSpec,
+    *,
+    returncode: int,
+    launch_start_ns: int,
+    start_ns: int,
+    end_ns: int,
+    stderr_path: Path,
+    metadata_ready_ns: int | None,
+    metadata_tgid: int | None,
+    metadata_tgids: list[int],
+    metadata_key_visible: bool | None,
+    time_stats: dict[str, float] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "invocation_id": spec.invocation_id,
+        "status": "ok" if returncode == 0 else "failed",
+        "exit_code": returncode,
+        "launch_start_monotonic_ns": launch_start_ns,
+        "start_monotonic_ns": start_ns,
+        "end_monotonic_ns": end_ns,
+        "duration_ms": (end_ns - start_ns) / 1_000_000.0,
+        "metadata_ready_monotonic_ns": metadata_ready_ns,
+        "metadata_setup_ms": (
+            (metadata_ready_ns - launch_start_ns) / 1_000_000.0
+            if metadata_ready_ns is not None
+            else None
+        ),
+        "deadline_us": spec.deadline_us,
+        "workload": spec.workload,
+        "config": spec.config,
+        "stderr_path": str(stderr_path),
+        "metadata_tgid": metadata_tgid,
+        "metadata_tgids": metadata_tgids,
+        "metadata_key_visible": metadata_key_visible,
+        "actual_duration_ms": spec.actual_duration_ms,
+        "expected_duration_ms": spec.expected_duration_ms,
+        "action_name": spec.action_name or spec.workload,
+        "slo_class": spec.slo_class,
+    }
+    if time_stats is not None:
+        payload.update(time_stats)
+    payload.update(spec.record_fields)
+    return payload
+
+
+def parse_invocation_time_stats_file(path: Path) -> dict[str, float] | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    match = measure_latency.TIME_STATS_RE.search(text)
+    if match is None:
+        return None
+
+    real_s = float(match.group("real_s"))
+    user_s = float(match.group("user_s"))
+    sys_s = float(match.group("sys_s"))
+    return {
+        "real_ms": real_s * 1_000.0,
+        "user_ms": user_s * 1_000.0,
+        "sys_ms": sys_s * 1_000.0,
+        "cpu_ms": (user_s + sys_s) * 1_000.0,
+        "maxrss_kb": float(match.group("maxrss_kb")),
+    }
 
 
 def gated_workload_command(command: list[str]) -> list[str]:
@@ -571,7 +750,6 @@ def ensure_release_build() -> None:
         REPO_ROOT / "src" / "coordinator" / "policy.rs",
         REPO_ROOT / "src" / "coordinator" / "slack.rs",
         REPO_ROOT / "src" / "metadata.rs",
-        REPO_ROOT / "src" / "policy" / "cosmos_pool.rs",
         REPO_ROOT / "src" / "policy" / "cosmos.rs",
         REPO_ROOT / "src" / "policy" / "sfs.rs",
         REPO_ROOT / "src" / "policy" / "mod.rs",
@@ -646,14 +824,45 @@ def run_workload_invocation(
     config: str,
     metadata_bridge_port: int | None = None,
     slo_class: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
+) -> int:
+    spec = InvocationSpec(
+        invocation_id=invocation_id,
+        workload=workload,
+        actual_duration_ms=duration_ms,
+        deadline_us=deadline_us,
+        config=config,
+        slo_class=slo_class,
+    )
+    return run_invocation_spec(
+        output_json,
+        spec,
+        use_metadata,
+        metadata_bridge_port,
+        workload_cpus=workload_cpus,
+        workload_sched_ext=workload_sched_ext,
+    )
+
+
+def run_invocation_spec(
+    output_json: Path,
+    spec: InvocationSpec,
+    use_metadata: bool,
+    metadata_bridge_port: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     stderr_path = output_json.with_suffix(".stderr")
-    command = workload_command(workload, duration_ms)
-    spec = workload_spec(workload)
+    command = with_cpu_affinity(
+        workload_command(spec.workload, spec.actual_duration_ms),
+        workload_cpus,
+    )
+    workload = workload_spec(spec.workload)
     launch_start_ns = time.monotonic_ns()
     start_ns = launch_start_ns
     metadata_ready_ns = None
-    env = None
+    env = workload_env(workload_sched_ext)
     process: subprocess.Popen[bytes] | None = None
     metadata_tgid = None
     metadata_tgids: list[int] = []
@@ -662,91 +871,91 @@ def run_workload_invocation(
     if use_metadata:
         if metadata_bridge_port is None:
             raise RuntimeError("metadata invocations require a running event bridge")
-        env = os.environ.copy()
+        env = workload_env(workload_sched_ext, os.environ.copy())
         command = stopped_workload_command(command)
-    effective_slo_class = spec.default_slo_class if slo_class is None else slo_class
+    metadata_cleanup_errors: list[str] = []
 
-    with stderr_path.open("w", encoding="utf-8") as stderr_file:
-        if metadata_bridge_port is None:
-            completed = subprocess.run(
-                command,
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_file,
-                check=False,
-            )
-            returncode = completed.returncode
-        else:
-            process = subprocess.Popen(
-                command,
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_file,
-            )
-            metadata_tgid = wait_for_process_stopped(process.pid)
-            metadata_tgids = list(dict.fromkeys([process.pid, metadata_tgid]))
-            for tgid in metadata_tgids:
-                send_event_bridge_event(
-                    metadata_bridge_port,
-                    {
-                        "type": "local_start",
-                        "activation_id": f"{config}-{workload}-{invocation_id}",
-                        "tgid": tgid,
-                        "timeout_ms": max(1, deadline_us // 1_000),
-                        "estimated_duration_ms": duration_ms,
-                        "slo_class": effective_slo_class,
-                        "action_name": workload,
-                        "kind": "local-rust",
-                        "cold_start": False,
-                        **metadata_profile_fields_for_workload(workload),
-                    },
+    try:
+        with stderr_path.open("w", encoding="utf-8") as stderr_file:
+            if metadata_bridge_port is None:
+                completed = subprocess.run(
+                    command,
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_file,
+                    check=False,
                 )
-            if DEBUG_BPF_MAP:
-                metadata_key_visible = wait_for_invocation_meta_key(metadata_tgid)
-                dump_has_invocation_map(output_json.with_suffix(".bpfmap.json"))
-            metadata_ready_ns = time.monotonic_ns()
-            start_ns = metadata_ready_ns
-            os.kill(metadata_tgid, signal.SIGCONT)
-            returncode = process.wait()
-            metadata_cleanup_errors = []
-            for tgid in reversed(metadata_tgids):
-                err = try_send_event_bridge_event(
-                    metadata_bridge_port,
-                    {
-                        "type": "local_end",
-                        "activation_id": f"{config}-{workload}-{invocation_id}",
-                        "tgid": tgid,
-                    },
+                returncode = completed.returncode
+            else:
+                process = subprocess.Popen(
+                    command,
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_file,
                 )
-                if err is not None:
-                    metadata_cleanup_errors.append(err)
+                metadata_tgid = wait_for_process_stopped(process.pid)
+                metadata_tgids = list(dict.fromkeys([process.pid, metadata_tgid]))
+                for tgid in metadata_tgids:
+                    send_event_bridge_event(
+                        metadata_bridge_port,
+                        {
+                            "type": "local_start",
+                            "activation_id": f"{spec.config}-{spec.action_name or spec.workload}-{spec.invocation_id}",
+                            "tgid": tgid,
+                            "timeout_ms": max(1, spec.deadline_us // 1_000),
+                            "estimated_duration_ms": spec.expected_duration_ms
+                            if spec.expected_duration_ms is not None
+                            else spec.actual_duration_ms,
+                            "slo_class": (
+                                spec.slo_class
+                                if spec.slo_class is not None
+                                else workload.default_slo_class
+                            ),
+                            "action_name": spec.action_name or spec.workload,
+                            "kind": "local-rust",
+                            "cold_start": False,
+                            **metadata_profile_fields_for_workload(spec.workload),
+                        },
+                    )
+                if DEBUG_BPF_MAP:
+                    metadata_key_visible = wait_for_invocation_meta_key(metadata_tgid)
+                    dump_has_invocation_map(output_json.with_suffix(".bpfmap.json"))
+                metadata_ready_ns = time.monotonic_ns()
+                start_ns = metadata_ready_ns
+                os.kill(metadata_tgid, signal.SIGCONT)
+                returncode = process.wait()
+                for tgid in reversed(metadata_tgids):
+                    err = try_send_event_bridge_event(
+                        metadata_bridge_port,
+                        {
+                            "type": "local_end",
+                            "activation_id": f"{spec.config}-{spec.action_name or spec.workload}-{spec.invocation_id}",
+                            "tgid": tgid,
+                        },
+                    )
+                    if err is not None:
+                        metadata_cleanup_errors.append(err)
+    except Exception:
+        if process is not None:
+            stop_process(process, signal.SIGKILL)
+        raise
 
     end_ns = time.monotonic_ns()
-    payload = {
-        "invocation_id": invocation_id,
-        "status": "ok" if returncode == 0 else "failed",
-        "exit_code": returncode,
-        "launch_start_monotonic_ns": launch_start_ns,
-        "start_monotonic_ns": start_ns,
-        "end_monotonic_ns": end_ns,
-        "duration_ms": (end_ns - start_ns) / 1_000_000.0,
-        "metadata_ready_monotonic_ns": metadata_ready_ns,
-        "metadata_setup_ms": (
-            (metadata_ready_ns - launch_start_ns) / 1_000_000.0
-            if metadata_ready_ns is not None
-            else None
-        ),
-        "deadline_us": deadline_us,
-        "slo_class": effective_slo_class,
-        "workload": workload,
-        "config": config,
-        "stderr_path": str(stderr_path),
-        "metadata_tgid": metadata_tgid,
-        "metadata_tgids": metadata_tgids,
-        "metadata_key_visible": metadata_key_visible,
-        "cgroup_path": None,
-    }
-    if metadata_bridge_port is not None and metadata_cleanup_errors:
+    payload = invocation_output_payload(
+        spec,
+        returncode=returncode,
+        launch_start_ns=launch_start_ns,
+        start_ns=start_ns,
+        end_ns=end_ns,
+        stderr_path=stderr_path,
+        metadata_ready_ns=metadata_ready_ns,
+        metadata_tgid=metadata_tgid,
+        metadata_tgids=metadata_tgids,
+        metadata_key_visible=metadata_key_visible,
+        time_stats=parse_invocation_time_stats_file(stderr_path),
+    )
+    payload["cgroup_path"] = None
+    if metadata_cleanup_errors:
         payload["metadata_cleanup_errors"] = metadata_cleanup_errors
     output_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return returncode
@@ -762,41 +971,82 @@ def stage_metadata_bridge_invocation(
     metadata_bridge_port: int,
     slo_class: int | None = None,
     warm_hold_ms: int = 0,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
+) -> StagedInvocation:
+    spec = InvocationSpec(
+        invocation_id=invocation_id,
+        workload=workload,
+        actual_duration_ms=duration_ms,
+        deadline_us=deadline_us,
+        config=config,
+        slo_class=slo_class,
+    )
+    return stage_invocation_spec(
+        output_json,
+        spec,
+        metadata_bridge_port,
+        workload_cpus=workload_cpus,
+        workload_sched_ext=workload_sched_ext,
+        warm_hold_ms=warm_hold_ms,
+    )
+
+
+def stage_invocation_spec(
+    output_json: Path,
+    spec: InvocationSpec,
+    metadata_bridge_port: int,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
+    warm_hold_ms: int = 0,
 ) -> StagedInvocation:
     stderr_path = output_json.with_suffix(".stderr")
     command = stopped_workload_command(
-        workload_command(workload, duration_ms, warm_hold_ms)
+        with_cpu_affinity(
+            workload_command(spec.workload, spec.actual_duration_ms, warm_hold_ms),
+            workload_cpus,
+        )
     )
-    spec = workload_spec(workload)
+    workload = workload_spec(spec.workload)
     launch_start_ns = time.monotonic_ns()
     stderr_file = stderr_path.open("w", encoding="utf-8")
     process: subprocess.Popen[bytes] | None = None
-    effective_slo_class = spec.default_slo_class if slo_class is None else slo_class
+    effective_slo_class = (
+        spec.slo_class if spec.slo_class is not None else workload.default_slo_class
+    )
     try:
         process = subprocess.Popen(
             command,
-            env=os.environ.copy(),
+            env=workload_env(workload_sched_ext, os.environ.copy()),
             stdout=subprocess.DEVNULL,
             stderr=stderr_file,
         )
         metadata_tgid = wait_for_process_stopped(process.pid)
         metadata_tgids = list(dict.fromkeys([process.pid, metadata_tgid]))
-        cgroup_path = create_benchmark_cgroup(output_json, invocation_id)
+        cgroup_path = create_benchmark_cgroup(output_json, spec.invocation_id)
         assign_pids_to_cgroup(cgroup_path, metadata_tgids)
         for tgid in metadata_tgids:
             send_event_bridge_event(
                 metadata_bridge_port,
                 {
                     "type": "local_start",
-                    "activation_id": f"{config}-{workload}-{invocation_id}",
+                    "activation_id": f"{spec.config}-{spec.action_name or spec.workload}-{spec.invocation_id}",
                     "tgid": tgid,
-                    "timeout_ms": max(1, deadline_us // 1_000),
-                    "estimated_duration_ms": duration_ms,
-                    "slo_class": effective_slo_class,
-                    "action_name": workload,
+                    "timeout_ms": max(1, spec.deadline_us // 1_000),
+                    "estimated_duration_ms": (
+                        spec.expected_duration_ms
+                        if spec.expected_duration_ms is not None
+                        else spec.actual_duration_ms
+                    ),
+                    "slo_class": (
+                        spec.slo_class
+                        if spec.slo_class is not None
+                        else workload.default_slo_class
+                    ),
+                    "action_name": spec.action_name or spec.workload,
                     "kind": "local-rust",
                     "cold_start": False,
-                    **metadata_profile_fields_for_workload(workload),
+                    **metadata_profile_fields_for_workload(spec.workload),
                 },
             )
         metadata_key_visible = None
@@ -808,10 +1058,7 @@ def stage_metadata_bridge_invocation(
             output_json=output_json,
             stderr_file=stderr_file,
             process=process,
-            invocation_id=invocation_id,
-            workload=workload,
-            config=config,
-            deadline_us=deadline_us,
+            spec=spec,
             launch_start_ns=launch_start_ns,
             metadata_ready_ns=metadata_ready_ns,
             metadata_tgid=metadata_tgid,
@@ -839,7 +1086,7 @@ def complete_metadata_bridge_invocation(
             metadata_bridge_port,
             {
                 "type": "local_end",
-                "activation_id": f"{staged.config}-{staged.workload}-{staged.invocation_id}",
+                "activation_id": f"{staged.spec.config}-{staged.spec.action_name or staged.spec.workload}-{staged.spec.invocation_id}",
                 "tgid": tgid,
             },
         )
@@ -847,29 +1094,24 @@ def complete_metadata_bridge_invocation(
             metadata_cleanup_errors.append(err)
     staged.stderr_file.close()
 
-    payload = {
-        "invocation_id": staged.invocation_id,
-        "status": "ok" if returncode == 0 else "failed",
-        "exit_code": returncode,
-        "launch_start_monotonic_ns": staged.launch_start_ns,
-        "start_monotonic_ns": start_ns,
-        "end_monotonic_ns": end_ns,
-        "duration_ms": (end_ns - start_ns) / 1_000_000.0,
-        "metadata_ready_monotonic_ns": staged.metadata_ready_ns,
-        "metadata_setup_ms": (
-            staged.metadata_ready_ns - staged.launch_start_ns
-        )
-        / 1_000_000.0,
-        "deadline_us": staged.deadline_us,
-        "slo_class": staged.slo_class,
-        "workload": staged.workload,
-        "config": staged.config,
-        "stderr_path": str(staged.output_json.with_suffix(".stderr")),
-        "metadata_tgid": staged.metadata_tgid,
-        "metadata_tgids": staged.metadata_tgids,
-        "metadata_key_visible": staged.metadata_key_visible,
-        "cgroup_path": str(staged.cgroup_path) if staged.cgroup_path is not None else None,
-    }
+    payload = invocation_output_payload(
+        staged.spec,
+        returncode=returncode,
+        launch_start_ns=staged.launch_start_ns,
+        start_ns=start_ns,
+        end_ns=end_ns,
+        stderr_path=staged.output_json.with_suffix(".stderr"),
+        metadata_ready_ns=staged.metadata_ready_ns,
+        metadata_tgid=staged.metadata_tgid,
+        metadata_tgids=staged.metadata_tgids,
+        metadata_key_visible=staged.metadata_key_visible,
+        time_stats=parse_invocation_time_stats_file(
+            staged.output_json.with_suffix(".stderr")
+        ),
+    )
+    payload["cgroup_path"] = (
+        str(staged.cgroup_path) if staged.cgroup_path is not None else None
+    )
     if metadata_cleanup_errors:
         payload["metadata_cleanup_errors"] = metadata_cleanup_errors
     staged.output_json.write_text(
@@ -893,6 +1135,8 @@ def run_metadata_bridge_invocations(
     config: str,
     metadata_bridge_port: int,
     slo_class: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     staged_invocations: list[StagedInvocation] = []
     try:
@@ -907,14 +1151,16 @@ def run_metadata_bridge_invocations(
                     invocation_id,
                     config,
                     metadata_bridge_port,
-                    slo_class,
+                    slo_class=slo_class,
+                    workload_cpus=workload_cpus,
+                    workload_sched_ext=workload_sched_ext,
                 )
                 for invocation_id in range(1, concurrency + 1)
             ]
             for future in concurrent.futures.as_completed(futures):
                 staged_invocations.append(future.result())
 
-        staged_invocations.sort(key=lambda invocation: invocation.invocation_id)
+        staged_invocations.sort(key=lambda invocation: invocation.spec.invocation_id)
         start_ns = time.monotonic_ns()
         for invocation in staged_invocations:
             os.kill(invocation.metadata_tgid, signal.SIGCONT)
@@ -1110,6 +1356,8 @@ def run_mixed_metadata_bridge_invocations(
     config: str,
     metadata_bridge_port: int,
     slo_class: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     total = sum(spec.count for spec in mix_specs)
     staged_invocations: list[StagedInvocation] = []
@@ -1135,14 +1383,16 @@ def run_mixed_metadata_bridge_invocations(
                             inv_id,
                             config,
                             metadata_bridge_port,
-                            invocation_slo_class,
+                            slo_class=invocation_slo_class,
+                            workload_cpus=workload_cpus,
+                            workload_sched_ext=workload_sched_ext,
                         )
                     )
                     inv_id += 1
             for future in concurrent.futures.as_completed(futures):
                 staged_invocations.append(future.result())
 
-        staged_invocations.sort(key=lambda invocation: invocation.invocation_id)
+        staged_invocations.sort(key=lambda invocation: invocation.spec.invocation_id)
         start_ns = time.monotonic_ns()
         for invocation in staged_invocations:
             os.kill(invocation.metadata_tgid, signal.SIGCONT)
@@ -1175,6 +1425,8 @@ def run_mixed_direct_invocations(
     config: str,
     metadata_bridge_port: int | None = None,
     slo_class: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     total = sum(spec.count for spec in mix_specs)
     failures = 0
@@ -1201,6 +1453,8 @@ def run_mixed_direct_invocations(
                         config,
                         metadata_bridge_port,
                         invocation_slo_class,
+                        workload_cpus,
+                        workload_sched_ext,
                     )
                 )
                 inv_id += 1
@@ -1248,29 +1502,37 @@ def write_client_latency_csv(run_dir: Path) -> None:
         for path in sorted((run_dir / "invocations").glob("*.json"))
         if path.stem.isdigit()
     ]
+    fieldnames = [
+        "invocation_id",
+        "status",
+        "exit_code",
+        "launch_start_monotonic_ns",
+        "start_monotonic_ns",
+        "end_monotonic_ns",
+        "duration_ms",
+        "metadata_ready_monotonic_ns",
+        "metadata_setup_ms",
+        "deadline_us",
+        "workload",
+        "config",
+        "stderr_path",
+        "metadata_tgid",
+        "metadata_tgids",
+        "metadata_key_visible",
+        "actual_duration_ms",
+        "expected_duration_ms",
+        "action_name",
+        "slo_class",
+    ]
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+
     with (run_dir / "client_latency.csv").open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(
             fh,
-            fieldnames=[
-                "invocation_id",
-                "status",
-                "exit_code",
-                "launch_start_monotonic_ns",
-                "start_monotonic_ns",
-                "end_monotonic_ns",
-                "duration_ms",
-                "metadata_ready_monotonic_ns",
-                "metadata_setup_ms",
-                "deadline_us",
-                "slo_class",
-                "workload",
-                "config",
-                "stderr_path",
-                "metadata_tgid",
-                "metadata_tgids",
-                "metadata_key_visible",
-                "cgroup_path",
-            ],
+            fieldnames=fieldnames,
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -1294,6 +1556,8 @@ def run_invocations(
     config: str,
     metadata_bridge_port: int | None = None,
     slo_class: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
 ) -> int:
     run_dir.joinpath("invocations").mkdir(parents=True, exist_ok=True)
     ensure_benchmark_workload_build()
@@ -1305,7 +1569,14 @@ def run_invocations(
         mix_specs = parse_mix_spec(workload)
         if use_metadata and metadata_bridge_port is not None:
             failures = run_mixed_metadata_bridge_invocations(
-                run_dir, mix_specs, deadline_us, config, metadata_bridge_port, slo_class
+                run_dir,
+                mix_specs,
+                deadline_us,
+                config,
+                metadata_bridge_port,
+                slo_class,
+                workload_cpus,
+                workload_sched_ext,
             )
         else:
             failures = run_mixed_direct_invocations(
@@ -1316,6 +1587,8 @@ def run_invocations(
                 config,
                 metadata_bridge_port,
                 slo_class,
+                workload_cpus,
+                workload_sched_ext,
             )
         write_client_latency_csv(run_dir)
         return failures
@@ -1330,6 +1603,8 @@ def run_invocations(
             config,
             metadata_bridge_port,
             slo_class,
+            workload_cpus,
+            workload_sched_ext,
         )
         write_client_latency_csv(run_dir)
         return failures
@@ -1348,12 +1623,95 @@ def run_invocations(
                 config,
                 metadata_bridge_port,
                 slo_class,
+                workload_cpus,
+                workload_sched_ext,
             )
             for invocation_id in range(1, concurrency + 1)
         ]
         for future in concurrent.futures.as_completed(futures):
             if future.result() != 0:
                 failures += 1
+    write_client_latency_csv(run_dir)
+    return failures
+
+
+def run_invocation_specs(
+    run_dir: Path,
+    invocations: list[InvocationSpec],
+    use_metadata: bool,
+    metadata_bridge_port: int | None = None,
+    workload_cpus: Iterable[int] | None = None,
+    workload_sched_ext: bool = False,
+) -> int:
+    run_dir.joinpath("invocations").mkdir(parents=True, exist_ok=True)
+    ensure_benchmark_workload_build()
+    if use_metadata and metadata_bridge_port is None:
+        raise RuntimeError("metadata invocations require a running event bridge")
+
+    failures = 0
+    if use_metadata and metadata_bridge_port is not None:
+        staged_invocations: list[StagedInvocation] = []
+        try:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, len(invocations))
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        stage_invocation_spec,
+                        run_dir / "invocations" / f"{spec.invocation_id}.json",
+                        spec,
+                        metadata_bridge_port,
+                        workload_cpus,
+                        workload_sched_ext,
+                    )
+                    for spec in invocations
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    staged_invocations.append(future.result())
+
+            staged_invocations.sort(key=lambda invocation: invocation.spec.invocation_id)
+            start_ns = time.monotonic_ns()
+            for invocation in staged_invocations:
+                os.kill(invocation.metadata_tgid, signal.SIGCONT)
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, len(staged_invocations))
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        complete_metadata_bridge_invocation,
+                        invocation,
+                        start_ns,
+                        metadata_bridge_port,
+                    )
+                    for invocation in staged_invocations
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    if future.result() != 0:
+                        failures += 1
+        except Exception:
+            cleanup_staged_invocations(staged_invocations)
+            raise
+    else:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, len(invocations))
+        ) as executor:
+            futures = [
+                executor.submit(
+                    run_invocation_spec,
+                    run_dir / "invocations" / f"{spec.invocation_id}.json",
+                    spec,
+                    use_metadata,
+                    metadata_bridge_port,
+                    workload_cpus=workload_cpus,
+                    workload_sched_ext=workload_sched_ext,
+                )
+                for spec in invocations
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                if future.result() != 0:
+                    failures += 1
+
     write_client_latency_csv(run_dir)
     return failures
 
@@ -1388,13 +1746,22 @@ def remove_stale_unix_socket(socket_path: Path) -> None:
     except FileNotFoundError:
         return
     if stat.S_ISSOCK(mode):
-        socket_path.unlink()
+        try:
+            socket_path.unlink()
+        except PermissionError:
+            subprocess.run(
+                ["sudo", "-n", "rm", "-f", str(socket_path)],
+                check=True,
+                cwd=REPO_ROOT,
+            )
 
 
 def start_scheduler_stats_capture(
-    output_path: Path, socket_path: Path
+    output_path: Path,
+    socket_path: Path,
+    control_plane_cpus: Iterable[int] | None = None,
 ) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
+    command = with_cpu_affinity(
         [
             "python3",
             str(SCRIPT_DIR / "measure_latency.py"),
@@ -1406,6 +1773,10 @@ def start_scheduler_stats_capture(
             "--interval-ms",
             "100",
         ],
+        control_plane_cpus,
+    )
+    return subprocess.Popen(
+        command,
         cwd=REPO_ROOT,
     )
 
@@ -1426,15 +1797,23 @@ def wait_for_scheduler_stats_sample(
         time.sleep(0.02)
 
 
-def start_event_bridge(log_path: Path, port: int) -> subprocess.Popen[bytes]:
+def start_event_bridge(
+    log_path: Path,
+    port: int,
+    control_plane_cpus: Iterable[int] | None = None,
+) -> subprocess.Popen[bytes]:
     ensure_event_bridge_build()
     with log_path.open("w", encoding="utf-8") as log_file:
-        return subprocess.Popen(
+        command = with_cpu_affinity(
             [
                 str(REPO_ROOT / "target" / "release" / "cosmos-event-bridge"),
                 "--port",
                 str(port),
             ],
+            control_plane_cpus,
+        )
+        return subprocess.Popen(
+            command,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             cwd=REPO_ROOT,
@@ -1467,11 +1846,37 @@ def stop_process(
 ) -> None:
     if process is None or process.poll() is not None:
         return
-    process.send_signal(sig)
+    pids = descendant_pids(process.pid)
+    if process.pid not in pids:
+        pids.append(process.pid)
+
+    signal_name = signal.Signals(sig).name.removeprefix("SIG")
+
+    for pid in reversed(pids):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            subprocess.run(
+                ["sudo", "-n", "kill", f"-{signal_name}", str(pid)],
+                check=False,
+                cwd=REPO_ROOT,
+            )
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
+        for pid in reversed(pids):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                subprocess.run(
+                    ["sudo", "-n", "kill", "-KILL", str(pid)],
+                    check=False,
+                    cwd=REPO_ROOT,
+                )
         process.wait(timeout=5)
 
 

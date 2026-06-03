@@ -8,6 +8,8 @@
 /main.bpf.c
 /intf.h
 
+.codex/
+
 *.ignore.md
 
 # Local benchmark runtime output.

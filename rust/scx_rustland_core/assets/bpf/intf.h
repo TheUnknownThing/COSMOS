@@ -61,6 +61,8 @@ enum {
 	 * on the first CPU available.
 	 */
 	RL_CPU_ANY = 1 << 20,
+	RL_DISPATCH_PREEMPT = 1ULL << 0,
+	RL_DISPATCH_FORCE_PREEMPT = 1ULL << 1,
 };
 
 /*
@@ -118,6 +120,7 @@ struct dispatched_task_ctx {
 	s32 pid;
 	s32 cpu; /* CPU where the task should be dispatched */
 	u64 flags; /* task enqueue flags */
+	u64 dispatch_flags; /* RL_DISPATCH_* policy/mechanism flags */
 	u64 slice_ns; /* time slice assigned to the task (0=default) */
 	u64 vtime; /* task deadline / vruntime */
 	u64 enq_cnt;

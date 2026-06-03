@@ -1,9 +1,10 @@
 # Benchmarks
 
 This directory contains the active benchmark tooling for COSMOS. The current
-benchmark design has two layers:
+benchmark design has two local paths:
 
-- `azure_trace/`: build Azure-derived replay plans and drive OpenWhisk actions.
+- `azure_trace/`: retained Azure Functions 2019 CPU top-functions artifacts and
+  config generation helpers.
 - `local_harness/`: run the same workload shapes against local CFS, COSMOS, and
   SFS-style scheduler configurations.
 
@@ -12,8 +13,10 @@ benchmark design has two layers:
 ```text
 benchmarks/
   azure_trace/
-    build_azure_trace_benchmark.py
-    run_openwhisk_azure_replay.py
+    cpu_trace_common.py
+    generate_top_functions_config.rs
+    top20_mixed_p75.json
+    pool_mixed_p75_cap10000.json
     README.md
   local_harness/
     harness.py
@@ -30,71 +33,35 @@ benchmarks/
   third_party/serverless-benchmarks # optional SeBS action source submodule
 ```
 
-## Azure Trace Benchmark
+## Azure CPU Trace Benchmark
 
-`azure_trace/build_azure_trace_benchmark.py` builds explicit benchmark artifacts
-from Azure Functions traces:
-
-- `invocations.csv`: flat invocation table.
-- `profiles.json`: stable synthetic profile assignment per Azure function.
-- `replay.json`: combined replay plan for COSMOS/OpenWhisk harnesses.
-- `fidelity.json`: distribution comparison for the selected source window.
-
-The 2021 Azure trace is used as arrival and duration truth. For each row:
-
-```text
-function_id = app + ':' + func
-start_time_ms = (end_timestamp - duration) * 1000
-target_duration_ms = duration * 1000
-```
-
-Resource behavior is not claimed to come from the 2021 trace. Profiles are
-synthetic and distribution-guided by optional 2019 Azure data when available.
-The generated files separate real target duration class from synthetic profile
-duration class:
-
-- `target_duration_class`: bucket from the real 2021 invocation duration.
-- `profile_duration_class`: bucket used for profile/kernel assignment.
-- `duration_class`: legacy alias for `profile_duration_class`.
-
-Build a replay plan:
+The retained Azure trace path is CPU-only. It uses Azure Functions 2019 duration
+percentiles and invocation counts to generate `cosmos.azure.top-functions-config`
+files for the local replay scripts.
 
 ```sh
-python3 benchmarks/azure_trace/build_azure_trace_benchmark.py \
-  --trace-2021 benchmarks/third_party/AzurePublicDataset/data/AzureFunctionsInvocationTraceForTwoWeeksJan2021.rar \
-  --window-ms 5400000 \
-  --scale 45 \
-  --output-dir /tmp/cosmos-azure-90m
+cargo run --release -p cosmos-offline --bin generate_top_functions_config -- \
+  --dataset-dir benchmarks/third_party/AzurePublicDataset/data/azurefunctions-dataset2019 \
+  --output benchmarks/azure_trace/results/top20_p75.json \
+  --top-functions 20 \
+  --expected-time-percentile p75
 ```
 
-## OpenWhisk Replay
-
-`azure_trace/run_openwhisk_azure_replay.py` invokes OpenWhisk actions according
-to `replay.json` offsets. It is intentionally external to SeBS and OpenWhisk
-core.
-
-Example:
+Replay the generated top-functions config locally:
 
 ```sh
-python3 benchmarks/azure_trace/run_openwhisk_azure_replay.py \
-  --replay /tmp/cosmos-azure-90m/replay.json \
-  --out-dir /tmp/cosmos-openwhisk-replay \
-  --action-map cpu_burst=ow_cpu_burst \
-  --action-map pipeline=ow_pipeline \
-  --action-map memory_heavy=ow_memory_heavy \
-  --action-map io_mixed=ow_io_mixed \
-  --action-map network_heavy=ow_network_heavy
+python3 benchmarks/scripts/replay_top_functions.py \
+  --config-json benchmarks/azure_trace/top20_mixed_p75.json \
+  --config cosmos-full \
+  --run-duration-s 30 \
+  --warmup-duration-s 5
 ```
-
-The replay driver records submit/completion timing, exit status, and activation
-IDs in `client_latency.csv`. It can also send local COSMOS event-bridge metadata
-around each `wsk` invocation when `--event-bridge-port` is set.
 
 ## Local Harness
 
 `local_harness/burst_benchmark.py` dispatches local CFS/COSMOS/SFS benchmark
 runs. It uses `cosmos-benchmark-workload` from `benchmarks/workloads/runner` and
-can run either built-in workload shapes or a generated replay plan.
+can run built-in workload shapes and mixed co-scheduling scenarios.
 
 Build the scheduler and workload runner:
 
@@ -125,13 +92,14 @@ sudo python3 benchmarks/local_harness/burst_benchmark.py \
   --scheduler-bin target/release/cosmos
 ```
 
-Run a generated Azure replay locally:
+Run a deterministic Azure CPU pool replay:
 
 ```sh
-sudo python3 benchmarks/local_harness/burst_benchmark.py \
+sudo python3 benchmarks/scripts/run_pool.py \
+  --pool-json benchmarks/azure_trace/pool_mixed_p75_cap10000.json \
   --config cosmos-full \
-  --replay-plan /tmp/cosmos-azure-90m/replay.json \
-  --out-dir /tmp/cosmos-local-replay \
+  --run-duration-s 180 \
+  --warmup-duration-s 30 \
   --scheduler-bin target/release/cosmos
 ```
 
@@ -147,13 +115,13 @@ The local harness supports these executable kernels:
 - `compression_mixed`
 - `graph_bfs`
 
-The Azure profile layer maps functions to these kernel classes, with OpenWhisk
-action names supplied by `--action-map`.
+The Azure CPU replay maps all selected functions to the local CPU workload path
+while preserving per-function runtime distributions and expected-time metadata.
 
 ## Notes
 
 - `benchmarks/third_party/AzurePublicDataset` is a submodule and is the
-  canonical location for the Azure 2021 trace archive.
+  canonical location for the Azure Functions 2019 dataset.
 - `benchmarks/third_party/serverless-benchmarks` is retained only as optional
-  source material for action implementations. The active replay path does not
-  depend on SeBS experiment orchestration.
+  source material. The active Azure CPU replay path does not depend on SeBS
+  experiment orchestration.

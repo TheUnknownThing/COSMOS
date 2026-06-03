@@ -68,15 +68,7 @@ CONCURRENCY_LEVELS = {
 }
 
 SCHEDULER_CONFIGS = ["cfs-default", "sfs", "cosmos-heuristic", "cosmos-full"]
-COSCHEDULING_CONFIGS = ["cfs-default", "cosmos-full", "cosmos-pooled"]
-
-DIRECT_TRACE_VARIANTS = [
-    ("azure-2019-direct-bursty", "clustered-bursty", "trace", "duration-headroom"),
-    ("azure-2019-direct-smoothed", "evenly-spaced", "trace", "duration-headroom"),
-    ("azure-2019-direct-balanced", "evenly-spaced", "balanced", "duration-headroom"),
-    ("azure-2019-direct-peak-stress", "front-loaded-burst", "peak-stress", "duration-headroom"),
-    ("azure-2019-direct-target-aware", "evenly-spaced", "balanced", "target-duration-aware"),
-]
+COSCHEDULING_CONFIGS = ["cfs-default", "cosmos-full"]
 
 COSCHEDULING_SCENARIOS = [
     (
@@ -206,46 +198,17 @@ class BenchmarkOrchestrator:
 
         return result
 
-    def build_traces(self):
-        """Build Azure trace replay plans"""
+    def build_traces(self) -> tuple[dict[str, Path], None]:
+        """Return trace artifacts for aggregation.
+
+        The old Azure/OpenWhisk builders were removed from this branch. CPU
+        top-functions replay now uses checked-in configs and pools under
+        benchmarks/azure_trace plus the replay_top_functions/run_pool scripts.
+        """
         self.log("=" * 60)
-        self.log("Building Azure trace replay plans")
+        self.log("Skipping deprecated Azure/OpenWhisk trace builders")
         self.log("=" * 60)
-
-        direct_dirs: dict[str, Path] = {}
-        for name, arrival_mode, mix_mode, deadline_mode in DIRECT_TRACE_VARIANTS:
-            output_dir = self.results_dir / name
-            direct_dirs[name] = output_dir
-            self.log(f"Building {name} trace...")
-            self.run_command([
-                "python3",
-                str(AZURE_TRACE_DIR / "build_azure_trace_2019_direct.py"),
-                "--dataset-2019-dir", str(AZURE_2019_DATASET),
-                "--arrival-mode", arrival_mode,
-                "--workload-mix-mode", mix_mode,
-                "--deadline-mode", deadline_mode,
-                "--window-ms", str(DEFAULT_WINDOW_MS),
-                "--scale", str(DEFAULT_SCALE),
-                "--limit", str(self.openwhisk_limit),
-                "--output-dir", str(output_dir),
-            ])
-
-        # Build Azure 2019 SeBS trace
-        azure_2019_sebs_dir = self.results_dir / "azure-2019-sebs"
-        self.log("Building Azure 2019 SeBS trace...")
-        self.run_command([
-            "python3",
-            str(AZURE_TRACE_DIR / "build_azure_trace_2019_sebs.py"),
-            "--trace-2021", str(AZURE_2021_TRACE),
-            "--dataset-2019-dir", str(AZURE_2019_DATASET),
-            "--window-ms", str(DEFAULT_WINDOW_MS),
-            "--scale", str(DEFAULT_SCALE),
-            "--limit", str(self.openwhisk_limit),
-            "--output-dir", str(azure_2019_sebs_dir),
-        ])
-
-        self.log("Trace building complete!")
-        return direct_dirs, azure_2019_sebs_dir
+        return {}, None
 
     def check_remote_openwhisk(self) -> bool:
         """Check if OpenWhisk is accessible on remote testbed"""
@@ -275,105 +238,10 @@ class BenchmarkOrchestrator:
         ])
 
     def run_slo_calibration(self) -> Path:
-        """Run SLO calibration on remote testbed"""
-        self.log("=" * 60)
-        self.log("Running SLO calibration")
-        self.log("=" * 60)
-
-        calibration_file = self.results_dir / "slo_calibration.json"
-        remote_calibration = "/tmp/cosmos_calibration.json"
-
-        # Build action map arguments
-        action_map_args = []
-        for kernel, action in OPENWHISK_ACTION_MAP.items():
-            action_map_args.extend(["--action-map", f"{kernel}={action}"])
-
-        cmd = [
-            "ssh", REMOTE_HOST,
-            f"cd {REMOTE_COSMOS_DIR} && python3 benchmarks/azure_trace/run_openwhisk_azure_replay.py "
-            f"--calibrate "
-            f"--calibration-repetitions {DEFAULT_CALIBRATION_REPS} "
-            f"--calibration-output {remote_calibration} "
-            + " ".join(action_map_args)
-        ]
-
-        self.run_command(cmd)
-
-        # Copy calibration results back
-        self.log("Copying calibration results...")
-        self.run_command([
-            "scp",
-            f"{REMOTE_HOST}:{remote_calibration}",
-            str(calibration_file),
-        ])
-
-        self.log(f"SLO calibration complete! Results: {calibration_file}")
-        return calibration_file
+        raise RuntimeError("remote OpenWhisk SLO calibration is deprecated in this branch")
 
     def run_azure_trace_benchmark(self, trace_dir: Path, calibration_file: Path, benchmark_name: str):
-        """Run Azure trace benchmark on remote testbed"""
-        self.log("=" * 60)
-        self.log(f"Running {benchmark_name} benchmark")
-        self.log("=" * 60)
-
-        replay_json = trace_dir / "replay.json"
-        if not replay_json.exists():
-            self.log(f"ERROR: Replay file not found: {replay_json}")
-            return
-
-        remote_replay = f"/tmp/{benchmark_name}_replay.json"
-        bounded_suffix = f"bounded-{self.openwhisk_limit}"
-        remote_results = f"/tmp/openwhisk-{benchmark_name}-{bounded_suffix}"
-        local_results = self.results_dir / f"openwhisk-{benchmark_name}-{bounded_suffix}"
-
-        # Copy replay file to remote
-        self.log("Copying replay file to remote...")
-        self.run_command([
-            "scp",
-            str(replay_json),
-            f"{REMOTE_HOST}:{remote_replay}",
-        ])
-
-        # Copy calibration file to remote
-        remote_calibration = "/tmp/cosmos_calibration.json"
-        self.run_command([
-            "scp",
-            str(calibration_file),
-            f"{REMOTE_HOST}:{remote_calibration}",
-        ])
-
-        # Build action map arguments
-        action_map_args = []
-        for kernel, action in OPENWHISK_ACTION_MAP.items():
-            action_map_args.append(f"--action-map {kernel}={action}")
-
-        self.run_command(["ssh", REMOTE_HOST, f"rm -rf {remote_results}"])
-
-        # Run benchmark
-        cmd = [
-            "ssh", REMOTE_HOST,
-            f"cd {REMOTE_COSMOS_DIR} && python3 benchmarks/azure_trace/run_openwhisk_azure_replay.py "
-            f"--replay {remote_replay} "
-            f"--out-dir {remote_results} "
-            f"--run-dir {remote_results} "
-            f"--slo-calibration {remote_calibration} "
-            f"--slo-deadline-multiplier {DEFAULT_SLO_MULTIPLIER} "
-            f"--limit {self.openwhisk_limit} "
-            f"--max-inflight {self.openwhisk_max_inflight} "
-            + " ".join(action_map_args)
-        ]
-
-        self.run_command(cmd)
-
-        # Copy results back
-        self.log("Copying results back...")
-        self.run_command([
-            "rsync", "-avz",
-            f"{REMOTE_HOST}:{remote_results}/",
-            f"{local_results}/",
-        ])
-
-        self.log(f"{benchmark_name} benchmark complete! Results: {local_results}")
+        raise RuntimeError("remote Azure/OpenWhisk replay is deprecated in this branch")
 
     def run_local_harness_benchmarks(self):
         """Run local harness benchmarks with all scheduler configurations"""
@@ -1116,31 +984,8 @@ class BenchmarkOrchestrator:
 
             # Step 2: Remote benchmarks
             if not self.skip_remote:
-                # Check OpenWhisk availability
-                if not self.check_remote_openwhisk():
-                    self.log("WARNING: OpenWhisk not accessible on remote testbed")
-                    self.log("Skipping remote benchmarks. Please ensure OpenWhisk is running.")
-                    self.skip_remote = True
-                else:
-                    # Sync to remote
-                    self.sync_to_remote()
-
-                    # Run SLO calibration
-                    calibration_file = self.run_slo_calibration()
-
-                    # Run controlled Azure direct variants. They are bounded to
-                    # avoid the replay driver's one-thread-per-invocation limit.
-                    for variant_name, trace_dir in sorted(azure_2019_direct_dirs.items()):
-                        self.run_azure_trace_benchmark(
-                            trace_dir,
-                            calibration_file,
-                            variant_name,
-                        )
-                    self.run_azure_trace_benchmark(
-                        azure_2019_sebs_dir,
-                        calibration_file,
-                        "azure-2019-sebs"
-                    )
+                self.log("Skipping deprecated remote Azure/OpenWhisk benchmarks")
+                self.skip_remote = True
 
             # Step 3: Local harness benchmarks
             if not self.skip_local:

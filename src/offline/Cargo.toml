@@ -9,6 +9,10 @@ description = "Offline runtime trace analyzer for COSMOS"
 name = "cosmos-offline"
 path = "main.rs"
 
+[[bin]]
+name = "generate_top_functions_config"
+path = "../../benchmarks/azure_trace/generate_top_functions_config.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env", "unicode", "wrap_help"] }

@@ -1,0 +1,376 @@
+{
+  "version": 1,
+  "schema": "cosmos.azure.top-functions-config",
+  "source": {
+    "dataset_dir": "benchmarks/third_party/AzurePublicDataset/data/azurefunctions-dataset2019",
+    "top_n": 20,
+    "expected_time_percentile": "p75"
+  },
+  "summary": {
+    "function_count": 20,
+    "total_invocations": 6762698469,
+    "coverage": 0.5411972502100405
+  },
+  "functions": [
+    {
+      "function_id": "41decf52:2ea4e877",
+      "function_index": 0,
+      "frequency": 0.24897282508131297,
+      "expected_time_ms": 1711.0,
+      "time_distribution": {
+        "min": 106.0,
+        "p25": 1382.0,
+        "p50": 1538.0,
+        "p75": 1711.0,
+        "p99": 2334.0,
+        "max": 60872.0
+      },
+      "metadata": {
+        "invocation_count": 1683728143,
+        "trigger": "queue"
+      }
+    },
+    {
+      "function_id": "a8186f03:6ac1a7f1",
+      "function_index": 1,
+      "frequency": 0.17557149049934967,
+      "expected_time_ms": 285.0,
+      "time_distribution": {
+        "min": 134.0,
+        "p25": 273.0,
+        "p50": 278.0,
+        "p75": 285.0,
+        "p99": 406.0,
+        "max": 45526.0
+      },
+      "metadata": {
+        "invocation_count": 1187337050,
+        "trigger": "http"
+      }
+    },
+    {
+      "function_id": "8559acb5:86e8efe1",
+      "function_index": 2,
+      "frequency": 0.1331915390178843,
+      "expected_time_ms": 84.0,
+      "time_distribution": {
+        "min": 10.0,
+        "p25": 70.0,
+        "p50": 78.0,
+        "p75": 84.0,
+        "p99": 107.0,
+        "max": 24655.0
+      },
+      "metadata": {
+        "invocation_count": 900734217,
+        "trigger": "queue"
+      }
+    },
+    {
+      "function_id": "b2dd24aa:6335814f",
+      "function_index": 3,
+      "frequency": 0.049789417426116506,
+      "expected_time_ms": 17.0,
+      "time_distribution": {
+        "min": 5.0,
+        "p25": 15.0,
+        "p50": 16.0,
+        "p75": 17.0,
+        "p99": 27.0,
+        "max": 11948.0
+      },
+      "metadata": {
+        "invocation_count": 336710817,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "b2dd24aa:abf914c4",
+      "function_index": 4,
+      "frequency": 0.045444514110569906,
+      "expected_time_ms": 5.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 3.0,
+        "p50": 4.0,
+        "p75": 5.0,
+        "p99": 10.0,
+        "max": 14009.0
+      },
+      "metadata": {
+        "invocation_count": 307327546,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "903d2268:3cfbf63d",
+      "function_index": 5,
+      "frequency": 0.037117791684880164,
+      "expected_time_ms": 36.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 20.0,
+        "p50": 26.0,
+        "p75": 36.0,
+        "p99": 175.0,
+        "max": 27309.0
+      },
+      "metadata": {
+        "invocation_count": 251016433,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "9c0dd48e:4dfb4e6e",
+      "function_index": 6,
+      "frequency": 0.03384980241975062,
+      "expected_time_ms": 2.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 1.0,
+        "p50": 2.0,
+        "p75": 2.0,
+        "p99": 13.0,
+        "max": 7314.0
+      },
+      "metadata": {
+        "invocation_count": 228916007,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "076cb868:e31d9f52",
+      "function_index": 7,
+      "frequency": 0.030180816124747437,
+      "expected_time_ms": 2.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 1.0,
+        "p50": 2.0,
+        "p75": 2.0,
+        "p99": 7.0,
+        "max": 2906.0
+      },
+      "metadata": {
+        "invocation_count": 204103759,
+        "trigger": "http"
+      }
+    },
+    {
+      "function_id": "89cbf681:a0b46d78",
+      "function_index": 8,
+      "frequency": 0.029572984647587428,
+      "expected_time_ms": 255.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 176.0,
+        "p50": 202.0,
+        "p75": 255.0,
+        "p99": 477.0,
+        "max": 24903.0
+      },
+      "metadata": {
+        "invocation_count": 199993178,
+        "trigger": "queue"
+      }
+    },
+    {
+      "function_id": "0b1022ad:7d401358",
+      "function_index": 9,
+      "frequency": 0.02844429910364528,
+      "expected_time_ms": 30.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 21.0,
+        "p50": 24.0,
+        "p75": 30.0,
+        "p99": 83.0,
+        "max": 4681.0
+      },
+      "metadata": {
+        "invocation_count": 192360218,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "b6ab902f:6fb8156e",
+      "function_index": 10,
+      "frequency": 0.027811257719407272,
+      "expected_time_ms": 53.0,
+      "time_distribution": {
+        "min": 5.0,
+        "p25": 27.0,
+        "p50": 35.0,
+        "p75": 53.0,
+        "p99": 317.0,
+        "max": 20300.0
+      },
+      "metadata": {
+        "invocation_count": 188079150,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "93b679af:04687703",
+      "function_index": 11,
+      "frequency": 0.023664132259273142,
+      "expected_time_ms": 301.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 190.0,
+        "p50": 240.0,
+        "p75": 301.0,
+        "p99": 571.0,
+        "max": 6027.0
+      },
+      "metadata": {
+        "invocation_count": 160033391,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "1961e289:e838a598",
+      "function_index": 12,
+      "frequency": 0.020666541121219996,
+      "expected_time_ms": 24.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 18.0,
+        "p50": 20.0,
+        "p75": 24.0,
+        "p99": 121.0,
+        "max": 11164.0
+      },
+      "metadata": {
+        "invocation_count": 139761586,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "ded0168a:b850f492",
+      "function_index": 13,
+      "frequency": 0.020525780742154807,
+      "expected_time_ms": 24.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 13.0,
+        "p50": 19.0,
+        "p75": 24.0,
+        "p99": 38.0,
+        "max": 3571.0
+      },
+      "metadata": {
+        "invocation_count": 138809666,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "69b757d6:2c25a860",
+      "function_index": 14,
+      "frequency": 0.020074477462259894,
+      "expected_time_ms": 144.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 69.0,
+        "p50": 112.0,
+        "p75": 144.0,
+        "p99": 286.0,
+        "max": 15466.0
+      },
+      "metadata": {
+        "invocation_count": 135757638,
+        "trigger": "queue"
+      }
+    },
+    {
+      "function_id": "41decf52:b8a9e389",
+      "function_index": 15,
+      "frequency": 0.017237081400915556,
+      "expected_time_ms": 82.0,
+      "time_distribution": {
+        "min": 22.0,
+        "p25": 50.0,
+        "p50": 62.0,
+        "p75": 82.0,
+        "p99": 278.0,
+        "max": 51562.0
+      },
+      "metadata": {
+        "invocation_count": 116569184,
+        "trigger": "queue"
+      }
+    },
+    {
+      "function_id": "a8186f03:a8ffb769",
+      "function_index": 16,
+      "frequency": 0.016663391472585262,
+      "expected_time_ms": 284.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 265.0,
+        "p50": 273.0,
+        "p75": 284.0,
+        "p99": 455.0,
+        "max": 161310.0
+      },
+      "metadata": {
+        "invocation_count": 112689492,
+        "trigger": "http"
+      }
+    },
+    {
+      "function_id": "1811e615:efda8726",
+      "function_index": 17,
+      "frequency": 0.014960301640501843,
+      "expected_time_ms": 88.0,
+      "time_distribution": {
+        "min": 34.0,
+        "p25": 75.0,
+        "p50": 81.0,
+        "p75": 88.0,
+        "p99": 124.0,
+        "max": 39053.0
+      },
+      "metadata": {
+        "invocation_count": 101172009,
+        "trigger": "event"
+      }
+    },
+    {
+      "function_id": "a561c1e4:f3ff9a15",
+      "function_index": 18,
+      "frequency": 0.013910812589269681,
+      "expected_time_ms": 205.0,
+      "time_distribution": {
+        "min": 1.0,
+        "p25": 36.0,
+        "p50": 49.0,
+        "p75": 205.0,
+        "p99": 810.0,
+        "max": 27990.0
+      },
+      "metadata": {
+        "invocation_count": 94074631,
+        "trigger": "queue"
+      }
+    },
+    {
+      "function_id": "5b6a59a1:6a7f3462",
+      "function_index": 19,
+      "frequency": 0.012350743476568274,
+      "expected_time_ms": 31128.0,
+      "time_distribution": {
+        "min": 187.0,
+        "p25": 4465.0,
+        "p50": 21296.0,
+        "p75": 31128.0,
+        "p99": 48813.0,
+        "max": 114658.0
+      },
+      "metadata": {
+        "invocation_count": 83524354,
+        "trigger": "queue"
+      }
+    }
+  ]
+}
