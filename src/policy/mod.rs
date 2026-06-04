@@ -5,7 +5,7 @@ pub mod cosmos;
 pub mod sfs;
 
 use crate::bpf::QueuedTask;
-use crate::registry::{InvocationMeta, InvocationRegistry};
+use crate::registry::{InvocationMeta, InvocationRegistry, InvocationState};
 use scx_utils::Topology;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -66,20 +66,20 @@ pub trait SchedulingPolicy {
     type Stats: Clone;
     fn schedule(
         &mut self,
-        resolved_meta: &[Option<InvocationMeta>],
+        resolved_state: &[Option<InvocationState>],
         raw_tasks: &[QueuedTask],
         topology: &Topology,
         now_ns: u64,
     ) -> Vec<DispatchDecision>;
     fn schedule_with_context(
         &mut self,
-        resolved_meta: &[Option<InvocationMeta>],
+        resolved_state: &[Option<InvocationState>],
         raw_tasks: &[QueuedTask],
         topology: &Topology,
         now_ns: u64,
         _context: SchedulingContext,
     ) -> Vec<DispatchDecision> {
-        self.schedule(resolved_meta, raw_tasks, topology, now_ns)
+        self.schedule(resolved_state, raw_tasks, topology, now_ns)
     }
     fn tick(&mut self, _registry: &InvocationRegistry, _now_ns: u64) {}
     fn stats(&self) -> Self::Stats;

@@ -8,7 +8,7 @@ use scx_utils::Topology;
 
 use crate::bpf::{QueuedTask, RL_CPU_ANY};
 use crate::policy::{DispatchDecision, PolicyCounters, SchedulingPolicy};
-use crate::registry::{InvocationMeta, InvocationRegistry};
+use crate::registry::{InvocationMeta, InvocationRegistry, InvocationState};
 
 const NSEC_PER_USEC: u64 = 1_000;
 const TASK_STATE_TTL_NS: u64 = 60_000_000_000;
@@ -203,7 +203,7 @@ impl SfsPolicy {
 
     fn schedule_internal(
         &mut self,
-        resolved_meta: &[Option<InvocationMeta>],
+        resolved_meta: &[Option<&InvocationMeta>],
         raw: &[QueuedTask],
         now: u64,
         nr_cpus: usize,
@@ -211,7 +211,7 @@ impl SfsPolicy {
         let mut ranked: Vec<(u64, i32, u64, bool, u64, u64)> = Vec::with_capacity(raw.len());
 
         for (i, task) in raw.iter().enumerate() {
-            let meta = resolved_meta.get(i).and_then(|m| m.as_ref());
+            let meta = resolved_meta.get(i).copied().flatten();
             let prior = self.task_state.get(&task.tgid).cloned();
             self.observe_arrival(task, meta, prior.as_ref(), now, nr_cpus);
             let (remaining_credit_ns, mut demoted, is_new, _woke_from_sleep) =
@@ -310,12 +310,16 @@ impl SchedulingPolicy for SfsPolicy {
 
     fn schedule(
         &mut self,
-        resolved_meta: &[Option<InvocationMeta>],
+        resolved_state: &[Option<InvocationState>],
         raw: &[QueuedTask],
         topo: &Topology,
         now: u64,
     ) -> Vec<DispatchDecision> {
-        self.schedule_internal(resolved_meta, raw, now, topo.all_cpus.len())
+        let resolved_meta: Vec<Option<&InvocationMeta>> = resolved_state
+            .iter()
+            .map(|s| s.as_ref().map(|state| &state.meta))
+            .collect();
+        self.schedule_internal(&resolved_meta, raw, now, topo.all_cpus.len())
     }
 
     fn tick(&mut self, _registry: &InvocationRegistry, now_ns: u64) {
@@ -378,13 +382,13 @@ mod tests {
         }
     }
 
-    fn resolve_meta(reg: &InvocationRegistry, tasks: &[QueuedTask]) -> Vec<Option<InvocationMeta>> {
+    fn resolve_meta<'a>(
+        reg: &'a InvocationRegistry,
+        tasks: &[QueuedTask],
+    ) -> Vec<Option<&'a InvocationMeta>> {
         tasks
             .iter()
-            .map(|task| {
-                reg.lookup_tgid(task.tgid)
-                    .and_then(|id| reg.get(id).cloned())
-            })
+            .map(|task| reg.lookup_tgid_meta(task.tgid))
             .collect()
     }
 

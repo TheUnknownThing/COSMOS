@@ -44,7 +44,7 @@ use runtime_trace::TraceCollectorConfig;
 use scheduler::{Scheduler, SchedulerOptions};
 
 pub const SCHEDULER_NAME: &str = "COSMOS";
-pub const DEFAULT_SHORT_TASK_THRESHOLD_US: u64 = 100_000;
+pub const DEFAULT_SHORT_TASK_THRESHOLD_US: u64 = 20_000;
 pub const DEFAULT_SHORT_PREEMPT_MIN_AGE_US: u64 = 5_000;
 
 const NSEC_PER_USEC: u64 = 1_000;
@@ -290,20 +290,20 @@ impl SchedulingPolicy for RuntimePolicy {
 
     fn schedule(
         &mut self,
-        resolved_meta: &[Option<registry::InvocationMeta>],
+        resolved_state: &[Option<registry::InvocationState>],
         raw_tasks: &[QueuedTask],
         topology: &scx_utils::Topology,
         now_ns: u64,
     ) -> Vec<policy::DispatchDecision> {
         match self {
-            Self::Cosmos(policy) => policy.schedule(resolved_meta, raw_tasks, topology, now_ns),
-            Self::Sfs(policy) => policy.schedule(resolved_meta, raw_tasks, topology, now_ns),
+            Self::Cosmos(policy) => policy.schedule(resolved_state, raw_tasks, topology, now_ns),
+            Self::Sfs(policy) => policy.schedule(resolved_state, raw_tasks, topology, now_ns),
         }
     }
 
     fn schedule_with_context(
         &mut self,
-        resolved_meta: &[Option<registry::InvocationMeta>],
+        resolved_state: &[Option<registry::InvocationState>],
         raw_tasks: &[QueuedTask],
         topology: &scx_utils::Topology,
         now_ns: u64,
@@ -311,9 +311,9 @@ impl SchedulingPolicy for RuntimePolicy {
     ) -> Vec<policy::DispatchDecision> {
         match self {
             Self::Cosmos(policy) => {
-                policy.schedule_with_context(resolved_meta, raw_tasks, topology, now_ns, context)
+                policy.schedule_with_context(resolved_state, raw_tasks, topology, now_ns, context)
             }
-            Self::Sfs(policy) => policy.schedule(resolved_meta, raw_tasks, topology, now_ns),
+            Self::Sfs(policy) => policy.schedule(resolved_state, raw_tasks, topology, now_ns),
         }
     }
 

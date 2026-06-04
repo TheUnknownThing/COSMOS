@@ -7,7 +7,7 @@ use crate::bpf::RL_CPU_ANY;
 use crate::coordinator::CoordinationEngine;
 use crate::metadata::delete_invocation_hint;
 use crate::policy::{SchedulingContext, SchedulingPolicy};
-use crate::registry::InvocationMeta;
+use crate::registry::InvocationState;
 use crate::registry::RegistryHandle;
 use crate::stats::Metrics;
 use anyhow::Result;
@@ -107,10 +107,10 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
                 nr_running: bpf_context.nr_running,
             };
             let decisions = {
-                let resolved: Vec<Option<InvocationMeta>> = match self.registry.try_read() {
+                let resolved: Vec<Option<InvocationState>> = match self.registry.try_read() {
                     Ok(reg) => raw
                         .iter()
-                        .map(|task| reg.lookup_tgid_meta(task.tgid).cloned())
+                        .map(|task| reg.lookup_tgid_state(task.tgid).cloned())
                         .collect(),
                     Err(_) => vec![None; raw.len()],
                 };
