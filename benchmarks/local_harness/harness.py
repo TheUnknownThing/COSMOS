@@ -6,6 +6,7 @@ import concurrent.futures
 import csv
 import json
 import os
+import re
 import signal
 import shutil
 import socket
@@ -34,6 +35,9 @@ DEFAULT_SLO_MIN_SLACK_US = 5_000
 DEFAULT_WORKLOAD_DURATION_MS = 250
 SCHEDULER_STATS_READY_TIMEOUT_S = 30.0
 EVENT_BRIDGE_EVENT_TIMEOUT_S = 10.0
+RUNNER_DONE_RE = re.compile(
+    r"COSMOS_RUNNER_DONE monotonic_ns=(?P<monotonic_ns>[0-9]+)"
+)
 TIME_BIN = Path("/usr/bin/time")
 _CARGO_ENV = os.environ.get("CARGO")
 _CARGO_PATH = shutil.which("cargo")
@@ -365,16 +369,36 @@ def invocation_output_payload(
     metadata_tgid: int | None,
     metadata_tgids: list[int],
     metadata_key_visible: bool | None,
-    time_stats: dict[str, float] | None = None,
+    cleanup_end_ns: int | None = None,
+    time_stats: dict[str, float | int] | None = None,
 ) -> dict[str, object]:
+    cleanup_end_ns = cleanup_end_ns if cleanup_end_ns is not None else end_ns
+    runner_end_ns = None
+    if time_stats is not None and time_stats.get("runner_end_monotonic_ns") is not None:
+        runner_end_ns = int(time_stats["runner_end_monotonic_ns"])
+        if runner_end_ns < start_ns or runner_end_ns > end_ns:
+            runner_end_ns = None
+    slo_end_ns = runner_end_ns if runner_end_ns is not None else end_ns
+
     payload: dict[str, object] = {
         "invocation_id": spec.invocation_id,
         "status": "ok" if returncode == 0 else "failed",
         "exit_code": returncode,
         "launch_start_monotonic_ns": launch_start_ns,
         "start_monotonic_ns": start_ns,
-        "end_monotonic_ns": end_ns,
-        "duration_ms": (end_ns - start_ns) / 1_000_000.0,
+        "end_monotonic_ns": slo_end_ns,
+        "runner_end_monotonic_ns": runner_end_ns,
+        "wait_end_monotonic_ns": end_ns,
+        "cleanup_end_monotonic_ns": cleanup_end_ns,
+        "duration_ms": (slo_end_ns - start_ns) / 1_000_000.0,
+        "wait_duration_ms": (end_ns - start_ns) / 1_000_000.0,
+        "observed_duration_ms": (cleanup_end_ns - start_ns) / 1_000_000.0,
+        "runner_to_wait_ms": (
+            (end_ns - runner_end_ns) / 1_000_000.0
+            if runner_end_ns is not None
+            else None
+        ),
+        "post_wait_cleanup_ms": (cleanup_end_ns - end_ns) / 1_000_000.0,
         "metadata_ready_monotonic_ns": metadata_ready_ns,
         "metadata_setup_ms": (
             (metadata_ready_ns - launch_start_ns) / 1_000_000.0
@@ -394,31 +418,44 @@ def invocation_output_payload(
         "slo_class": spec.slo_class,
     }
     if time_stats is not None:
-        payload.update(time_stats)
+        payload.update(
+            {
+                key: value
+                for key, value in time_stats.items()
+                if key != "runner_end_monotonic_ns"
+            }
+        )
     payload.update(spec.record_fields)
     return payload
 
 
-def parse_invocation_time_stats_file(path: Path) -> dict[str, float] | None:
+def parse_invocation_time_stats_file(path: Path) -> dict[str, float | int] | None:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
 
+    stats: dict[str, float | int] = {}
     match = measure_latency.TIME_STATS_RE.search(text)
-    if match is None:
-        return None
+    if match is not None:
+        real_s = float(match.group("real_s"))
+        user_s = float(match.group("user_s"))
+        sys_s = float(match.group("sys_s"))
+        stats.update(
+            {
+                "real_ms": real_s * 1_000.0,
+                "user_ms": user_s * 1_000.0,
+                "sys_ms": sys_s * 1_000.0,
+                "cpu_ms": (user_s + sys_s) * 1_000.0,
+                "maxrss_kb": float(match.group("maxrss_kb")),
+            }
+        )
 
-    real_s = float(match.group("real_s"))
-    user_s = float(match.group("user_s"))
-    sys_s = float(match.group("sys_s"))
-    return {
-        "real_ms": real_s * 1_000.0,
-        "user_ms": user_s * 1_000.0,
-        "sys_ms": sys_s * 1_000.0,
-        "cpu_ms": (user_s + sys_s) * 1_000.0,
-        "maxrss_kb": float(match.group("maxrss_kb")),
-    }
+    runner_match = RUNNER_DONE_RE.search(text)
+    if runner_match is not None:
+        stats["runner_end_monotonic_ns"] = int(runner_match.group("monotonic_ns"))
+
+    return stats or None
 
 
 def gated_workload_command(command: list[str]) -> list[str]:
@@ -867,6 +904,7 @@ def run_invocation_spec(
     metadata_tgid = None
     metadata_tgids: list[int] = []
     metadata_key_visible = None
+    wait_end_ns: int | None = None
 
     if use_metadata:
         if metadata_bridge_port is None:
@@ -886,6 +924,7 @@ def run_invocation_spec(
                     check=False,
                 )
                 returncode = completed.returncode
+                wait_end_ns = time.monotonic_ns()
             else:
                 process = subprocess.Popen(
                     command,
@@ -924,6 +963,7 @@ def run_invocation_spec(
                 start_ns = metadata_ready_ns
                 os.kill(metadata_tgid, signal.SIGCONT)
                 returncode = process.wait()
+                wait_end_ns = time.monotonic_ns()
                 for tgid in reversed(metadata_tgids):
                     err = try_send_event_bridge_event(
                         metadata_bridge_port,
@@ -940,19 +980,23 @@ def run_invocation_spec(
             stop_process(process, signal.SIGKILL)
         raise
 
-    end_ns = time.monotonic_ns()
+    if wait_end_ns is None:
+        wait_end_ns = time.monotonic_ns()
+    cleanup_end_ns = time.monotonic_ns()
+    time_stats = parse_invocation_time_stats_file(stderr_path)
     payload = invocation_output_payload(
         spec,
         returncode=returncode,
         launch_start_ns=launch_start_ns,
         start_ns=start_ns,
-        end_ns=end_ns,
+        end_ns=wait_end_ns,
         stderr_path=stderr_path,
         metadata_ready_ns=metadata_ready_ns,
         metadata_tgid=metadata_tgid,
         metadata_tgids=metadata_tgids,
         metadata_key_visible=metadata_key_visible,
-        time_stats=parse_invocation_time_stats_file(stderr_path),
+        cleanup_end_ns=cleanup_end_ns,
+        time_stats=time_stats,
     )
     payload["cgroup_path"] = None
     if metadata_cleanup_errors:
@@ -1079,7 +1123,7 @@ def complete_metadata_bridge_invocation(
     metadata_bridge_port: int,
 ) -> int:
     returncode = staged.process.wait()
-    end_ns = time.monotonic_ns()
+    wait_end_ns = time.monotonic_ns()
     metadata_cleanup_errors = []
     for tgid in reversed(staged.metadata_tgids):
         err = try_send_event_bridge_event(
@@ -1093,21 +1137,24 @@ def complete_metadata_bridge_invocation(
         if err is not None:
             metadata_cleanup_errors.append(err)
     staged.stderr_file.close()
+    cleanup_end_ns = time.monotonic_ns()
+    time_stats = parse_invocation_time_stats_file(
+        staged.output_json.with_suffix(".stderr")
+    )
 
     payload = invocation_output_payload(
         staged.spec,
         returncode=returncode,
         launch_start_ns=staged.launch_start_ns,
         start_ns=start_ns,
-        end_ns=end_ns,
+        end_ns=wait_end_ns,
         stderr_path=staged.output_json.with_suffix(".stderr"),
         metadata_ready_ns=staged.metadata_ready_ns,
         metadata_tgid=staged.metadata_tgid,
         metadata_tgids=staged.metadata_tgids,
         metadata_key_visible=staged.metadata_key_visible,
-        time_stats=parse_invocation_time_stats_file(
-            staged.output_json.with_suffix(".stderr")
-        ),
+        cleanup_end_ns=cleanup_end_ns,
+        time_stats=time_stats,
     )
     payload["cgroup_path"] = (
         str(staged.cgroup_path) if staged.cgroup_path is not None else None
@@ -1509,7 +1556,14 @@ def write_client_latency_csv(run_dir: Path) -> None:
         "launch_start_monotonic_ns",
         "start_monotonic_ns",
         "end_monotonic_ns",
+        "runner_end_monotonic_ns",
+        "wait_end_monotonic_ns",
+        "cleanup_end_monotonic_ns",
         "duration_ms",
+        "wait_duration_ms",
+        "observed_duration_ms",
+        "runner_to_wait_ms",
+        "post_wait_cleanup_ms",
         "metadata_ready_monotonic_ns",
         "metadata_setup_ms",
         "deadline_us",

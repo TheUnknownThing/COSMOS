@@ -44,6 +44,8 @@ use runtime_trace::TraceCollectorConfig;
 use scheduler::{Scheduler, SchedulerOptions};
 
 pub const SCHEDULER_NAME: &str = "COSMOS";
+pub const DEFAULT_SHORT_TASK_THRESHOLD_US: u64 = 100_000;
+pub const DEFAULT_SHORT_PREEMPT_MIN_AGE_US: u64 = 5_000;
 
 const NSEC_PER_USEC: u64 = 1_000;
 
@@ -153,9 +155,13 @@ struct Opts {
     #[clap(long, action = clap::ArgAction::SetTrue)]
     disable_deadline_scoring: bool,
 
-    /// Runtime threshold in microseconds for short-task preemption (defaults to --slice-us).
+    /// Runtime threshold in microseconds for short-task preemption (default: 100000).
     #[clap(long)]
     short_task_threshold_us: Option<u64>,
+
+    /// Runnable-age fallback before short latency tasks use the preempt path when idle capacity exists.
+    #[clap(long, default_value_t = DEFAULT_SHORT_PREEMPT_MIN_AGE_US)]
+    short_preempt_min_age_us: u64,
 
     /// Disable preempt kicks for short latency-sensitive tasks.
     #[clap(long, action = clap::ArgAction::SetTrue)]
@@ -229,6 +235,7 @@ pub struct CosmosOpts {
     pub starvation_guard_threshold_us: u64,
     pub disable_deadline_scoring: bool,
     pub short_task_threshold_us: u64,
+    pub short_preempt_min_age_us: u64,
     pub disable_short_preemption: bool,
 }
 
@@ -243,7 +250,10 @@ impl From<&Opts> for CosmosOpts {
             percpu_local: opts.percpu_local,
             starvation_guard_threshold_us: opts.starvation_guard_threshold_us,
             disable_deadline_scoring: opts.disable_deadline_scoring,
-            short_task_threshold_us: opts.short_task_threshold_us.unwrap_or(opts.slice_us),
+            short_task_threshold_us: opts
+                .short_task_threshold_us
+                .unwrap_or(DEFAULT_SHORT_TASK_THRESHOLD_US),
+            short_preempt_min_age_us: opts.short_preempt_min_age_us,
             disable_short_preemption: opts.disable_short_preemption,
         }
     }
@@ -287,6 +297,22 @@ impl SchedulingPolicy for RuntimePolicy {
     ) -> Vec<policy::DispatchDecision> {
         match self {
             Self::Cosmos(policy) => policy.schedule(resolved_meta, raw_tasks, topology, now_ns),
+            Self::Sfs(policy) => policy.schedule(resolved_meta, raw_tasks, topology, now_ns),
+        }
+    }
+
+    fn schedule_with_context(
+        &mut self,
+        resolved_meta: &[Option<registry::InvocationMeta>],
+        raw_tasks: &[QueuedTask],
+        topology: &scx_utils::Topology,
+        now_ns: u64,
+        context: policy::SchedulingContext,
+    ) -> Vec<policy::DispatchDecision> {
+        match self {
+            Self::Cosmos(policy) => {
+                policy.schedule_with_context(resolved_meta, raw_tasks, topology, now_ns, context)
+            }
             Self::Sfs(policy) => policy.schedule(resolved_meta, raw_tasks, topology, now_ns),
         }
     }
@@ -392,9 +418,9 @@ fn main() -> Result<()> {
         );
 
         let policy = match opts.policy {
-            PolicyKind::Cosmos => {
-                RuntimePolicy::Cosmos(CosmosPolicy::new(&cosmos_opts).with_registry(registry.clone()))
-            }
+            PolicyKind::Cosmos => RuntimePolicy::Cosmos(
+                CosmosPolicy::new(&cosmos_opts).with_registry(registry.clone()),
+            ),
             PolicyKind::Sfs => RuntimePolicy::Sfs(SfsPolicy::new(&sfs_opts)),
         };
 

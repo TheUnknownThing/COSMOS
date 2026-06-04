@@ -27,6 +27,18 @@ replay_top_functions = load_module(
 
 
 class ReplayTopFunctionsTests(unittest.TestCase):
+    def test_parse_args_exposes_profile_catalog(self) -> None:
+        args = replay_top_functions.parse_args(
+            [
+                "--config-json",
+                "dummy.json",
+                "--profile-catalog",
+                "profiles.json",
+            ]
+        )
+
+        self.assertEqual(args.profile_catalog, Path("profiles.json"))
+
     def test_scheduler_peak_stats_takes_numeric_max(self) -> None:
         peaks = replay_top_functions.scheduler_peak_stats(
             [
@@ -88,6 +100,8 @@ class ReplayTopFunctionsTests(unittest.TestCase):
             self.assertAlmostEqual(profiles[1].frequency, 1.0 / 3.0)
             self.assertEqual(profiles[0].p99_time_ms, 20)
             self.assertEqual(profiles[1].expected_time_ms, 45)
+            self.assertEqual(profiles[0].workload, "cpu_burst")
+            self.assertEqual(profiles[1].workload, "cpu_burst")
             self.assertAlmostEqual(
                 profiles[0].mean_time_ms,
                 ((8 + 9) / 2 * 0.25)
@@ -96,6 +110,91 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 + ((12 + 20) / 2 * 0.24)
                 + (20 * 0.01),
             )
+
+    def test_load_profiles_reads_config_workload_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "top.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "cosmos.azure.top-functions-config",
+                        "functions": [
+                            {
+                                "function_id": "func-a",
+                                "frequency": 1.0,
+                                "workload": "pipeline",
+                                "time_distribution": {
+                                    "min": 8,
+                                    "p25": 9,
+                                    "p50": 10,
+                                    "p75": 12,
+                                    "p99": 20,
+                                    "max": 30,
+                                },
+                            },
+                            {
+                                "function_id": "func-b",
+                                "frequency": 1.0,
+                                "metadata": {"workload": "memory_heavy"},
+                                "time_distribution": {
+                                    "min": 35,
+                                    "p25": 37,
+                                    "p50": 40,
+                                    "p75": 45,
+                                    "p99": 60,
+                                    "max": 80,
+                                },
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = replay_top_functions.load_profiles(config_path)
+
+            self.assertEqual(
+                [p.workload for p in profiles], ["pipeline", "memory_heavy"]
+            )
+
+    def test_load_profiles_workload_mix_is_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "top.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "cosmos.azure.top-functions-config",
+                        "functions": [
+                            {
+                                "function_id": f"func-{idx}",
+                                "frequency": 1.0,
+                                "workload": "cpu_burst",
+                                "time_distribution": {
+                                    "min": 10,
+                                    "p25": 10,
+                                    "p50": 10,
+                                    "p75": 10,
+                                    "p99": 20,
+                                    "max": 20,
+                                },
+                            }
+                            for idx in range(8)
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            first = replay_top_functions.load_profiles(
+                config_path, workload_mix="balanced"
+            )
+            second = replay_top_functions.load_profiles(
+                config_path, workload_mix="balanced"
+            )
+
+            self.assertEqual([p.workload for p in first], [p.workload for p in second])
+            self.assertGreater(len({p.workload for p in first}), 1)
+            self.assertNotEqual({p.workload for p in first}, {"cpu_burst"})
 
     def test_build_invocation_uses_p99_deadline_and_clamped_tail(self) -> None:
         profile = replay_top_functions.FunctionProfile(
@@ -189,6 +288,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
             expected_time_ms=10,
             p99_time_ms=20,
             mean_time_ms=12.0,
+            workload="pipeline",
             time_distribution={
                 "min": 8.0,
                 "p25": 9.0,
@@ -205,6 +305,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 actual_duration_ms=10,
                 p99_time_ms=20,
                 deadline_us=40_000,
+                workload="pipeline",
             ),
             replay_top_functions.PoolInvocation(
                 function_id="func-a",
@@ -212,6 +313,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 actual_duration_ms=30,
                 p99_time_ms=20,
                 deadline_us=40_000,
+                workload="pipeline",
             ),
         ]
 
@@ -223,6 +325,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 profiles=[profile],
                 invocations=invocations,
                 seed=42,
+                workload_mix="config",
             )
 
             payload = json.loads(pool_json.read_text(encoding="utf-8"))
@@ -230,10 +333,14 @@ class ReplayTopFunctionsTests(unittest.TestCase):
             self.assertAlmostEqual(payload["actual_mean_time_ms"], 20.0)
             self.assertAlmostEqual(payload["weighted_mean_time_ms"], 12.0)
             self.assertEqual(payload["profiles"][0]["function_id"], "func-a")
+            self.assertEqual(payload["profiles"][0]["workload"], "pipeline")
+            self.assertEqual(payload["invocations"][0]["workload"], "pipeline")
+            self.assertEqual(payload["pool_workload_counts"], {"pipeline": 2})
 
             profiles = replay_top_functions.load_profiles_from_pool_json(pool_json)
             self.assertEqual(profiles[0].function_id, "func-a")
             self.assertEqual(profiles[0].p99_time_ms, 20)
+            self.assertEqual(profiles[0].workload, "pipeline")
 
     def test_cap_profiles_clamps_distribution_and_recomputes_mean(self) -> None:
         profile = replay_top_functions.FunctionProfile(
@@ -315,6 +422,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
             )
             self.assertAlmostEqual(pool.load_mean_time_ms, 40.0)
             self.assertEqual(pool.load_mean_source, "actual_mean_time_ms")
+            self.assertEqual(pool.invocations[0].workload, "cpu_burst")
 
             fallback_json = Path(tmp) / "fallback.json"
             fallback_json.write_text(json.dumps(base_payload), encoding="utf-8")
@@ -336,6 +444,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
             expected_time_ms=30,
             p99_time_ms=90,
             mean_time_ms=45.0,
+            workload="pipeline",
             time_distribution={
                 "min": 20.0,
                 "p25": 25.0,
@@ -360,7 +469,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
         )
 
         self.assertIsInstance(spec, harness.InvocationSpec)
-        self.assertEqual(spec.workload, "cpu_burst")
+        self.assertEqual(spec.workload, "pipeline")
         self.assertEqual(spec.actual_duration_ms, 44)
         self.assertEqual(spec.expected_duration_ms, 30)
         self.assertEqual(spec.deadline_us, 180_000)

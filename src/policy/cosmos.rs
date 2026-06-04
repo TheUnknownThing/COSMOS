@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use scx_utils::Topology;
 
 use crate::bpf::{QueuedTask, RL_CPU_ANY, RL_DISPATCH_FORCE_PREEMPT, RL_DISPATCH_PREEMPT};
-use crate::policy::{DispatchDecision, PolicyCounters, SchedulingPolicy};
+use crate::policy::{DispatchDecision, PolicyCounters, SchedulingContext, SchedulingPolicy};
 use crate::registry::{InvocationMeta, InvocationRegistry, SloClass};
 
 const NSEC_PER_USEC: u64 = 1_000;
@@ -80,6 +80,7 @@ pub struct CosmosPolicy {
     pub deadline_scoring_enabled: bool,
     short_preemption_enabled: bool,
     short_task_threshold_ns: u64,
+    short_preempt_min_age_ns: u64,
     nr_cold_start_tasks: u64,
     nr_hot_invocation_tasks: u64,
     nr_background_tasks: u64,
@@ -123,6 +124,7 @@ impl CosmosPolicy {
             deadline_scoring_enabled: !opts.disable_deadline_scoring,
             short_preemption_enabled: !opts.disable_short_preemption,
             short_task_threshold_ns: opts.short_task_threshold_us * NSEC_PER_USEC,
+            short_preempt_min_age_ns: opts.short_preempt_min_age_us * NSEC_PER_USEC,
             nr_cold_start_tasks: 0,
             nr_hot_invocation_tasks: 0,
             nr_background_tasks: 0,
@@ -278,33 +280,38 @@ impl CosmosPolicy {
         if self.deadline_scoring_enabled {
             if let Some(m) = meta {
                 if m.slo_class == SloClass::LatencyCritical && m.deadline_ns > 0 {
-                    let win = self.slice_ns.max(self.slice_ns_min);
-                    let anchor = win
-                        .saturating_add(self.slo_target_ns)
-                        .saturating_add(self.cold_start_boost_ns);
+                    let deadline_window = self
+                        .short_task_threshold_ns
+                        .max(self.slice_ns.saturating_mul(2))
+                        .max(self.slice_ns_min);
                     let est = self
-                        .task_state
-                        .get(&task.tgid)
-                        .map(|s| s.avg_runtime_ns.max(self.slice_ns_min))
-                        .unwrap_or_else(|| task.exec_runtime.max(self.slice_ns_min));
+                        .short_runtime_estimate(task, meta)
+                        .unwrap_or(self.slice_ns_min)
+                        .max(self.slice_ns_min);
                     let remaining = m.deadline_ns.saturating_sub(now);
-                    if remaining > est {
-                        let slack = remaining.saturating_sub(est);
-                        let urgency = win.saturating_sub(slack.min(win));
-                        let base = fair
-                            .saturating_add(anchor)
-                            .saturating_sub(Self::scale_by_weight(task, urgency));
-                        return match class {
-                            TaskClass::ColdStart => base.saturating_sub(Self::scale_by_weight(
-                                task,
-                                self.slo_target_ns.saturating_add(self.cold_start_boost_ns),
-                            )),
-                            TaskClass::HotInvocation => {
-                                base.saturating_sub(Self::scale_by_weight(task, self.slo_target_ns))
-                            }
-                            TaskClass::Background => base.saturating_add(self.slo_target_ns),
-                        };
-                    }
+                    let latest_start_slack = remaining.saturating_sub(est);
+                    let urgency =
+                        deadline_window.saturating_sub(latest_start_slack.min(deadline_window));
+                    let class_boost = match class {
+                        TaskClass::ColdStart => {
+                            self.slo_target_ns.saturating_add(self.cold_start_boost_ns)
+                        }
+                        TaskClass::HotInvocation => self.slo_target_ns,
+                        TaskClass::Background => 0,
+                    };
+                    let short_boost = if est <= self.short_task_threshold_ns {
+                        self.short_task_threshold_ns
+                            .saturating_sub(est)
+                            .saturating_add(self.slice_ns)
+                    } else {
+                        0
+                    };
+                    let late_start_boost = if remaining <= est { deadline_window } else { 0 };
+                    let boost = class_boost
+                        .saturating_add(short_boost)
+                        .saturating_add(urgency)
+                        .saturating_add(late_start_boost);
+                    return fair.saturating_sub(Self::scale_by_weight(task, boost));
                 }
             }
         }
@@ -382,6 +389,8 @@ impl CosmosPolicy {
         task: &QueuedTask,
         class: TaskClass,
         meta: Option<&InvocationMeta>,
+        now: u64,
+        context: SchedulingContext,
     ) -> bool {
         if !self.short_preemption_enabled || self.short_task_threshold_ns == 0 {
             return false;
@@ -389,17 +398,61 @@ impl CosmosPolicy {
         if !matches!(class, TaskClass::ColdStart | TaskClass::HotInvocation) {
             return false;
         }
-        self.short_runtime_estimate(task, meta)
-            .is_some_and(|rt| rt <= self.short_task_threshold_ns)
+        let Some(estimate_ns) = self.short_runtime_estimate(task, meta) else {
+            return false;
+        };
+        if estimate_ns > self.short_task_threshold_ns {
+            return false;
+        }
+
+        match context.has_idle_capacity_for(task.nr_cpus_allowed) {
+            Some(true) => self.short_preempt_age_ready(task, now),
+            Some(false) => {
+                self.short_deadline_preempt_ready(meta, now, estimate_ns)
+                    || self.short_preempt_age_ready(task, now)
+            }
+            None => true,
+        }
+    }
+
+    fn short_preempt_age_ready(&self, task: &QueuedTask, now: u64) -> bool {
+        self.short_preempt_min_age_ns == 0
+            || self.runnable_age_ns(task, now) >= self.short_preempt_min_age_ns
+    }
+
+    fn short_deadline_preempt_ready(
+        &self,
+        meta: Option<&InvocationMeta>,
+        now: u64,
+        estimate_ns: u64,
+    ) -> bool {
+        let Some(m) = meta else {
+            return false;
+        };
+        if m.slo_class != SloClass::LatencyCritical || m.deadline_ns == 0 {
+            return false;
+        }
+        let estimate_ns = estimate_ns.max(self.slice_ns_min);
+        let remaining = m.deadline_ns.saturating_sub(now);
+        let latest_start_slack = remaining.saturating_sub(estimate_ns);
+        latest_start_slack <= self.short_task_threshold_ns
     }
 
     fn should_force_preempt_kick(
         &self,
+        task: &QueuedTask,
         preempt: bool,
         meta: Option<&InvocationMeta>,
         now: u64,
+        context: SchedulingContext,
     ) -> bool {
         if !preempt {
+            return false;
+        }
+        if matches!(
+            context.has_idle_capacity_for(task.nr_cpus_allowed),
+            Some(true)
+        ) {
             return false;
         }
         let Some(m) = meta else {
@@ -408,8 +461,13 @@ impl CosmosPolicy {
         if m.slo_class != SloClass::LatencyCritical || m.deadline_ns == 0 {
             return false;
         }
+        if m.estimated_duration_ns > 0 && m.estimated_duration_ns <= self.short_task_threshold_ns {
+            return true;
+        }
         let remaining = m.deadline_ns.saturating_sub(now);
-        remaining <= self.short_task_threshold_ns.max(self.slice_ns_min)
+        let est = m.estimated_duration_ns.max(self.slice_ns_min);
+        let preempt_margin = est.saturating_add(self.slice_ns.saturating_mul(2));
+        remaining <= preempt_margin.max(self.slice_ns_min)
     }
 
     fn slice_for(
@@ -464,6 +522,7 @@ impl CosmosPolicy {
         meta: Option<&InvocationMeta>,
         has_meta: bool,
         now: u64,
+        context: SchedulingContext,
     ) -> (TaskClass, bool, bool, bool, u64, u64) {
         let class = self.classify(task, meta);
 
@@ -498,8 +557,8 @@ impl CosmosPolicy {
                 self.nr_starvation_guard_dispatches.saturating_add(1);
         }
 
-        let preempt = !guard && self.should_preempt_short(task, class, meta);
-        let force_preempt = self.should_force_preempt_kick(preempt, meta, now);
+        let preempt = !guard && self.should_preempt_short(task, class, meta, now, context);
+        let force_preempt = self.should_force_preempt_kick(task, preempt, meta, now, context);
         let effective_slo = self.task_slo_target(meta);
         let slice = self.slice_for(task, class, effective_slo, preempt);
         self.count_classification(class, has_meta, preempt);
@@ -521,8 +580,13 @@ impl CosmosPolicy {
     ) -> (TaskClass, bool, u64, u64, bool) {
         let meta = self.meta_for(task, reg).cloned();
         let has_meta = meta.is_some();
-        let (class, _guard, preempt, _force_preempt, score, slice) =
-            self.rank_one(task, meta.as_ref(), has_meta, now);
+        let (class, _guard, preempt, _force_preempt, score, slice) = self.rank_one(
+            task,
+            meta.as_ref(),
+            has_meta,
+            now,
+            SchedulingContext::default(),
+        );
         (class, preempt, score, slice, has_meta)
     }
 
@@ -547,17 +611,13 @@ impl CosmosPolicy {
     pub(crate) fn heuristic_test(&self, t: &QueuedTask) -> TaskClass {
         self.heuristic_classify(t, self.slo_target_ns)
     }
-}
 
-impl SchedulingPolicy for CosmosPolicy {
-    type Stats = CosmosCounters;
-
-    fn schedule(
+    fn schedule_internal(
         &mut self,
         resolved_meta: &[Option<InvocationMeta>],
         raw: &[QueuedTask],
-        _topo: &Topology,
         now: u64,
+        context: SchedulingContext,
     ) -> Vec<DispatchDecision> {
         let mut decisions: Vec<RankedDecision> = Vec::with_capacity(raw.len());
 
@@ -565,7 +625,7 @@ impl SchedulingPolicy for CosmosPolicy {
             let meta = resolved_meta.get(i).and_then(|m| m.as_ref());
             let has_meta = meta.is_some();
             let (class, guard, preempt, force_preempt, score, slice) =
-                self.rank_one(task, meta, has_meta, now);
+                self.rank_one(task, meta, has_meta, now, context);
             decisions.push(RankedDecision {
                 dispatch_rank: if guard {
                     0
@@ -622,6 +682,31 @@ impl SchedulingPolicy for CosmosPolicy {
             })
             .collect()
     }
+}
+
+impl SchedulingPolicy for CosmosPolicy {
+    type Stats = CosmosCounters;
+
+    fn schedule(
+        &mut self,
+        resolved_meta: &[Option<InvocationMeta>],
+        raw: &[QueuedTask],
+        _topo: &Topology,
+        now: u64,
+    ) -> Vec<DispatchDecision> {
+        self.schedule_internal(resolved_meta, raw, now, SchedulingContext::default())
+    }
+
+    fn schedule_with_context(
+        &mut self,
+        resolved_meta: &[Option<InvocationMeta>],
+        raw: &[QueuedTask],
+        _topo: &Topology,
+        now: u64,
+        context: SchedulingContext,
+    ) -> Vec<DispatchDecision> {
+        self.schedule_internal(resolved_meta, raw, now, context)
+    }
 
     fn tick(&mut self, _registry: &InvocationRegistry, now_ns: u64) {
         self.prune_task_state(now_ns);
@@ -662,7 +747,8 @@ mod tests {
             percpu_local: false,
             starvation_guard_threshold_us: 2_000_000,
             disable_deadline_scoring: false,
-            short_task_threshold_us: 20_000,
+            short_task_threshold_us: crate::DEFAULT_SHORT_TASK_THRESHOLD_US,
+            short_preempt_min_age_us: crate::DEFAULT_SHORT_PREEMPT_MIN_AGE_US,
             disable_short_preemption: false,
         }
     }
@@ -725,6 +811,20 @@ mod tests {
             });
         }
         r
+    }
+
+    fn idle_context() -> SchedulingContext {
+        SchedulingContext {
+            nr_online_cpus: 4,
+            nr_running: 2,
+        }
+    }
+
+    fn saturated_context() -> SchedulingContext {
+        SchedulingContext {
+            nr_online_cpus: 4,
+            nr_running: 4,
+        }
     }
 
     #[test]
@@ -808,6 +908,220 @@ mod tests {
         let (_, preempt, _, _, _) = p.enqueue_test(&mut qt(1001, 100, "w", 0, 100), &r, now);
         assert!(preempt);
         assert_eq!(p.nr_short_preemptions, 1);
+    }
+
+    #[test]
+    fn default_threshold_covers_azure_pipeline_task() {
+        let o = opts();
+        let mut p = pl(&o);
+        let now = 100 * MS;
+        let r = build_reg(&[(1, 100, now + 257 * MS, 84 * MS, 0, 1)]);
+        let (_, preempt, _, _, _) = p.enqueue_test(&mut qt(1001, 100, "w", 0, 100), &r, now);
+        assert!(preempt);
+    }
+
+    #[test]
+    fn short_latency_task_force_preempts_on_admission() {
+        let o = opts();
+        let mut p = pl(&o);
+        let now = 100 * MS;
+        let task = qt(1001, 100, "w", 0, 100);
+        let metas = vec![Some(InvocationMeta {
+            id: 1,
+            tgid: 100,
+            deadline_ns: now + 257 * MS,
+            estimated_duration_ns: 84 * MS,
+            slo_class: SloClass::LatencyCritical,
+            is_cold_start: true,
+            profile_id: None,
+            created_at_ns: now,
+        })];
+        let out = p.schedule(&metas, &[task], &Topology::new().unwrap(), now);
+        assert!(out[0].preempt);
+        assert_ne!(out[0].dispatch_flags & RL_DISPATCH_PREEMPT, 0);
+        assert_ne!(out[0].dispatch_flags & RL_DISPATCH_FORCE_PREEMPT, 0);
+    }
+
+    #[test]
+    fn short_latency_task_uses_normal_path_when_idle_and_slack_exists() {
+        let o = opts();
+        let mut p = pl(&o);
+        let now = 100 * MS;
+        let task = qt(1001, 100, "w", 0, 100);
+        let metas = vec![Some(InvocationMeta {
+            id: 1,
+            tgid: 100,
+            deadline_ns: now + 257 * MS,
+            estimated_duration_ns: 84 * MS,
+            slo_class: SloClass::LatencyCritical,
+            is_cold_start: true,
+            profile_id: None,
+            created_at_ns: now,
+        })];
+        let out = p.schedule_with_context(
+            &metas,
+            &[task],
+            &Topology::new().unwrap(),
+            now,
+            idle_context(),
+        );
+        assert!(!out[0].preempt);
+        assert_eq!(
+            out[0].dispatch_flags & (RL_DISPATCH_PREEMPT | RL_DISPATCH_FORCE_PREEMPT),
+            0
+        );
+    }
+
+    #[test]
+    fn saturated_short_latency_task_waits_for_tight_latest_start_slack() {
+        let o = opts();
+        let mut p = pl(&o);
+        let now = 100 * MS;
+        let task = qt(1001, 100, "w", 0, 100);
+        let metas = vec![Some(InvocationMeta {
+            id: 1,
+            tgid: 100,
+            deadline_ns: now + 257 * MS,
+            estimated_duration_ns: 84 * MS,
+            slo_class: SloClass::LatencyCritical,
+            is_cold_start: true,
+            profile_id: None,
+            created_at_ns: now,
+        })];
+        let out = p.schedule_with_context(
+            &metas,
+            &[task],
+            &Topology::new().unwrap(),
+            now,
+            saturated_context(),
+        );
+        assert!(!out[0].preempt);
+    }
+
+    #[test]
+    fn saturated_short_latency_task_preempts_when_latest_start_slack_is_tight() {
+        let o = opts();
+        let mut p = pl(&o);
+        let now = 100 * MS;
+        let task = qt(1001, 100, "w", 0, 100);
+        let metas = vec![Some(InvocationMeta {
+            id: 1,
+            tgid: 100,
+            deadline_ns: now + 170 * MS,
+            estimated_duration_ns: 84 * MS,
+            slo_class: SloClass::LatencyCritical,
+            is_cold_start: true,
+            profile_id: None,
+            created_at_ns: now,
+        })];
+        let out = p.schedule_with_context(
+            &metas,
+            &[task],
+            &Topology::new().unwrap(),
+            now,
+            saturated_context(),
+        );
+        assert!(out[0].preempt);
+        assert_ne!(out[0].dispatch_flags & RL_DISPATCH_PREEMPT, 0);
+        assert_ne!(out[0].dispatch_flags & RL_DISPATCH_FORCE_PREEMPT, 0);
+    }
+
+    #[test]
+    fn short_preemption_uses_task_allowed_cpus_for_reserved_control_plane() {
+        let o = opts();
+        let mut p = pl(&o);
+        let now = 100 * MS;
+        let mut task = qt(1001, 100, "w", 0, 100);
+        task.nr_cpus_allowed = 44;
+        let metas = vec![Some(InvocationMeta {
+            id: 1,
+            tgid: 100,
+            deadline_ns: now + 170 * MS,
+            estimated_duration_ns: 84 * MS,
+            slo_class: SloClass::LatencyCritical,
+            is_cold_start: true,
+            profile_id: None,
+            created_at_ns: now,
+        })];
+        let out = p.schedule_with_context(
+            &metas,
+            &[task],
+            &Topology::new().unwrap(),
+            now,
+            SchedulingContext {
+                nr_online_cpus: 48,
+                nr_running: 44,
+            },
+        );
+        assert!(out[0].preempt);
+        assert_ne!(out[0].dispatch_flags & RL_DISPATCH_PREEMPT, 0);
+        assert_ne!(out[0].dispatch_flags & RL_DISPATCH_FORCE_PREEMPT, 0);
+    }
+
+    #[test]
+    fn idle_short_latency_task_preempts_after_runnable_age_guard() {
+        let o = opts();
+        let mut p = pl(&o);
+        let now = 100 * MS;
+        let mut task = qt(1001, 100, "w", 0, 100);
+        task.stop_ts = now - 10 * MS;
+        let metas = vec![Some(InvocationMeta {
+            id: 1,
+            tgid: 100,
+            deadline_ns: now + 257 * MS,
+            estimated_duration_ns: 84 * MS,
+            slo_class: SloClass::LatencyCritical,
+            is_cold_start: true,
+            profile_id: None,
+            created_at_ns: now,
+        })];
+        let out = p.schedule_with_context(
+            &metas,
+            &[task],
+            &Topology::new().unwrap(),
+            now,
+            idle_context(),
+        );
+        assert!(out[0].preempt);
+        assert_ne!(out[0].dispatch_flags & RL_DISPATCH_PREEMPT, 0);
+        assert_eq!(out[0].dispatch_flags & RL_DISPATCH_FORCE_PREEMPT, 0);
+    }
+
+    #[test]
+    fn latest_start_scoring_prioritizes_short_latency_over_background() {
+        let mut o = opts();
+        o.disable_short_preemption = true;
+        let mut p = pl(&o);
+        let now = 100 * MS;
+        let tasks = [
+            qt(2000, 200, "batch", 1 * MS, 100),
+            qt(1000, 100, "lat", 1 * MS, 100),
+        ];
+        let metas = vec![
+            Some(InvocationMeta {
+                id: 2,
+                tgid: 200,
+                deadline_ns: now + 5_000 * MS,
+                estimated_duration_ns: 1_500 * MS,
+                slo_class: SloClass::Batch,
+                is_cold_start: false,
+                profile_id: None,
+                created_at_ns: now,
+            }),
+            Some(InvocationMeta {
+                id: 1,
+                tgid: 100,
+                deadline_ns: now + 257 * MS,
+                estimated_duration_ns: 84 * MS,
+                slo_class: SloClass::LatencyCritical,
+                is_cold_start: true,
+                profile_id: None,
+                created_at_ns: now,
+            }),
+        ];
+        let out = p.schedule(&metas, &tasks, &Topology::new().unwrap(), now);
+        assert_eq!(out[0].pid, 1000);
+        assert!(!out[0].preempt);
     }
 
     #[test]
@@ -970,8 +1284,12 @@ mod tests {
             (1, 101, now + 2 * MS, 1 * MS, 0, 0),
             (2, 102, now + 4 * MS, 1 * MS, 0, 0),
         ]);
-        let (_, _, se, _, _) = p.enqueue_test(&mut qt(1001, 101, "w", 1 * MS, 100), &r, now);
-        let (_, _, sl, _, _) = p.enqueue_test(&mut qt(1002, 102, "w", 1 * MS, 100), &r, now);
+        let mut earlier = qt(1001, 101, "w", 1 * MS, 100);
+        let mut later = qt(1002, 102, "w", 1 * MS, 100);
+        earlier.vtime = 1_000 * MS;
+        later.vtime = 1_000 * MS;
+        let (_, _, se, _, _) = p.enqueue_test(&mut earlier, &r, now);
+        let (_, _, sl, _, _) = p.enqueue_test(&mut later, &r, now);
         assert!(se < sl, "{} vs {}", se, sl);
     }
 
@@ -982,10 +1300,14 @@ mod tests {
         let now = 100 * MS;
         let dl = now + 20 * MS;
         let r = build_reg(&[(1, 103, dl, 1 * MS, 0, 1), (2, 104, dl, 1 * MS, 0, 0)]);
-        let (cc, _, sc, _, _) = p.enqueue_test(&mut qt(1003, 103, "w", 1 * MS, 100), &r, now);
+        let mut cold = qt(1003, 103, "w", 1 * MS, 100);
+        cold.vtime = 1_000 * MS;
+        let (cc, _, sc, _, _) = p.enqueue_test(&mut cold, &r, now);
         assert_eq!(cc, TaskClass::ColdStart);
         p.enqueue_test(&mut qt(1004, 104, "w", 1 * MS, 100), &r, now);
-        let (ch, _, sh, _, _) = p.enqueue_test(&mut qt(1004, 104, "w", 1 * MS, 100), &r, now + MS);
+        let mut hot = qt(1004, 104, "w", 1 * MS, 100);
+        hot.vtime = 1_000 * MS;
+        let (ch, _, sh, _, _) = p.enqueue_test(&mut hot, &r, now + MS);
         assert_eq!(ch, TaskClass::HotInvocation);
         assert!(sc < sh, "{} vs {}", sc, sh);
     }

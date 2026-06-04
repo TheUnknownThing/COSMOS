@@ -355,6 +355,15 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
     metadata_setup = summarize_optional_ms(rows, "metadata_setup_ms")
     if metadata_setup is not None:
         summary["metadata_setup"] = metadata_setup
+    for field, summary_key in (
+        ("wait_duration_ms", "wait_duration"),
+        ("observed_duration_ms", "observed_duration"),
+        ("runner_to_wait_ms", "runner_to_wait"),
+        ("post_wait_cleanup_ms", "post_wait_cleanup"),
+    ):
+        timing_summary = summarize_optional_ms(rows, field)
+        if timing_summary is not None:
+            summary[summary_key] = timing_summary
 
     per_workload: dict[str, dict[str, Any]] = {}
     for row in rows:

@@ -197,6 +197,57 @@ class Phase6HarnessTests(unittest.TestCase):
         second = harness.timestamped_run_id()
         self.assertNotEqual(first, second)
 
+    def test_parse_invocation_time_stats_reads_runner_done_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr_path = Path(tmp) / "1.stderr"
+            stderr_path.write_text(
+                "COSMOS_RUNNER_DONE monotonic_ns=123456789\n"
+                "COSMOS_TIME real_s=0.12 user_s=0.03 sys_s=0.04 maxrss_kb=2048\n",
+                encoding="utf-8",
+            )
+
+            stats = harness.parse_invocation_time_stats_file(stderr_path)
+
+        self.assertIsNotNone(stats)
+        assert stats is not None
+        self.assertEqual(stats["runner_end_monotonic_ns"], 123456789)
+        self.assertAlmostEqual(stats["real_ms"], 120.0)
+        self.assertAlmostEqual(stats["cpu_ms"], 70.0)
+        self.assertEqual(stats["maxrss_kb"], 2048.0)
+
+    def test_invocation_output_payload_prefers_runner_end_for_slo_duration(self) -> None:
+        spec = harness.InvocationSpec(
+            invocation_id=1,
+            workload="cpu_burst",
+            actual_duration_ms=10,
+            deadline_us=100_000,
+            config="cosmos-full",
+        )
+
+        payload = harness.invocation_output_payload(
+            spec,
+            returncode=0,
+            launch_start_ns=500,
+            start_ns=1_000,
+            end_ns=4_000_000,
+            cleanup_end_ns=6_000_000,
+            stderr_path=Path("/tmp/1.stderr"),
+            metadata_ready_ns=1_000,
+            metadata_tgid=123,
+            metadata_tgids=[122, 123],
+            metadata_key_visible=None,
+            time_stats={"runner_end_monotonic_ns": 2_500_000},
+        )
+
+        self.assertEqual(payload["end_monotonic_ns"], 2_500_000)
+        self.assertEqual(payload["wait_end_monotonic_ns"], 4_000_000)
+        self.assertEqual(payload["cleanup_end_monotonic_ns"], 6_000_000)
+        self.assertAlmostEqual(payload["duration_ms"], 2.499)
+        self.assertAlmostEqual(payload["wait_duration_ms"], 3.999)
+        self.assertAlmostEqual(payload["observed_duration_ms"], 5.999)
+        self.assertAlmostEqual(payload["runner_to_wait_ms"], 1.5)
+        self.assertAlmostEqual(payload["post_wait_cleanup_ms"], 2.0)
+
     def test_summarize_run_captures_latency_and_scheduler_stats(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay Azure top functions as a CPU-only open-loop benchmark.
+"""Replay Azure top functions as a local open-loop benchmark.
 
 Generates invocations in real time (open-loop), measures steady-state goodput
 under a chosen scheduler, and runs either a single offered-rate experiment or a
@@ -9,18 +9,21 @@ linear offered-load sweep.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
+import hashlib
 import json
 import math
 import os
 import random
+import resource
 import signal
 import statistics
 import subprocess
 import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -33,6 +36,56 @@ import harness
 import run_cosmos
 
 RESULTS_ROOT = SCRIPT_DIR / "results"
+DEFAULT_WORKLOAD = "cpu_burst"
+CONFIG_WORKLOAD_MIX = "config"
+CPU_ONLY_WORKLOAD_MIX = "cpu-only"
+
+WORKLOAD_MIXES: dict[str, dict[str, float]] = {
+    "balanced": {
+        "cpu_burst": 0.18,
+        "sleep_short": 0.08,
+        "io_mixed": 0.12,
+        "memory_heavy": 0.14,
+        "network_heavy": 0.12,
+        "pipeline": 0.14,
+        "compression_mixed": 0.12,
+        "graph_bfs": 0.10,
+    },
+    "cpu-heavy": {
+        "cpu_burst": 0.45,
+        "compression_mixed": 0.20,
+        "graph_bfs": 0.15,
+        "pipeline": 0.10,
+        "memory_heavy": 0.10,
+    },
+    "io-heavy": {
+        "io_mixed": 0.35,
+        "pipeline": 0.25,
+        "network_heavy": 0.15,
+        "compression_mixed": 0.10,
+        "cpu_burst": 0.10,
+        "memory_heavy": 0.05,
+    },
+    "memory-heavy": {
+        "memory_heavy": 0.40,
+        "graph_bfs": 0.25,
+        "compression_mixed": 0.15,
+        "pipeline": 0.10,
+        "cpu_burst": 0.10,
+    },
+    "network-heavy": {
+        "network_heavy": 0.40,
+        "pipeline": 0.25,
+        "io_mixed": 0.15,
+        "sleep_short": 0.10,
+        "cpu_burst": 0.10,
+    },
+}
+WORKLOAD_MIX_CHOICES = [
+    CONFIG_WORKLOAD_MIX,
+    CPU_ONLY_WORKLOAD_MIX,
+    *sorted(WORKLOAD_MIXES),
+]
 
 
 @dataclass(frozen=True)
@@ -43,6 +96,7 @@ class FunctionProfile:
     p99_time_ms: int
     mean_time_ms: float
     time_distribution: dict[str, float]
+    workload: str = DEFAULT_WORKLOAD
 
 
 @dataclass(frozen=True)
@@ -53,6 +107,7 @@ class ScheduledInvocation:
     actual_duration_ms: int
     deadline_us: int
     generated_at_ns: int = 0
+    workload: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +117,7 @@ class PoolInvocation:
     actual_duration_ms: int
     p99_time_ms: int
     deadline_us: int
+    workload: str = DEFAULT_WORKLOAD
 
 
 @dataclass(frozen=True)
@@ -72,11 +128,12 @@ class InvocationPool:
     load_mean_time_ms: float
     load_mean_source: str
     cpu_cores: int
+    workload_mix: str | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Replay Azure top functions as a CPU-only open-loop benchmark."
+        description="Replay Azure top functions as a local open-loop benchmark."
     )
     parser.add_argument("--config-json", type=Path, required=True)
     parser.add_argument(
@@ -171,6 +228,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--max-launch-workers", type=int, default=1024)
+    parser.add_argument(
+        "--workload-mix",
+        choices=WORKLOAD_MIX_CHOICES,
+        default=CONFIG_WORKLOAD_MIX,
+        help=(
+            "Assign local benchmark workload types to Azure functions. "
+            "'config' uses per-function workload fields when present and "
+            "falls back to cpu_burst; other values deterministically override "
+            "the config with a semantic mix."
+        ),
+    )
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument(
         "--generate-pool-json",
@@ -208,6 +276,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--event-bridge-port", type=int, default=harness.DEFAULT_EVENT_BRIDGE_PORT
     )
     parser.add_argument(
+        "--profile-catalog",
+        type=Path,
+        default=harness.DEFAULT_PROFILE_CATALOG,
+        help="Static scheduler profile catalog used by metadata-enabled configs.",
+    )
+    parser.add_argument(
         "--control-plane-cpus",
         default=None,
         help="CPU set for scheduler/event-bridge/stats control-plane processes, e.g. 62-63.",
@@ -219,6 +293,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Reserve the last N available CPUs for control-plane work.",
     )
     parser.add_argument("--scheduler-flag", action="append", default=[])
+    parser.add_argument(
+        "--decision-trace",
+        action="store_true",
+        help="Enable per-dispatch scheduler decision tracing for sched_ext runs.",
+    )
+    parser.add_argument(
+        "--decision-trace-limit",
+        type=int,
+        default=0,
+        help="Maximum decision trace rows per run; 0 means unlimited.",
+    )
     return parser.parse_args(argv)
 
 
@@ -267,10 +352,186 @@ def median_float(values: list[float]) -> float:
     return float(statistics.median(values))
 
 
-def load_profiles(config_json: Path) -> list[FunctionProfile]:
+def append_flag_pair_once(flags: list[str], flag: str, value: str) -> None:
+    if flag not in flags:
+        flags.extend([flag, value])
+
+
+def raise_nofile_limit(min_soft: int) -> None:
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = max(soft, min_soft)
+        if hard != resource.RLIM_INFINITY:
+            target = min(target, hard)
+        if target > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except (OSError, ValueError):
+        pass
+
+
+def validate_workload_name(workload: object, *, context: str) -> str:
+    name = str(workload or DEFAULT_WORKLOAD).strip() or DEFAULT_WORKLOAD
+    try:
+        harness.workload_spec(name)
+    except KeyError as exc:
+        valid = ", ".join(harness.workload_names())
+        raise SystemExit(
+            f"{context} uses unknown workload {name!r}; valid: {valid}"
+        ) from exc
+    return name
+
+
+def workload_from_config_item(item: dict[str, Any], *, context: str) -> str:
+    candidates = [
+        item.get("workload"),
+        item.get("local_workload"),
+        item.get("benchmark_workload"),
+        item.get("semantic_workload"),
+    ]
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.extend(
+            [
+                metadata.get("workload"),
+                metadata.get("local_workload"),
+                metadata.get("benchmark_workload"),
+                metadata.get("semantic_workload"),
+            ]
+        )
+    for candidate in candidates:
+        if candidate not in (None, ""):
+            return validate_workload_name(candidate, context=context)
+    return DEFAULT_WORKLOAD
+
+
+def normalized_workload_mix(workload_mix: str) -> list[tuple[str, float]]:
+    if workload_mix not in WORKLOAD_MIX_CHOICES:
+        raise SystemExit(
+            f"Unsupported workload mix {workload_mix!r}; "
+            f"valid: {', '.join(WORKLOAD_MIX_CHOICES)}"
+        )
+    if workload_mix in (CONFIG_WORKLOAD_MIX, CPU_ONLY_WORKLOAD_MIX):
+        return [(DEFAULT_WORKLOAD, 1.0)]
+
+    raw_mix = WORKLOAD_MIXES[workload_mix]
+    total = sum(float(weight) for weight in raw_mix.values())
+    if total <= 0.0:
+        raise SystemExit(f"Workload mix {workload_mix!r} has no positive weight")
+    normalized: list[tuple[str, float]] = []
+    for workload, weight in raw_mix.items():
+        validate_workload_name(workload, context=f"workload mix {workload_mix}")
+        if weight > 0.0:
+            normalized.append((workload, float(weight) / total))
+    if not normalized:
+        raise SystemExit(f"Workload mix {workload_mix!r} has no positive weight")
+    return normalized
+
+
+def select_workload_from_mix(workload_mix: str, point: float) -> str:
+    cumulative = 0.0
+    selected = DEFAULT_WORKLOAD
+    for workload, weight in normalized_workload_mix(workload_mix):
+        selected = workload
+        cumulative += weight
+        if point < cumulative or math.isclose(point, cumulative):
+            return workload
+    return selected
+
+
+def _profile_mix_order_key(workload_mix: str, function_id: str) -> tuple[bytes, str]:
+    digest = hashlib.sha256(f"{workload_mix}:{function_id}".encode("utf-8")).digest()
+    return digest, function_id
+
+
+def apply_workload_mix(
+    profiles: list[FunctionProfile], workload_mix: str
+) -> list[FunctionProfile]:
+    if workload_mix == CONFIG_WORKLOAD_MIX:
+        return [
+            replace(
+                profile,
+                workload=validate_workload_name(
+                    profile.workload,
+                    context=f"profile {profile.function_id}",
+                ),
+            )
+            for profile in profiles
+        ]
+    if workload_mix == CPU_ONLY_WORKLOAD_MIX:
+        return [replace(profile, workload=DEFAULT_WORKLOAD) for profile in profiles]
+
+    normalized_workload_mix(workload_mix)
+    assignments: dict[str, str] = {}
+    running = 0.0
+    ordered = sorted(
+        profiles,
+        key=lambda profile: _profile_mix_order_key(workload_mix, profile.function_id),
+    )
+    for profile in ordered:
+        midpoint = min(1.0, running + max(0.0, profile.frequency) / 2.0)
+        assignments[profile.function_id] = select_workload_from_mix(
+            workload_mix, midpoint
+        )
+        running += max(0.0, profile.frequency)
+    return [
+        replace(profile, workload=assignments[profile.function_id])
+        for profile in profiles
+    ]
+
+
+def workload_distribution_from_profiles(
+    profiles: list[FunctionProfile],
+) -> dict[str, dict[str, float | int]]:
+    counts: Counter[str] = Counter()
+    frequencies: dict[str, float] = {}
+    for profile in profiles:
+        counts[profile.workload] += 1
+        frequencies[profile.workload] = (
+            frequencies.get(profile.workload, 0.0) + profile.frequency
+        )
+    return {
+        workload: {
+            "functions": counts[workload],
+            "frequency": frequencies.get(workload, 0.0),
+        }
+        for workload in sorted(counts)
+    }
+
+
+def workload_counts_from_invocations(
+    invocations: list[PoolInvocation],
+) -> dict[str, int]:
+    return dict(sorted(Counter(item.workload for item in invocations).items()))
+
+
+def workload_counts_from_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return dict(
+        sorted(
+            Counter(
+                str(row.get("workload") or DEFAULT_WORKLOAD) for row in rows
+            ).items()
+        )
+    )
+
+
+def profile_workload_label(profiles: list[FunctionProfile]) -> str:
+    workloads = sorted({profile.workload for profile in profiles})
+    if len(workloads) == 1:
+        return workloads[0]
+    return "mixed"
+
+
+def load_profiles(
+    config_json: Path, workload_mix: str = CONFIG_WORKLOAD_MIX
+) -> list[FunctionProfile]:
     payload = json.loads(config_json.read_text(encoding="utf-8"))
     if payload.get("schema") != "cosmos.azure.top-functions-config":
         raise SystemExit(f"Unsupported schema: {payload.get('schema')}")
+    if workload_mix not in WORKLOAD_MIX_CHOICES:
+        raise SystemExit(
+            f"Unsupported workload mix {workload_mix!r}; "
+            f"valid: {', '.join(WORKLOAD_MIX_CHOICES)}"
+        )
 
     functions = payload.get("functions", [])
     if not functions:
@@ -285,21 +546,31 @@ def load_profiles(config_json: Path) -> list[FunctionProfile]:
         }
         freq = float(item["frequency"])
         total_weight += freq
+        function_id = str(item["function_id"])
+        workload = (
+            workload_from_config_item(
+                item,
+                context=f"{config_json}:{function_id}",
+            )
+            if workload_mix == CONFIG_WORKLOAD_MIX
+            else DEFAULT_WORKLOAD
+        )
         profiles.append(
             FunctionProfile(
-                function_id=str(item["function_id"]),
+                function_id=function_id,
                 frequency=freq,
                 expected_time_ms=max(1, int(round(float(dist["p75"])))),
                 p99_time_ms=max(1, int(round(float(dist["p99"])))),
                 mean_time_ms=expected_time_ms(dist),
                 time_distribution=dist,
+                workload=workload,
             )
         )
     if total_weight <= 0.0:
         raise SystemExit("Function frequencies must sum to a positive value")
 
     # Normalise frequencies
-    return [
+    normalized = [
         FunctionProfile(
             function_id=p.function_id,
             frequency=p.frequency / total_weight,
@@ -307,9 +578,11 @@ def load_profiles(config_json: Path) -> list[FunctionProfile]:
             p99_time_ms=p.p99_time_ms,
             mean_time_ms=p.mean_time_ms,
             time_distribution=p.time_distribution,
+            workload=p.workload,
         )
         for p in profiles
     ]
+    return apply_workload_mix(normalized, workload_mix)
 
 
 def cap_profiles(
@@ -335,6 +608,7 @@ def cap_profiles(
                 p99_time_ms=max(1, int(round(dist["p99"]))),
                 mean_time_ms=expected_time_ms(dist),
                 time_distribution=dist,
+                workload=profile.workload,
             )
         )
     return capped
@@ -472,6 +746,7 @@ def build_invocation(
         actual_duration_ms=actual_duration_ms,
         deadline_us=deadline_us,
         generated_at_ns=generated_at_ns,
+        workload=profile.workload,
     )
 
 
@@ -517,6 +792,7 @@ def generate_invocation_pool(
                 actual_duration_ms=item.actual_duration_ms,
                 p99_time_ms=item.profile.p99_time_ms,
                 deadline_us=item.deadline_us,
+                workload=item.workload or item.profile.workload,
             )
         )
     return invocations
@@ -530,6 +806,7 @@ def write_pool_json(
     invocations: list[PoolInvocation],
     seed: int,
     duration_cap_ms: int | None = None,
+    workload_mix: str | None = None,
 ) -> None:
     weighted_mean_ms = weighted_mean_time_ms(profiles)
     actual_mean_ms = actual_mean_time_ms_from_pool(invocations)
@@ -541,6 +818,9 @@ def write_pool_json(
         "pool_size": len(invocations),
         "cpu_cores": os.cpu_count() or 1,
         "duration_cap_ms": duration_cap_ms,
+        "workload_mix": workload_mix or CONFIG_WORKLOAD_MIX,
+        "profile_workload_distribution": workload_distribution_from_profiles(profiles),
+        "pool_workload_counts": workload_counts_from_invocations(invocations),
         "weighted_mean_time_ms": weighted_mean_ms,
         "weighted_mean_duration_ms": weighted_mean_ms,
         "actual_mean_time_ms": actual_mean_ms,
@@ -548,6 +828,7 @@ def write_pool_json(
             {
                 "function_id": p.function_id,
                 "frequency": p.frequency,
+                "workload": p.workload,
                 "expected_time_ms": p.expected_time_ms,
                 "p99_time_ms": p.p99_time_ms,
                 "mean_time_ms": p.mean_time_ms,
@@ -563,6 +844,7 @@ def write_pool_json(
                 "actual_duration_ms": item.actual_duration_ms,
                 "p99_time_ms": item.p99_time_ms,
                 "deadline_us": item.deadline_us,
+                "workload": item.workload,
             }
             for idx, item in enumerate(invocations, start=1)
         ],
@@ -584,9 +866,10 @@ def load_profiles_from_pool_json(pool_json: Path) -> list[FunctionProfile]:
             }
             freq = float(raw["frequency"])
             total_weight += freq
+            function_id = str(raw["function_id"])
             profiles.append(
                 FunctionProfile(
-                    function_id=str(raw["function_id"]),
+                    function_id=function_id,
                     frequency=freq,
                     expected_time_ms=max(
                         1, int(round(float(raw.get("expected_time_ms", dist["p75"]))))
@@ -596,6 +879,10 @@ def load_profiles_from_pool_json(pool_json: Path) -> list[FunctionProfile]:
                     ),
                     mean_time_ms=float(raw.get("mean_time_ms", expected_time_ms(dist))),
                     time_distribution=dist,
+                    workload=validate_workload_name(
+                        raw.get("workload", DEFAULT_WORKLOAD),
+                        context=f"{pool_json}:{function_id}",
+                    ),
                 )
             )
         if total_weight <= 0.0:
@@ -608,6 +895,7 @@ def load_profiles_from_pool_json(pool_json: Path) -> list[FunctionProfile]:
                 p99_time_ms=p.p99_time_ms,
                 mean_time_ms=p.mean_time_ms,
                 time_distribution=p.time_distribution,
+                workload=p.workload,
             )
             for p in profiles
         ]
@@ -659,6 +947,10 @@ def load_invocation_pool(
             )
 
         p99_time_ms = int(raw.get("p99_time_ms", profile.p99_time_ms))
+        workload = validate_workload_name(
+            raw.get("workload", profile.workload),
+            context=f"{pool_json}:{function_id}",
+        )
         invocations.append(
             PoolInvocation(
                 function_id=function_id,
@@ -680,6 +972,7 @@ def load_invocation_pool(
                         ),
                     )
                 ),
+                workload=workload,
             )
         )
 
@@ -703,6 +996,7 @@ def load_invocation_pool(
         load_mean_time_ms=load_mean_ms,
         load_mean_source=load_mean_source,
         cpu_cores=max(1, int(payload.get("cpu_cores") or (os.cpu_count() or 1))),
+        workload_mix=payload.get("workload_mix"),
     )
 
 
@@ -722,6 +1016,7 @@ def invocation_from_pool_item(
         actual_duration_ms=pool_item.actual_duration_ms,
         deadline_us=pool_item.deadline_us,
         generated_at_ns=generated_at_ns,
+        workload=pool_item.workload or profile.workload,
     )
 
 
@@ -834,9 +1129,13 @@ def invocation_spec_from_schedule(
     release_monotonic_ns: int,
 ) -> harness.InvocationSpec:
     exp = item.profile.expected_time_ms
+    workload = validate_workload_name(
+        item.workload or item.profile.workload,
+        context=f"scheduled invocation {item.invocation_id}",
+    )
     return harness.InvocationSpec(
         invocation_id=item.invocation_id,
-        workload="cpu_burst",
+        workload=workload,
         actual_duration_ms=item.actual_duration_ms,
         deadline_us=item.deadline_us,
         config=config,
@@ -954,6 +1253,7 @@ SCHEDULE_CSV_FIELDS = [
     "release_offset_s",
     "generated_at_ns",
     "function_id",
+    "workload",
     "expected_time_ms",
     "actual_duration_ms",
     "p99_time_ms",
@@ -1144,6 +1444,12 @@ def build_summary(
     summary = {
         "config": manifest["config"],
         "workload": manifest["workload"],
+        "workload_mix": manifest.get("workload_mix"),
+        "profile_workload_distribution": manifest.get(
+            "profile_workload_distribution", {}
+        ),
+        "workload_counts": workload_counts_from_rows(rows),
+        "all_workload_counts": workload_counts_from_rows(all_rows),
         "metadata_mode": manifest["metadata_mode"],
         "scheduler_flags": manifest["scheduler_flags"],
         "offered_rate_inv_per_sec": offered_rate,
@@ -1264,6 +1570,7 @@ def write_manifest(
     deadline_floor_ms: float,
     launcher_workers: int,
     pool_json: Path | None = None,
+    workload_mix: str | None = None,
     control_plane_cpus: list[int] | None = None,
     workload_cpus: list[int] | None = None,
     workload_sched_ext: bool = False,
@@ -1282,7 +1589,9 @@ def write_manifest(
     )
     payload = {
         "config": config,
-        "workload": "cpu_burst",
+        "workload": profile_workload_label(profiles),
+        "workload_mix": workload_mix or CONFIG_WORKLOAD_MIX,
+        "profile_workload_distribution": workload_distribution_from_profiles(profiles),
         "concurrency": launcher_workers,
         "duration_ms": int(round(run_duration_s * 1000)),
         "warmup_duration_ms": int(round(warmup_duration_s * 1000)),
@@ -1347,6 +1656,11 @@ def run_single_rate(
     actual_mean_ms = pool.actual_mean_time_ms if pool is not None else None
     load_mean_ms = pool.load_mean_time_ms if pool is not None else weighted_mean_ms
     load_mean_source = pool.load_mean_source if pool is not None else "weighted_mean_time_ms"
+    workload_mix = (
+        pool.workload_mix
+        if pool is not None and pool.workload_mix
+        else getattr(args, "workload_mix", CONFIG_WORKLOAD_MIX)
+    )
 
     if args.config == "cfs-default":
         scheduler_flags: list[str] = []
@@ -1359,11 +1673,33 @@ def run_single_rate(
             global_slo,
             weighted_expected_p50_ms(profiles),
         )
+        if use_metadata and "--profile-catalog" not in getattr(
+            args, "scheduler_flag", []
+        ):
+            append_flag_pair_once(
+                scheduler_flags,
+                "--profile-catalog",
+                str(args.profile_catalog),
+            )
         scheduler_flags = [*scheduler_flags, *args.scheduler_flag]
         if control_plane_cpus:
-            for flag in ("--partial", "--partial-usersched-cfs"):
-                if flag not in scheduler_flags:
-                    scheduler_flags.append(flag)
+            # Keep the scheduler/control-plane responsive on reserved CPUs.
+            # BPF now explicitly kicks dispatch after user-ring submissions, so
+            # the userspace scheduler no longer has to be scheduled via SCHED_DSQ
+            # just to make dispatch decisions visible to sched_ext.
+            if "--partial-usersched-cfs" not in scheduler_flags:
+                scheduler_flags.append("--partial-usersched-cfs")
+            if "--partial" not in scheduler_flags:
+                scheduler_flags.append("--partial")
+        if getattr(args, "decision_trace", False):
+            scheduler_flags.extend(
+                ["--decision-trace", str(run_dir / "decision_trace.jsonl")]
+            )
+            decision_trace_limit = int(getattr(args, "decision_trace_limit", 0) or 0)
+            if decision_trace_limit > 0:
+                scheduler_flags.extend(
+                    ["--decision-trace-max-events", str(decision_trace_limit)]
+                )
     workload_sched_ext = bool(control_plane_cpus and args.config != "cfs-default")
 
     workers = estimate_worker_requirement(
@@ -1375,6 +1711,7 @@ def run_single_rate(
         worker_safety_factor=args.worker_safety_factor,
         max_launch_workers=args.max_launch_workers,
     )
+    raise_nofile_limit(max(4096, workers * 4 + 256))
     write_manifest(
         run_dir,
         config=args.config,
@@ -1396,6 +1733,7 @@ def run_single_rate(
         deadline_floor_ms=args.deadline_floor_ms,
         launcher_workers=workers,
         pool_json=pool_json,
+        workload_mix=workload_mix,
         control_plane_cpus=control_plane_cpus,
         workload_cpus=workload_cpus,
         workload_sched_ext=workload_sched_ext,
@@ -1464,6 +1802,7 @@ def run_single_rate(
                             "release_offset_s": f"{item.release_offset_s:.6f}",
                             "generated_at_ns": item.generated_at_ns,
                             "function_id": item.profile.function_id,
+                            "workload": item.workload or item.profile.workload,
                             "expected_time_ms": item.profile.expected_time_ms,
                             "actual_duration_ms": item.actual_duration_ms,
                             "p99_time_ms": item.profile.p99_time_ms,
@@ -1543,6 +1882,11 @@ def run_load_sweep(
     actual_mean_ms = pool.actual_mean_time_ms if pool is not None else None
     load_mean_ms = pool.load_mean_time_ms if pool is not None else weighted_mean_ms
     load_mean_source = pool.load_mean_source if pool is not None else "weighted_mean_time_ms"
+    workload_mix = (
+        pool.workload_mix
+        if pool is not None and pool.workload_mix
+        else getattr(args, "workload_mix", CONFIG_WORKLOAD_MIX)
+    )
     repeats = max(1, int(getattr(args, "repeats", 1)))
     config_json = getattr(args, "config_json", pool_json or Path("pool.json"))
 
@@ -1636,6 +1980,8 @@ def run_load_sweep(
         "config": args.config,
         "config_json": str(config_json),
         "pool_json": str(pool_json) if pool_json is not None else None,
+        "workload_mix": workload_mix,
+        "profile_workload_distribution": workload_distribution_from_profiles(profiles),
         "arrival_mode": args.arrival_mode,
         "run_duration_s": args.run_duration_s,
         "warmup_duration_s": args.warmup_duration_s,
@@ -1693,7 +2039,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.repeats < 1:
         raise SystemExit("--repeats must be at least 1")
 
-    profiles = load_profiles(args.config_json)
+    profiles = load_profiles(args.config_json, workload_mix=args.workload_mix)
     duration_cap_ms = args.duration_cap_ms if args.duration_cap_ms > 0 else None
     profiles = cap_profiles(profiles, duration_cap_ms)
     if args.generate_pool_json is not None:
@@ -1713,6 +2059,7 @@ def main(argv: list[str] | None = None) -> int:
             invocations=invocations,
             seed=args.seed,
             duration_cap_ms=duration_cap_ms,
+            workload_mix=args.workload_mix,
         )
         print(args.generate_pool_json)
         return 0

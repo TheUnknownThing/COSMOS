@@ -51,7 +51,10 @@ fn run() -> AppResult<()> {
         "compression_mixed" => run_compression_mixed(target),
         "graph_bfs" => run_graph_bfs(target),
         other => Err(format!("unknown workload: {other}")),
-    }
+    }?;
+
+    eprintln!("COSMOS_RUNNER_DONE monotonic_ns={}", monotonic_now_ns()?);
+    Ok(())
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> AppResult<Args> {
@@ -301,6 +304,26 @@ fn process_cpu_time() -> AppResult<Duration> {
     let nanos = u32::try_from(ts.tv_nsec)
         .map_err(|_| "invalid nanoseconds from clock_gettime".to_string())?;
     Ok(Duration::new(secs, nanos))
+}
+
+fn monotonic_now_ns() -> AppResult<u64> {
+    let mut ts = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let rc = unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts) };
+    if rc != 0 {
+        return Err(format!(
+            "clock_gettime(CLOCK_MONOTONIC) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let secs = u64::try_from(ts.tv_sec).map_err(|_| "negative monotonic time".to_string())?;
+    let nanos = u64::try_from(ts.tv_nsec)
+        .map_err(|_| "invalid monotonic nanoseconds from clock_gettime".to_string())?;
+    secs.checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanos))
+        .ok_or_else(|| "monotonic timestamp overflow".to_string())
 }
 
 struct CpuBurstJob {
@@ -668,6 +691,7 @@ struct SchedParam {
 }
 
 const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
+const CLOCK_MONOTONIC: i32 = 1;
 const SCHED_EXT: i32 = 7;
 
 unsafe extern "C" {

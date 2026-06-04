@@ -729,33 +729,6 @@ static bool can_direct_dispatch(s32 cpu)
 	       !scx_bpf_dsq_nr_queued(cpu_to_dsq(cpu));
 }
 
-static bool try_direct_idle_dispatch(struct task_struct *p, s32 *prev_cpu, u64 enq_flags)
-{
-	s32 cpu;
-
-	if (!builtin_idle)
-		return false;
-
-	cpu = pick_idle_cpu(p, *prev_cpu, 0);
-	if (cpu < 0)
-		return false;
-
-	*prev_cpu = cpu;
-
-	if (!can_direct_dispatch(cpu))
-		return false;
-
-	if (!bpf_cpumask_test_cpu(cpu, p->cpus_ptr))
-		return false;
-
-	scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(cpu),
-				 slice_ns, p->scx.dsq_vtime, enq_flags);
-	__sync_fetch_and_add(&nr_kernel_dispatches, 1);
-	scx_bpf_kick_cpu(cpu, SCX_KICK_IDLE);
-
-	return true;
-}
-
 s32 BPF_STRUCT_OPS(rustland_select_cpu, struct task_struct *p, s32 prev_cpu,
 		   u64 wake_flags)
 {
@@ -1019,8 +992,6 @@ void BPF_STRUCT_OPS(rustland_enqueue, struct task_struct *p, u64 enq_flags)
 	 * queued to the user-space scheduler.
 	 */
 	if (!(builtin_idle && is_wakeup)) {
-		if (try_direct_idle_dispatch(p, &prev_cpu, enq_flags))
-			return;
 		queue_task_to_userspace(p, prev_cpu, enq_flags);
 		goto out_kick;
 	}

@@ -72,7 +72,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--event-bridge-port", type=int, default=harness.DEFAULT_EVENT_BRIDGE_PORT
     )
+    parser.add_argument(
+        "--profile-catalog",
+        type=Path,
+        default=harness.DEFAULT_PROFILE_CATALOG,
+        help="Static scheduler profile catalog used by metadata-enabled configs.",
+    )
+    parser.add_argument(
+        "--control-plane-cpus",
+        default=None,
+        help="CPU set for scheduler/event-bridge/stats control-plane processes, e.g. 62-63.",
+    )
+    parser.add_argument(
+        "--reserve-control-plane-cpus",
+        type=int,
+        default=0,
+        help="Reserve the last N available CPUs for control-plane work.",
+    )
     parser.add_argument("--scheduler-flag", action="append", default=[])
+    parser.add_argument(
+        "--decision-trace",
+        action="store_true",
+        help="Enable per-dispatch scheduler decision tracing for sched_ext runs.",
+    )
+    parser.add_argument(
+        "--decision-trace-limit",
+        type=int,
+        default=0,
+        help="Maximum decision trace rows per run; 0 means unlimited.",
+    )
     return parser.parse_args(argv)
 
 
@@ -84,6 +112,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--run-duration-s must be greater than --warmup-duration-s")
     if args.repeats < 1:
         raise SystemExit("--repeats must be at least 1")
+    control_plane_cpus, workload_cpus = harness.resolve_cpu_partition(
+        args.control_plane_cpus,
+        args.reserve_control_plane_cpus,
+    )
+    args.control_plane_cpu_list = control_plane_cpus
+    args.workload_cpu_list = workload_cpus if control_plane_cpus else None
 
     profiles = replay.load_profiles_from_pool_json(args.pool_json)
     pool = replay.load_invocation_pool(

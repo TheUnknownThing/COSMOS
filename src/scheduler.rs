@@ -6,7 +6,7 @@ use crate::adapter::CpuAdapter;
 use crate::bpf::RL_CPU_ANY;
 use crate::coordinator::CoordinationEngine;
 use crate::metadata::delete_invocation_hint;
-use crate::policy::SchedulingPolicy;
+use crate::policy::{SchedulingContext, SchedulingPolicy};
 use crate::registry::InvocationMeta;
 use crate::registry::RegistryHandle;
 use crate::stats::Metrics;
@@ -101,6 +101,11 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
                 }
             }
             let raw = self.adapter.drain();
+            let bpf_context = self.adapter.bpf_counters();
+            let scheduling_context = SchedulingContext {
+                nr_online_cpus: bpf_context.nr_online_cpus,
+                nr_running: bpf_context.nr_running,
+            };
             let decisions = {
                 let resolved: Vec<Option<InvocationMeta>> = match self.registry.try_read() {
                     Ok(reg) => raw
@@ -109,8 +114,13 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
                         .collect(),
                     Err(_) => vec![None; raw.len()],
                 };
-                self.policy
-                    .schedule(&resolved, &raw, self.adapter.topology(), now)
+                self.policy.schedule_with_context(
+                    &resolved,
+                    &raw,
+                    self.adapter.topology(),
+                    now,
+                    scheduling_context,
+                )
             };
             for dec in &decisions {
                 let dispatched = self.adapter.dispatch(

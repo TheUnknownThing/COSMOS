@@ -25,6 +25,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument(
+        "--workload-mix",
+        choices=replay.WORKLOAD_MIX_CHOICES,
+        default=replay.CONFIG_WORKLOAD_MIX,
+        help=(
+            "Assign local benchmark workload types to Azure functions. "
+            "'config' uses per-function workload fields when present and "
+            "falls back to cpu_burst."
+        ),
+    )
+    parser.add_argument(
         "--min-slack-us", type=int, default=harness.DEFAULT_SLO_MIN_SLACK_US
     )
     parser.add_argument("--deadline-safety-factor", type=float, default=1.2)
@@ -46,7 +56,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    profiles = replay.load_profiles(args.config_json)
+    profiles = replay.load_profiles(args.config_json, workload_mix=args.workload_mix)
     duration_cap_ms = args.duration_cap_ms if args.duration_cap_ms > 0 else None
     profiles = replay.cap_profiles(profiles, duration_cap_ms)
     invocations = replay.generate_invocation_pool(
@@ -65,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         invocations=invocations,
         seed=args.seed,
         duration_cap_ms=duration_cap_ms,
+        workload_mix=args.workload_mix,
     )
     print(args.output)
     return 0

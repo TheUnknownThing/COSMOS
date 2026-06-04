@@ -1,8 +1,10 @@
-# Azure 2019 CPU Trace Tools
+# Azure 2019 Trace Replay Tools
 
 This directory is intentionally narrow. The older Azure/OpenWhisk replay
-builders from `co-schedule` are deprecated here; the retained files are the CPU
-top-functions artifacts and helpers used by `cpu-azure-trace`.
+
+By default the replay remains CPU-only for backward compatibility, but the
+scripts can now assign local semantic workload types without going through
+OpenWhisk.
 
 ## Files
 
@@ -42,11 +44,29 @@ python3 benchmarks/scripts/replay_top_functions.py \
   --warmup-duration-s 5
 ```
 
+Use a semantic local workload mix when measuring scheduling policy behavior
+under heterogeneous work:
+
+```sh
+python3 benchmarks/scripts/replay_top_functions.py \
+  --config-json benchmarks/azure_trace/top20_mixed_p75.json \
+  --workload-mix balanced \
+  --config cosmos-full \
+  --run-duration-s 30 \
+  --warmup-duration-s 5
+```
+
+Supported mix names are `balanced`, `cpu-heavy`, `io-heavy`, `memory-heavy`,
+and `network-heavy`. The default `config` mode reads per-function `workload`
+fields when they exist and otherwise falls back to `cpu_burst`; `cpu-only`
+forces the old all-CPU behavior.
+
 For deterministic replay, generate or reuse an invocation pool:
 
 ```sh
 python3 benchmarks/scripts/generate_pool.py \
   --config-json benchmarks/azure_trace/top20_mixed_p75.json \
+  --workload-mix balanced \
   --pool-size 100000 \
   --seed 42 \
   --output benchmarks/azure_trace/pool_mixed_p75_cap10000.json
