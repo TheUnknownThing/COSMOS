@@ -77,3 +77,8 @@ python3 benchmarks/scripts/run_pool.py \
   --run-duration-s 180 \
   --warmup-duration-s 30
 ```
+
+Generated pools include a short per-workload CPU-demand calibration. Load
+sweeps use `actual_mean_cpu_time_ms` for `offered_load`, so the x-axis tracks
+CPU demand divided by CPU capacity. The original wall-duration load is still
+reported as `wall_duration_offered_load` for comparison with older artifacts.

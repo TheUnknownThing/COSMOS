@@ -164,6 +164,9 @@ impl<P: SchedulingPolicy, A: CpuAdapter> Scheduler<P, A> {
             if req_ch.try_recv().is_ok() {
                 res_ch.send(self.get_metrics())?;
             }
+            if pending == 0 {
+                self.adapter.wait_for_work(Duration::from_millis(1));
+            }
         }
         self.adapter.shutdown_and_report()
     }

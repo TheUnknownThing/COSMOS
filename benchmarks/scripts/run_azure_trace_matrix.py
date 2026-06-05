@@ -55,6 +55,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--pool-size", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--cpu-calibration-duration-ms",
+        type=int,
+        default=1000,
+        help="Per-workload CPU-demand calibration duration for generated pools.",
+    )
+    parser.add_argument(
+        "--cpu-calibration-repeats",
+        type=int,
+        default=3,
+        help="Per-workload CPU-demand calibration repeats for generated pools.",
+    )
+    parser.add_argument(
+        "--disable-workload-deadline-multipliers",
+        action="store_true",
+        help="Do not apply default workload-specific deadline multipliers to generated pools.",
+    )
+    parser.add_argument(
+        "--workload-deadline-multiplier",
+        action="append",
+        default=[],
+        metavar="WORKLOAD=FACTOR",
+        help="Override or add a generated-pool workload deadline multiplier.",
+    )
     parser.add_argument("--max-launch-workers", type=int, default=1024)
     parser.add_argument("--slo-miss-threshold", type=float, default=0.05)
     parser.add_argument(
@@ -152,6 +176,27 @@ def collect_rows(result_root: Path) -> list[dict[str, object]]:
                 "mix": mix,
                 "config": config,
                 "offered_load": maybe_float(candidate.get("offered_load")),
+                "wall_duration_offered_load": maybe_float(
+                    candidate.get(
+                        "wall_duration_offered_load",
+                        summary.get("wall_duration_offered_load"),
+                    )
+                ),
+                "load_mean_source": summary.get(
+                    "load_mean_source", sweep.get("load_mean_source")
+                ),
+                "load_mean_time_ms": maybe_float(
+                    summary.get("load_mean_time_ms", sweep.get("load_mean_time_ms"))
+                ),
+                "actual_mean_time_ms": maybe_float(
+                    summary.get("actual_mean_time_ms", sweep.get("actual_mean_time_ms"))
+                ),
+                "actual_mean_cpu_time_ms": maybe_float(
+                    summary.get(
+                        "actual_mean_cpu_time_ms",
+                        sweep.get("actual_mean_cpu_time_ms"),
+                    )
+                ),
                 "rate_inv_per_sec": maybe_float(candidate.get("rate_inv_per_sec")),
                 "goodput_inv_per_sec": maybe_float(
                     candidate.get("goodput_inv_per_sec")
@@ -181,6 +226,11 @@ def write_comparison(result_root: Path) -> None:
         "mix",
         "config",
         "offered_load",
+        "wall_duration_offered_load",
+        "load_mean_source",
+        "load_mean_time_ms",
+        "actual_mean_time_ms",
+        "actual_mean_cpu_time_ms",
         "rate_inv_per_sec",
         "goodput_inv_per_sec",
         "throughput_inv_per_sec",
@@ -287,9 +337,16 @@ def main() -> int:
                 str(args.pool_size),
                 "--seed",
                 str(args.seed + mix_index),
-                "--output",
-                str(pool_path),
+                "--cpu-calibration-duration-ms",
+                str(args.cpu_calibration_duration_ms),
+                "--cpu-calibration-repeats",
+                str(args.cpu_calibration_repeats),
             ]
+            if args.disable_workload_deadline_multipliers:
+                pool_cmd.append("--disable-workload-deadline-multipliers")
+            for multiplier in args.workload_deadline_multiplier:
+                pool_cmd.extend(["--workload-deadline-multiplier", multiplier])
+            pool_cmd.extend(["--output", str(pool_path)])
             start = time.monotonic()
             start_utc = datetime.now(timezone.utc).isoformat()
             rc, lines = stream_command(pool_cmd, cwd=REPO_ROOT, log_path=log_path)

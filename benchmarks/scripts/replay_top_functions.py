@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import csv
-import hashlib
 import json
 import math
 import os
@@ -81,6 +80,13 @@ WORKLOAD_MIXES: dict[str, dict[str, float]] = {
         "cpu_burst": 0.10,
     },
 }
+DEFAULT_WORKLOAD_DEADLINE_MULTIPLIERS: dict[str, float] = {
+    "cpu_burst": 1.1,
+    "graph_bfs": 1.1,
+    "memory_heavy": 1.2,
+    "network_heavy": 1.1,
+    "pipeline": 1.0,
+}
 WORKLOAD_MIX_CHOICES = [
     CONFIG_WORKLOAD_MIX,
     CPU_ONLY_WORKLOAD_MIX,
@@ -118,12 +124,14 @@ class PoolInvocation:
     p99_time_ms: int
     deadline_us: int
     workload: str = DEFAULT_WORKLOAD
+    cpu_demand_ms: float | None = None
 
 
 @dataclass(frozen=True)
 class InvocationPool:
     invocations: list[PoolInvocation]
     actual_mean_time_ms: float | None
+    actual_mean_cpu_time_ms: float | None
     weighted_mean_time_ms: float
     load_mean_time_ms: float
     load_mean_source: str
@@ -257,6 +265,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=100_000,
         help="Number of invocations to write with --generate-pool-json.",
+    )
+    parser.add_argument(
+        "--cpu-calibration-duration-ms",
+        type=int,
+        default=1000,
+        help="Per-workload duration for CPU-demand calibration when generating pools.",
+    )
+    parser.add_argument(
+        "--cpu-calibration-repeats",
+        type=int,
+        default=3,
+        help="Per-workload calibration repeats when generating pools.",
+    )
+    parser.add_argument(
+        "--disable-workload-deadline-multipliers",
+        action="store_true",
+        help="Do not apply default workload-specific deadline multipliers to generated pools.",
+    )
+    parser.add_argument(
+        "--workload-deadline-multiplier",
+        action="append",
+        default=[],
+        metavar="WORKLOAD=FACTOR",
+        help="Override or add a workload deadline multiplier for generated pools.",
     )
     parser.add_argument(
         "--repeats",
@@ -438,11 +470,6 @@ def select_workload_from_mix(workload_mix: str, point: float) -> str:
     return selected
 
 
-def _profile_mix_order_key(workload_mix: str, function_id: str) -> tuple[bytes, str]:
-    digest = hashlib.sha256(f"{workload_mix}:{function_id}".encode("utf-8")).digest()
-    return digest, function_id
-
-
 def apply_workload_mix(
     profiles: list[FunctionProfile], workload_mix: str
 ) -> list[FunctionProfile]:
@@ -461,22 +488,68 @@ def apply_workload_mix(
         return [replace(profile, workload=DEFAULT_WORKLOAD) for profile in profiles]
 
     normalized_workload_mix(workload_mix)
-    assignments: dict[str, str] = {}
-    running = 0.0
-    ordered = sorted(
-        profiles,
-        key=lambda profile: _profile_mix_order_key(workload_mix, profile.function_id),
-    )
-    for profile in ordered:
-        midpoint = min(1.0, running + max(0.0, profile.frequency) / 2.0)
-        assignments[profile.function_id] = select_workload_from_mix(
-            workload_mix, midpoint
-        )
-        running += max(0.0, profile.frequency)
     return [
-        replace(profile, workload=assignments[profile.function_id])
+        replace(profile, workload=DEFAULT_WORKLOAD)
         for profile in profiles
     ]
+
+
+def workloads_for_invocation_mix(
+    workload_mix: str, profiles: list[FunctionProfile]
+) -> set[str]:
+    if workload_mix == CONFIG_WORKLOAD_MIX:
+        return {profile.workload for profile in profiles}
+    if workload_mix == CPU_ONLY_WORKLOAD_MIX:
+        return {DEFAULT_WORKLOAD}
+    return {workload for workload, _ in normalized_workload_mix(workload_mix)}
+
+
+def select_invocation_workload(
+    profile: FunctionProfile,
+    workload_mix: str,
+    rng: random.Random,
+) -> str:
+    if workload_mix == CONFIG_WORKLOAD_MIX:
+        return validate_workload_name(
+            profile.workload,
+            context=f"profile {profile.function_id}",
+        )
+    if workload_mix == CPU_ONLY_WORKLOAD_MIX:
+        return DEFAULT_WORKLOAD
+    return select_workload_from_mix(workload_mix, rng.random())
+
+
+def invocation_workload_sequence(
+    workload_mix: str,
+    count: int,
+    *,
+    seed: int,
+) -> list[str] | None:
+    if workload_mix in (CONFIG_WORKLOAD_MIX, CPU_ONLY_WORKLOAD_MIX):
+        return None
+
+    normalized = normalized_workload_mix(workload_mix)
+    raw_counts = [
+        (workload, weight * count)
+        for workload, weight in normalized
+    ]
+    counts = {workload: int(math.floor(raw_count)) for workload, raw_count in raw_counts}
+    remainder = count - sum(counts.values())
+    ranked = sorted(
+        raw_counts,
+        key=lambda item: (item[1] - math.floor(item[1]), item[0]),
+        reverse=True,
+    )
+    for workload, _ in ranked[:remainder]:
+        counts[workload] += 1
+
+    sequence = [
+        workload
+        for workload, _ in normalized
+        for _ in range(counts.get(workload, 0))
+    ]
+    random.Random(f"{workload_mix}:{seed}:invocation-workloads").shuffle(sequence)
+    return sequence
 
 
 def workload_distribution_from_profiles(
@@ -726,6 +799,8 @@ def build_invocation(
     deadline_floor_ms: float,
     tail_max_multiplier: float,
     rng: random.Random,
+    workload_mix: str = CONFIG_WORKLOAD_MIX,
+    workload_override: str | None = None,
 ) -> ScheduledInvocation:
     profile = rng.choices(profiles, weights=weights, k=1)[0]
     actual_duration_ms = piecewise_sample_duration_ms(
@@ -739,6 +814,11 @@ def build_invocation(
         safety_factor=deadline_safety_factor,
         deadline_floor_ms=deadline_floor_ms,
     )
+    workload = (
+        validate_workload_name(workload_override, context="workload override")
+        if workload_override is not None
+        else select_invocation_workload(profile, workload_mix, rng)
+    )
     return ScheduledInvocation(
         invocation_id=invocation_id,
         release_offset_s=release_offset_s,
@@ -746,7 +826,7 @@ def build_invocation(
         actual_duration_ms=actual_duration_ms,
         deadline_us=deadline_us,
         generated_at_ns=generated_at_ns,
-        workload=profile.workload,
+        workload=workload,
     )
 
 
@@ -754,6 +834,129 @@ def actual_mean_time_ms_from_pool(invocations: list[PoolInvocation]) -> float:
     if not invocations:
         return 0.0
     return sum(item.actual_duration_ms for item in invocations) / len(invocations)
+
+
+def actual_mean_cpu_time_ms_from_pool(invocations: list[PoolInvocation]) -> float | None:
+    values = [
+        item.cpu_demand_ms
+        for item in invocations
+        if item.cpu_demand_ms is not None and item.cpu_demand_ms >= 0.0
+    ]
+    if len(values) != len(invocations) or not values:
+        return None
+    return sum(values) / len(values)
+
+
+def default_cpu_demand_ratio(workload: str) -> float:
+    if workload == "sleep_short":
+        return 0.0
+    if workload == "pipeline":
+        return 1.0 / 3.0
+    return 1.0
+
+
+def estimate_cpu_demand_ms(
+    workload: str,
+    duration_ms: int,
+    workload_cpu_ratios: dict[str, float] | None,
+) -> float:
+    ratio = (
+        workload_cpu_ratios.get(workload)
+        if workload_cpu_ratios is not None
+        else None
+    )
+    if ratio is None:
+        ratio = default_cpu_demand_ratio(workload)
+    return max(0.0, float(duration_ms) * max(0.0, ratio))
+
+
+def parse_workload_deadline_multipliers(
+    values: list[str],
+    *,
+    include_defaults: bool,
+) -> dict[str, float]:
+    multipliers = dict(DEFAULT_WORKLOAD_DEADLINE_MULTIPLIERS) if include_defaults else {}
+    for value in values:
+        if "=" not in value:
+            raise SystemExit(
+                "--workload-deadline-multiplier must be formatted as WORKLOAD=FACTOR"
+            )
+        workload, raw_factor = value.split("=", 1)
+        workload = validate_workload_name(
+            workload.strip(), context="deadline multiplier"
+        )
+        try:
+            factor = float(raw_factor)
+        except ValueError as exc:
+            raise SystemExit(f"invalid deadline multiplier factor: {value}") from exc
+        if factor <= 0.0:
+            raise SystemExit("deadline multiplier factors must be positive")
+        multipliers[workload] = factor
+    return multipliers
+
+
+def apply_workload_deadline_multiplier(
+    deadline_us: int,
+    workload: str,
+    workload_deadline_multipliers: dict[str, float] | None,
+) -> int:
+    if not workload_deadline_multipliers:
+        return deadline_us
+    factor = workload_deadline_multipliers.get(workload)
+    if factor is None:
+        return deadline_us
+    return max(1, int(math.ceil(float(deadline_us) * factor)))
+
+
+def calibrate_workload_cpu_ratios(
+    workloads: list[str] | set[str],
+    *,
+    duration_ms: int,
+    repeats: int,
+) -> dict[str, float]:
+    if duration_ms <= 0:
+        raise SystemExit("--cpu-calibration-duration-ms must be positive")
+    if repeats < 1:
+        raise SystemExit("--cpu-calibration-repeats must be at least 1")
+    if not harness.TIME_BIN.exists():
+        print(
+            f"WARNING: {harness.TIME_BIN} not found; using estimated CPU-demand ratios",
+            file=sys.stderr,
+        )
+        return {workload: default_cpu_demand_ratio(workload) for workload in workloads}
+
+    harness.ensure_benchmark_workload_build()
+    ratios: dict[str, float] = {}
+    for workload in sorted(workloads):
+        validate_workload_name(workload, context="CPU-demand calibration")
+        samples: list[float] = []
+        for _ in range(repeats):
+            proc = subprocess.run(
+                harness.workload_command(workload, duration_ms),
+                cwd=harness.REPO_ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=max(30.0, duration_ms / 1000.0 * 10.0),
+                check=False,
+            )
+            if proc.returncode != 0:
+                tail = "\n".join(proc.stderr.splitlines()[-20:])
+                raise SystemExit(
+                    f"CPU-demand calibration failed for {workload} "
+                    f"with exit code {proc.returncode}:\n{tail}"
+                )
+            match = harness.measure_latency.TIME_STATS_RE.search(proc.stderr)
+            if match is None:
+                raise SystemExit(
+                    f"CPU-demand calibration for {workload} did not emit COSMOS_TIME"
+                )
+            real_ms = float(match.group("real_s")) * 1000.0
+            cpu_ms = (float(match.group("user_s")) + float(match.group("sys_s"))) * 1000.0
+            if real_ms > 0.0:
+                samples.append(max(0.0, cpu_ms / real_ms))
+        ratios[workload] = median_float(samples)
+    return ratios
 
 
 def generate_invocation_pool(
@@ -765,14 +968,27 @@ def generate_invocation_pool(
     deadline_safety_factor: float,
     deadline_floor_ms: float,
     tail_max_multiplier: float,
+    workload_cpu_ratios: dict[str, float] | None = None,
+    workload_deadline_multipliers: dict[str, float] | None = None,
+    workload_mix: str = CONFIG_WORKLOAD_MIX,
 ) -> list[PoolInvocation]:
     if count < 1:
         raise SystemExit("--pool-size must be at least 1")
 
     rng = random.Random(seed)
     weights = [p.frequency for p in profiles]
+    workload_sequence = invocation_workload_sequence(
+        workload_mix,
+        count,
+        seed=seed,
+    )
     invocations: list[PoolInvocation] = []
     for invocation_id in range(1, count + 1):
+        workload_override = (
+            workload_sequence[invocation_id - 1]
+            if workload_sequence is not None
+            else None
+        )
         item = build_invocation(
             profiles,
             weights,
@@ -784,6 +1000,8 @@ def generate_invocation_pool(
             deadline_floor_ms=deadline_floor_ms,
             tail_max_multiplier=tail_max_multiplier,
             rng=rng,
+            workload_mix=workload_mix,
+            workload_override=workload_override,
         )
         invocations.append(
             PoolInvocation(
@@ -791,8 +1009,17 @@ def generate_invocation_pool(
                 expected_time_ms=item.profile.expected_time_ms,
                 actual_duration_ms=item.actual_duration_ms,
                 p99_time_ms=item.profile.p99_time_ms,
-                deadline_us=item.deadline_us,
+                deadline_us=apply_workload_deadline_multiplier(
+                    item.deadline_us,
+                    item.workload or item.profile.workload,
+                    workload_deadline_multipliers,
+                ),
                 workload=item.workload or item.profile.workload,
+                cpu_demand_ms=estimate_cpu_demand_ms(
+                    item.workload or item.profile.workload,
+                    item.actual_duration_ms,
+                    workload_cpu_ratios,
+                ),
             )
         )
     return invocations
@@ -807,9 +1034,12 @@ def write_pool_json(
     seed: int,
     duration_cap_ms: int | None = None,
     workload_mix: str | None = None,
+    workload_cpu_ratios: dict[str, float] | None = None,
+    workload_deadline_multipliers: dict[str, float] | None = None,
 ) -> None:
     weighted_mean_ms = weighted_mean_time_ms(profiles)
     actual_mean_ms = actual_mean_time_ms_from_pool(invocations)
+    actual_mean_cpu_ms = actual_mean_cpu_time_ms_from_pool(invocations)
     payload = {
         "schema": "cosmos.azure.top-functions-pool",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -821,9 +1051,12 @@ def write_pool_json(
         "workload_mix": workload_mix or CONFIG_WORKLOAD_MIX,
         "profile_workload_distribution": workload_distribution_from_profiles(profiles),
         "pool_workload_counts": workload_counts_from_invocations(invocations),
+        "workload_cpu_ratios": workload_cpu_ratios or {},
+        "workload_deadline_multipliers": workload_deadline_multipliers or {},
         "weighted_mean_time_ms": weighted_mean_ms,
         "weighted_mean_duration_ms": weighted_mean_ms,
         "actual_mean_time_ms": actual_mean_ms,
+        "actual_mean_cpu_time_ms": actual_mean_cpu_ms,
         "profiles": [
             {
                 "function_id": p.function_id,
@@ -845,6 +1078,7 @@ def write_pool_json(
                 "p99_time_ms": item.p99_time_ms,
                 "deadline_us": item.deadline_us,
                 "workload": item.workload,
+                "cpu_demand_ms": item.cpu_demand_ms,
             }
             for idx, item in enumerate(invocations, start=1)
         ],
@@ -973,6 +1207,11 @@ def load_invocation_pool(
                     )
                 ),
                 workload=workload,
+                cpu_demand_ms=(
+                    float(raw["cpu_demand_ms"])
+                    if raw.get("cpu_demand_ms") is not None
+                    else None
+                ),
             )
         )
 
@@ -981,7 +1220,17 @@ def load_invocation_pool(
     if actual_mean_raw is not None:
         actual_mean_ms = float(actual_mean_raw)
 
-    if actual_mean_ms is not None and actual_mean_ms > 0.0:
+    actual_mean_cpu_raw = payload.get("actual_mean_cpu_time_ms")
+    actual_mean_cpu_ms = None
+    if actual_mean_cpu_raw is not None:
+        actual_mean_cpu_ms = float(actual_mean_cpu_raw)
+    if actual_mean_cpu_ms is None:
+        actual_mean_cpu_ms = actual_mean_cpu_time_ms_from_pool(invocations)
+
+    if actual_mean_cpu_ms is not None and actual_mean_cpu_ms > 0.0:
+        load_mean_ms = actual_mean_cpu_ms
+        load_mean_source = "actual_mean_cpu_time_ms"
+    elif actual_mean_ms is not None and actual_mean_ms > 0.0:
         load_mean_ms = actual_mean_ms
         load_mean_source = "actual_mean_time_ms"
     else:
@@ -992,6 +1241,7 @@ def load_invocation_pool(
     return InvocationPool(
         invocations=invocations,
         actual_mean_time_ms=actual_mean_ms,
+        actual_mean_cpu_time_ms=actual_mean_cpu_ms,
         weighted_mean_time_ms=float(payload.get("weighted_mean_time_ms", weighted_mean_ms)),
         load_mean_time_ms=load_mean_ms,
         load_mean_source=load_mean_source,
@@ -1030,6 +1280,7 @@ def invocation_generator(
     deadline_safety_factor: float,
     deadline_floor_ms: float,
     tail_max_multiplier: float,
+    workload_mix: str,
     rng: random.Random,
     run_start_ns: int,
 ) -> Iterator[ScheduledInvocation]:
@@ -1068,6 +1319,7 @@ def invocation_generator(
             deadline_floor_ms=deadline_floor_ms,
             tail_max_multiplier=tail_max_multiplier,
             rng=rng,
+            workload_mix=workload_mix,
         )
         invocation_id += 1
 
@@ -1351,6 +1603,7 @@ def build_summary(
     offered_rate: float,
     weighted_mean_ms: float,
     actual_mean_ms: float | None,
+    actual_mean_cpu_ms: float | None,
     load_mean_ms: float,
     load_mean_source: str,
     cpu_cores: int,
@@ -1456,10 +1709,16 @@ def build_summary(
         "weighted_mean_time_ms": weighted_mean_ms,
         "weighted_mean_duration_ms": weighted_mean_ms,
         "actual_mean_time_ms": actual_mean_ms,
+        "actual_mean_cpu_time_ms": actual_mean_cpu_ms,
         "load_mean_time_ms": load_mean_ms,
         "load_mean_source": load_mean_source,
         "cpu_cores": cpu_cores,
         "offered_load": load_factor(offered_rate, load_mean_ms, cpu_cores),
+        "wall_duration_offered_load": load_factor(
+            offered_rate,
+            actual_mean_ms if actual_mean_ms is not None else weighted_mean_ms,
+            cpu_cores,
+        ),
         "effective_utilization": effective_utilization,
         "effective_utilization_source": effective_utilization_source,
         "scheduled_invocations": generated_invocations,
@@ -1558,6 +1817,7 @@ def write_manifest(
     offered_rate: float,
     weighted_mean_ms: float,
     actual_mean_ms: float | None,
+    actual_mean_cpu_ms: float | None,
     load_mean_ms: float,
     load_mean_source: str,
     cpu_cores: int,
@@ -1608,9 +1868,15 @@ def write_manifest(
         "weighted_mean_time_ms": weighted_mean_ms,
         "weighted_mean_duration_ms": weighted_mean_ms,
         "actual_mean_time_ms": actual_mean_ms,
+        "actual_mean_cpu_time_ms": actual_mean_cpu_ms,
         "load_mean_time_ms": load_mean_ms,
         "load_mean_source": load_mean_source,
         "offered_load": load_factor(offered_rate, load_mean_ms, cpu_cores),
+        "wall_duration_offered_load": load_factor(
+            offered_rate,
+            actual_mean_ms if actual_mean_ms is not None else weighted_mean_ms,
+            cpu_cores,
+        ),
         "arrival_mode": arrival_mode,
         "scheduled_invocations": 0,
     }
@@ -1654,6 +1920,7 @@ def run_single_rate(
         pool.weighted_mean_time_ms if pool is not None else weighted_mean_time_ms(profiles)
     )
     actual_mean_ms = pool.actual_mean_time_ms if pool is not None else None
+    actual_mean_cpu_ms = pool.actual_mean_cpu_time_ms if pool is not None else None
     load_mean_ms = pool.load_mean_time_ms if pool is not None else weighted_mean_ms
     load_mean_source = pool.load_mean_source if pool is not None else "weighted_mean_time_ms"
     workload_mix = (
@@ -1721,6 +1988,7 @@ def run_single_rate(
         offered_rate=rate,
         weighted_mean_ms=weighted_mean_ms,
         actual_mean_ms=actual_mean_ms,
+        actual_mean_cpu_ms=actual_mean_cpu_ms,
         load_mean_ms=load_mean_ms,
         load_mean_source=load_mean_source,
         cpu_cores=cpu_cores,
@@ -1780,6 +2048,7 @@ def run_single_rate(
                         deadline_safety_factor=args.deadline_safety_factor,
                         deadline_floor_ms=args.deadline_floor_ms,
                         tail_max_multiplier=args.tail_max_multiplier,
+                        workload_mix=workload_mix,
                         rng=rng,
                         run_start_ns=launcher_start,
                     )
@@ -1839,6 +2108,7 @@ def run_single_rate(
         offered_rate=rate,
         weighted_mean_ms=weighted_mean_ms,
         actual_mean_ms=actual_mean_ms,
+        actual_mean_cpu_ms=actual_mean_cpu_ms,
         load_mean_ms=load_mean_ms,
         load_mean_source=load_mean_source,
         cpu_cores=cpu_cores,
@@ -1880,6 +2150,7 @@ def run_load_sweep(
         pool.weighted_mean_time_ms if pool is not None else weighted_mean_time_ms(profiles)
     )
     actual_mean_ms = pool.actual_mean_time_ms if pool is not None else None
+    actual_mean_cpu_ms = pool.actual_mean_cpu_time_ms if pool is not None else None
     load_mean_ms = pool.load_mean_time_ms if pool is not None else weighted_mean_ms
     load_mean_source = pool.load_mean_source if pool is not None else "weighted_mean_time_ms"
     workload_mix = (
@@ -1943,10 +2214,17 @@ def run_load_sweep(
         median_effective_utilization = median_float(
             [float(run["effective_utilization"]) for run in runs]
         )
+        offered_load = load_factor(rate, load_mean_ms, cpu_cores)
+        wall_duration_offered_load = load_factor(
+            rate,
+            actual_mean_ms if actual_mean_ms is not None else weighted_mean_ms,
+            cpu_cores,
+        )
         candidates.append(
             {
                 "rate_inv_per_sec": rate,
-                "offered_load": load_factor(rate, load_mean_ms, cpu_cores),
+                "offered_load": offered_load,
+                "wall_duration_offered_load": wall_duration_offered_load,
                 "goodput_inv_per_sec": median_goodput,
                 "effective_utilization": median_effective_utilization,
                 "throughput_inv_per_sec": median_throughput,
@@ -1997,6 +2275,7 @@ def run_load_sweep(
         "weighted_mean_time_ms": weighted_mean_ms,
         "weighted_mean_duration_ms": weighted_mean_ms,
         "actual_mean_time_ms": actual_mean_ms,
+        "actual_mean_cpu_time_ms": actual_mean_cpu_ms,
         "load_mean_time_ms": load_mean_ms,
         "load_mean_source": load_mean_source,
         "load_sweep": None
@@ -2010,6 +2289,15 @@ def run_load_sweep(
         "optimal_rate_inv_per_sec": best_rate,
         "optimal_offered_load": (
             load_factor(best_rate, load_mean_ms, cpu_cores)
+            if best_rate is not None
+            else None
+        ),
+        "optimal_wall_duration_offered_load": (
+            load_factor(
+                best_rate,
+                actual_mean_ms if actual_mean_ms is not None else weighted_mean_ms,
+                cpu_cores,
+            )
             if best_rate is not None
             else None
         ),
@@ -2043,6 +2331,15 @@ def main(argv: list[str] | None = None) -> int:
     duration_cap_ms = args.duration_cap_ms if args.duration_cap_ms > 0 else None
     profiles = cap_profiles(profiles, duration_cap_ms)
     if args.generate_pool_json is not None:
+        workload_cpu_ratios = calibrate_workload_cpu_ratios(
+            workloads_for_invocation_mix(args.workload_mix, profiles),
+            duration_ms=args.cpu_calibration_duration_ms,
+            repeats=args.cpu_calibration_repeats,
+        )
+        workload_deadline_multipliers = parse_workload_deadline_multipliers(
+            args.workload_deadline_multiplier,
+            include_defaults=not args.disable_workload_deadline_multipliers,
+        )
         invocations = generate_invocation_pool(
             profiles,
             count=args.pool_size,
@@ -2051,6 +2348,9 @@ def main(argv: list[str] | None = None) -> int:
             deadline_safety_factor=args.deadline_safety_factor,
             deadline_floor_ms=args.deadline_floor_ms,
             tail_max_multiplier=args.tail_max_multiplier,
+            workload_cpu_ratios=workload_cpu_ratios,
+            workload_deadline_multipliers=workload_deadline_multipliers,
+            workload_mix=args.workload_mix,
         )
         write_pool_json(
             args.generate_pool_json,
@@ -2060,6 +2360,8 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             duration_cap_ms=duration_cap_ms,
             workload_mix=args.workload_mix,
+            workload_cpu_ratios=workload_cpu_ratios,
+            workload_deadline_multipliers=workload_deadline_multipliers,
         )
         print(args.generate_pool_json)
         return 0

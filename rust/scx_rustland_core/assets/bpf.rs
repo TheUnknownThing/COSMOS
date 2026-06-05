@@ -14,13 +14,14 @@ use std::ffi::c_ulong;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::Path;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Once;
+use std::time::Duration;
 
 use anyhow::bail;
 use anyhow::Context;
@@ -112,7 +113,7 @@ impl QueuedTask {
 // Task queued for dispatching to the BPF component (see bpf_intf::dispatched_task_ctx).
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
 pub struct DispatchedTask {
-    pub pid: i32,      // pid that uniquely identifies a task
+    pub pid: i32,            // pid that uniquely identifies a task
     pub cpu: i32, // target CPU selected by the scheduler (RL_CPU_ANY = dispatch on the first CPU available)
     pub flags: u64, // task's enqueue flags
     pub dispatch_flags: u64, // RL_DISPATCH_* policy/mechanism flags
@@ -183,7 +184,7 @@ impl EnqueuedMessage {
 
 pub struct BpfScheduler<'cb> {
     pub skel: BpfSkel<'cb>,                // Low-level BPF connector
-    pub shutdown: Arc<AtomicBool>,             // Determine scheduler shutdown
+    pub shutdown: Arc<AtomicBool>,         // Determine scheduler shutdown
     queued: libbpf_rs::RingBuffer<'cb>,    // Ring buffer of queued tasks
     dispatched: libbpf_rs::UserRingBuffer, // User Ring buffer of dispatched tasks
     struct_ops: Option<libbpf_rs::Link>,   // Low-level BPF methods
@@ -418,6 +419,27 @@ impl<'cb> BpfScheduler<'cb> {
     pub fn notify_complete(&mut self, nr_pending: u64) {
         self.skel.maps.bss_data.as_mut().unwrap().nr_scheduled = nr_pending;
         std::thread::yield_now();
+    }
+
+    pub fn wait_for_queued(&mut self, timeout: Duration) -> io::Result<bool> {
+        let mut fd = libc::pollfd {
+            fd: self.queued.epoll_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+
+        loop {
+            let ret = unsafe { libc::poll(&mut fd, 1, timeout_ms) };
+            if ret >= 0 {
+                return Ok(ret > 0 && (fd.revents & libc::POLLIN) != 0);
+            }
+
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
     }
 
     // Counter of the online CPUs.

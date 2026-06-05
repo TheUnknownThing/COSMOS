@@ -157,7 +157,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 [p.workload for p in profiles], ["pipeline", "memory_heavy"]
             )
 
-    def test_load_profiles_workload_mix_is_deterministic(self) -> None:
+    def test_generate_invocation_pool_assigns_workload_mix_per_invocation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "top.json"
             config_path.write_text(
@@ -166,7 +166,20 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                         "schema": "cosmos.azure.top-functions-config",
                         "functions": [
                             {
-                                "function_id": f"func-{idx}",
+                                "function_id": "func-hot",
+                                "frequency": 9.0,
+                                "workload": "cpu_burst",
+                                "time_distribution": {
+                                    "min": 10,
+                                    "p25": 10,
+                                    "p50": 10,
+                                    "p75": 10,
+                                    "p99": 20,
+                                    "max": 20,
+                                },
+                            },
+                            {
+                                "function_id": "func-cold",
                                 "frequency": 1.0,
                                 "workload": "cpu_burst",
                                 "time_distribution": {
@@ -177,24 +190,43 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                                     "p99": 20,
                                     "max": 20,
                                 },
-                            }
-                            for idx in range(8)
+                            },
                         ],
                     }
                 ),
                 encoding="utf-8",
             )
 
-            first = replay_top_functions.load_profiles(
-                config_path, workload_mix="balanced"
+            profiles = replay_top_functions.load_profiles(
+                config_path,
+                workload_mix="balanced",
             )
-            second = replay_top_functions.load_profiles(
-                config_path, workload_mix="balanced"
+            invocations = replay_top_functions.generate_invocation_pool(
+                profiles,
+                count=1000,
+                seed=7,
+                min_slack_us=0,
+                deadline_safety_factor=1.0,
+                deadline_floor_ms=0.0,
+                tail_max_multiplier=10.0,
+                workload_mix="balanced",
             )
 
-            self.assertEqual([p.workload for p in first], [p.workload for p in second])
-            self.assertGreater(len({p.workload for p in first}), 1)
-            self.assertNotEqual({p.workload for p in first}, {"cpu_burst"})
+            expected_counts = {
+                workload: int(weight * 1000)
+                for workload, weight in replay_top_functions.normalized_workload_mix(
+                    "balanced"
+                )
+            }
+            hot_workloads = {
+                item.workload for item in invocations if item.function_id == "func-hot"
+            }
+
+            self.assertEqual(
+                replay_top_functions.workload_counts_from_invocations(invocations),
+                expected_counts,
+            )
+            self.assertGreater(len(hot_workloads), 1)
 
     def test_build_invocation_uses_p99_deadline_and_clamped_tail(self) -> None:
         profile = replay_top_functions.FunctionProfile(
@@ -281,6 +313,54 @@ class ReplayTopFunctionsTests(unittest.TestCase):
             0.5,
         )
 
+    def test_parse_workload_deadline_multipliers_defaults_and_overrides(self) -> None:
+        multipliers = replay_top_functions.parse_workload_deadline_multipliers(
+            ["memory_heavy=2.5", "io_mixed=1.1"],
+            include_defaults=True,
+        )
+
+        self.assertAlmostEqual(multipliers["cpu_burst"], 1.1)
+        self.assertAlmostEqual(multipliers["memory_heavy"], 2.5)
+        self.assertAlmostEqual(multipliers["io_mixed"], 1.1)
+
+        no_defaults = replay_top_functions.parse_workload_deadline_multipliers(
+            ["cpu_burst=2.0"],
+            include_defaults=False,
+        )
+        self.assertEqual(no_defaults, {"cpu_burst": 2.0})
+
+    def test_generate_invocation_pool_applies_workload_deadline_multiplier(self) -> None:
+        profile = replay_top_functions.FunctionProfile(
+            function_id="func-a",
+            frequency=1.0,
+            expected_time_ms=10,
+            p99_time_ms=20,
+            mean_time_ms=10.0,
+            workload="memory_heavy",
+            time_distribution={
+                "min": 10.0,
+                "p25": 10.0,
+                "p50": 10.0,
+                "p75": 10.0,
+                "p99": 10.0,
+                "max": 10.0,
+            },
+        )
+
+        invocations = replay_top_functions.generate_invocation_pool(
+            [profile],
+            count=1,
+            seed=3,
+            min_slack_us=0,
+            deadline_safety_factor=1.0,
+            deadline_floor_ms=0.0,
+            tail_max_multiplier=10.0,
+            workload_deadline_multipliers={"memory_heavy": 1.2},
+        )
+
+        self.assertEqual(invocations[0].deadline_us, 48_000)
+        self.assertEqual(invocations[0].workload, "memory_heavy")
+
     def test_write_pool_json_records_actual_mean_and_profiles(self) -> None:
         profile = replay_top_functions.FunctionProfile(
             function_id="func-a",
@@ -306,6 +386,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 p99_time_ms=20,
                 deadline_us=40_000,
                 workload="pipeline",
+                cpu_demand_ms=10.0,
             ),
             replay_top_functions.PoolInvocation(
                 function_id="func-a",
@@ -314,6 +395,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 p99_time_ms=20,
                 deadline_us=40_000,
                 workload="pipeline",
+                cpu_demand_ms=30.0,
             ),
         ]
 
@@ -326,16 +408,20 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 invocations=invocations,
                 seed=42,
                 workload_mix="config",
+                workload_deadline_multipliers={"pipeline": 1.2},
             )
 
             payload = json.loads(pool_json.read_text(encoding="utf-8"))
             self.assertEqual(payload["pool_size"], 2)
             self.assertAlmostEqual(payload["actual_mean_time_ms"], 20.0)
+            self.assertAlmostEqual(payload["actual_mean_cpu_time_ms"], 20.0)
             self.assertAlmostEqual(payload["weighted_mean_time_ms"], 12.0)
             self.assertEqual(payload["profiles"][0]["function_id"], "func-a")
             self.assertEqual(payload["profiles"][0]["workload"], "pipeline")
             self.assertEqual(payload["invocations"][0]["workload"], "pipeline")
+            self.assertAlmostEqual(payload["invocations"][0]["cpu_demand_ms"], 10.0)
             self.assertEqual(payload["pool_workload_counts"], {"pipeline": 2})
+            self.assertEqual(payload["workload_deadline_multipliers"], {"pipeline": 1.2})
 
             profiles = replay_top_functions.load_profiles_from_pool_json(pool_json)
             self.assertEqual(profiles[0].function_id, "func-a")
@@ -436,6 +522,32 @@ class ReplayTopFunctionsTests(unittest.TestCase):
             )
             self.assertAlmostEqual(fallback.load_mean_time_ms, 100.0)
             self.assertEqual(fallback.load_mean_source, "weighted_mean_time_ms")
+
+            cpu_payload = dict(base_payload)
+            cpu_payload["actual_mean_time_ms"] = 200.0
+            cpu_payload["actual_mean_cpu_time_ms"] = 25.0
+            cpu_payload["invocations"] = [
+                {
+                    "function_id": "func-a",
+                    "expected_time_ms": 10,
+                    "actual_duration_ms": 200,
+                    "cpu_demand_ms": 25.0,
+                    "deadline_us": 40_000,
+                }
+            ]
+            cpu_json = Path(tmp) / "cpu.json"
+            cpu_json.write_text(json.dumps(cpu_payload), encoding="utf-8")
+            cpu_pool = replay_top_functions.load_invocation_pool(
+                cpu_json,
+                [profile],
+                weighted_mean_ms=100.0,
+                min_slack_us=5_000,
+                deadline_safety_factor=1.0,
+                deadline_floor_ms=0.0,
+            )
+            self.assertAlmostEqual(cpu_pool.load_mean_time_ms, 25.0)
+            self.assertAlmostEqual(cpu_pool.actual_mean_cpu_time_ms, 25.0)
+            self.assertEqual(cpu_pool.load_mean_source, "actual_mean_cpu_time_ms")
 
     def test_invocation_spec_separates_expected_actual_and_slo(self) -> None:
         profile = replay_top_functions.FunctionProfile(
@@ -548,7 +660,7 @@ class ReplayTopFunctionsTests(unittest.TestCase):
         self.assertEqual(len(sweep["candidates"]), 3)
         self.assertAlmostEqual(sweep["optimal_rate_inv_per_sec"], seen_rates[2])
 
-    def test_run_load_sweep_uses_pool_actual_mean_for_load_rates(self) -> None:
+    def test_run_load_sweep_uses_pool_cpu_mean_for_load_rates(self) -> None:
         profiles = [
             replay_top_functions.FunctionProfile(
                 function_id="func-a",
@@ -577,9 +689,10 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 )
             ],
             actual_mean_time_ms=200.0,
+            actual_mean_cpu_time_ms=50.0,
             weighted_mean_time_ms=100.0,
-            load_mean_time_ms=200.0,
-            load_mean_source="actual_mean_time_ms",
+            load_mean_time_ms=50.0,
+            load_mean_source="actual_mean_cpu_time_ms",
             cpu_cores=replay_top_functions.os.cpu_count() or 1,
         )
         args = type(
@@ -628,12 +741,16 @@ class ReplayTopFunctionsTests(unittest.TestCase):
                 replay_top_functions.run_single_rate = original  # type: ignore[assignment]
 
         cpu_cores = replay_top_functions.os.cpu_count() or 1
-        expected_rate = 0.5 * cpu_cores * 1000.0 / 200.0
+        expected_rate = 0.5 * cpu_cores * 1000.0 / 50.0
         self.assertEqual(len(seen_rates), 3)
         self.assertTrue(all(abs(rate - expected_rate) < 1e-9 for rate in seen_rates))
         self.assertAlmostEqual(sweep["actual_mean_time_ms"], 200.0)
-        self.assertEqual(sweep["load_mean_source"], "actual_mean_time_ms")
+        self.assertAlmostEqual(sweep["actual_mean_cpu_time_ms"], 50.0)
+        self.assertEqual(sweep["load_mean_source"], "actual_mean_cpu_time_ms")
         self.assertAlmostEqual(sweep["candidates"][0]["offered_load"], 0.5)
+        self.assertAlmostEqual(
+            sweep["candidates"][0]["wall_duration_offered_load"], 2.0
+        )
         self.assertEqual(sweep["candidates"][0]["repeats"], 3)
 
     def test_run_load_sweep_single_rate_mode(self) -> None:

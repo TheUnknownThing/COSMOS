@@ -6,6 +6,7 @@ use anyhow::Result;
 use log::warn;
 use scx_utils::Topology;
 use scx_utils::UserExitInfo;
+use std::time::Duration;
 
 use super::BpfCounters;
 use super::CpuAdapter;
@@ -74,6 +75,12 @@ impl CpuAdapter for ScxAdapter<'_> {
 
     fn notify_complete(&mut self, pending: u64) {
         self.bpf.notify_complete(pending);
+    }
+
+    fn wait_for_work(&mut self, timeout: Duration) {
+        if let Err(err) = self.bpf.wait_for_queued(timeout) {
+            warn!("Error waiting for queued scheduler work: {err}");
+        }
     }
 
     fn bpf_counters(&mut self) -> BpfCounters {

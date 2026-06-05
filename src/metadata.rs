@@ -15,7 +15,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,7 @@ pub struct ProfileCatalog {
 }
 
 pub type ProfileCatalogHandle = Arc<ProfileCatalog>;
+type CgroupResolutionSender = mpsc::Sender<InvocationMeta>;
 
 impl ProfileCatalog {
     pub fn load(path: Option<&Path>) -> Result<Self> {
@@ -67,6 +68,47 @@ impl ProfileCatalog {
 
 pub fn load_profile_catalog(path: Option<&Path>) -> Result<ProfileCatalogHandle> {
     Ok(Arc::new(ProfileCatalog::load(path)?))
+}
+
+fn spawn_cgroup_resolution_worker(
+    registry: RegistryHandle,
+    trace_collector: Option<TraceCollectorHandle>,
+) -> CgroupResolutionSender {
+    let (tx, rx) = mpsc::channel::<InvocationMeta>();
+    thread::spawn(move || {
+        let resolver = CgroupResolver::new();
+        while let Ok(meta) = rx.recv() {
+            let Ok((path, cgroup_id)) = resolver.resolve(meta.tgid) else {
+                continue;
+            };
+
+            let should_start_trace = {
+                let mut reg = registry.write().unwrap();
+                let live = reg
+                    .get_invocation(meta.tgid, meta.id)
+                    .map(|state| state.completed_at_ns.is_none())
+                    .unwrap_or(false);
+                reg.update_cgroup(meta.tgid, meta.id, path.clone(), cgroup_id);
+                live
+            };
+
+            if should_start_trace {
+                if let (Some(trace_collector), Some(profile_id)) =
+                    (trace_collector.as_ref(), meta.profile_id.as_deref())
+                {
+                    if let Err(err) =
+                        trace_collector.start_invocation(&meta, profile_id, path.clone())
+                    {
+                        eprintln!(
+                            "runtime trace start failed for tgid={} profile_id={}: {err:#}",
+                            meta.tgid, profile_id
+                        );
+                    }
+                }
+            }
+        }
+    });
+    tx
 }
 
 fn resolve_profile(
@@ -211,8 +253,15 @@ pub fn spawn_metadata_listener(
     trace_collector: Option<TraceCollectorConfig>,
 ) -> thread::JoinHandle<()> {
     let trace_collector = trace_collector.map(TraceCollectorHandle::spawn);
+    let cgroup_resolver = spawn_cgroup_resolution_worker(registry.clone(), trace_collector.clone());
     thread::spawn(move || {
-        if let Err(e) = run_metadata_listener(registry, port, profile_catalog, trace_collector) {
+        if let Err(e) = run_metadata_listener(
+            registry,
+            port,
+            profile_catalog,
+            trace_collector,
+            cgroup_resolver,
+        ) {
             eprintln!("COSMOS metadata listener error: {:#}", e);
         }
     })
@@ -223,6 +272,7 @@ fn run_metadata_listener(
     port: u16,
     profile_catalog: ProfileCatalogHandle,
     trace_collector: Option<TraceCollectorHandle>,
+    cgroup_resolver: CgroupResolutionSender,
 ) -> Result<()> {
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr)
@@ -244,8 +294,15 @@ fn run_metadata_listener(
                 let reg = registry.clone();
                 let profile_catalog = profile_catalog.clone();
                 let trace_collector = trace_collector.clone();
+                let cgroup_resolver = cgroup_resolver.clone();
                 thread::spawn(move || {
-                    handle_metadata_connection(stream, reg, profile_catalog, trace_collector);
+                    handle_metadata_connection(
+                        stream,
+                        reg,
+                        profile_catalog,
+                        trace_collector,
+                        cgroup_resolver,
+                    );
                 });
             }
             Err(e) => {
@@ -261,9 +318,9 @@ fn handle_metadata_connection(
     registry: RegistryHandle,
     profile_catalog: ProfileCatalogHandle,
     trace_collector: Option<TraceCollectorHandle>,
+    cgroup_resolver: CgroupResolutionSender,
 ) {
     let mut reader = BufReader::new(stream);
-    let resolver = CgroupResolver::new();
 
     loop {
         let mut line = String::new();
@@ -299,7 +356,6 @@ fn handle_metadata_connection(
                     now,
                     profile.as_ref(),
                 );
-                let resolved_cgroup = resolver.resolve(cmd.tgid).ok();
                 let meta = InvocationMeta {
                     id: cmd.invocation_id,
                     tgid: cmd.tgid,
@@ -313,24 +369,6 @@ fn handle_metadata_connection(
                 {
                     let mut reg = registry.write().unwrap();
                     reg.upsert_with_profile(meta.clone(), profile);
-                    if let Some((path, cgroup_id)) = resolved_cgroup.as_ref() {
-                        reg.update_cgroup(cmd.tgid, cmd.invocation_id, path.clone(), *cgroup_id);
-                    }
-                }
-
-                if let (Some(trace_collector), Some((path, _)), Some(profile_id)) = (
-                    trace_collector.as_ref(),
-                    resolved_cgroup.as_ref(),
-                    meta.profile_id.as_deref(),
-                ) {
-                    if let Err(err) =
-                        trace_collector.start_invocation(&meta, profile_id, path.clone())
-                    {
-                        eprintln!(
-                            "runtime trace start failed for tgid={} profile_id={}: {err:#}",
-                            cmd.tgid, profile_id
-                        );
-                    }
                 }
 
                 if let Some(&fd) = HAS_INVOCATION_FD.get() {
@@ -341,6 +379,7 @@ fn handle_metadata_connection(
                     }
                 }
 
+                let _ = cgroup_resolver.send(meta);
                 let _ = reader.get_mut().write_all(b"ok\n");
             }
             Ok(MetadataCommand::Delete(cmd)) => {
@@ -479,9 +518,16 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let server_registry = registry.clone();
+        let (cgroup_resolver, _rx) = mpsc::channel();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            handle_metadata_connection(stream, server_registry, profile_catalog, None);
+            handle_metadata_connection(
+                stream,
+                server_registry,
+                profile_catalog,
+                None,
+                cgroup_resolver,
+            );
         });
 
         let mut client = TcpStream::connect(addr).unwrap();

@@ -7,6 +7,7 @@ use crate::bpf::QueuedTask;
 use anyhow::Result;
 use scx_utils::Topology;
 use scx_utils::UserExitInfo;
+use std::time::Duration;
 
 /// Raw BPF counter values exposed by the adapter.
 #[derive(Debug, Default, Clone)]
@@ -50,6 +51,9 @@ pub trait CpuAdapter {
 
     /// Notify kernel that scheduling cycle is complete.
     fn notify_complete(&mut self, pending: u64);
+
+    /// Wait briefly for new scheduler work when the current cycle was idle.
+    fn wait_for_work(&mut self, _timeout: Duration) {}
 
     /// Snapshot of BPF-level counters.
     fn bpf_counters(&mut self) -> BpfCounters;
